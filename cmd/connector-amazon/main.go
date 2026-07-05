@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -244,13 +246,64 @@ func (s *connectorServer) getValidAccessToken(ctx context.Context, tenantID, sto
 		FROM amazon_oauth_connections WHERE tenant_id=$1 AND store_id=$2 AND status='ACTIVE'
 	`, tenantID, storeID).Scan(&accessToken, &refreshToken, &expiresAt)
 	if err != nil {
-		return "", fmt.Errorf("no active connection")
+		return "", fmt.Errorf("no active connection for tenant=%s store=%s", tenantID, storeID)
 	}
 
 	if time.Now().Before(expiresAt.Add(-5 * time.Minute)) {
 		return accessToken, nil
 	}
-	return "", fmt.Errorf("token expired — needs refresh via api service")
+
+	// Token expired — refresh via LWA
+	newToken, newExpiry, err := s.refreshLWAToken(ctx, refreshToken)
+	if err != nil {
+		return "", fmt.Errorf("lwa refresh failed: %w", err)
+	}
+
+	// Persist refreshed token
+	s.db.Exec(ctx, `
+		UPDATE amazon_oauth_connections
+		SET access_token=$1, token_expires_at=$2, updated_at=NOW()
+		WHERE tenant_id=$3 AND store_id=$4
+	`, newToken, newExpiry, tenantID, storeID)
+
+	return newToken, nil
+}
+
+func (s *connectorServer) refreshLWAToken(ctx context.Context, refreshToken string) (string, time.Time, error) {
+	tokenURL := s.cfg.AmazonLWATokenURL
+	if tokenURL == "" {
+		tokenURL = "https://api.amazon.com/auth/o2/token"
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("client_id", s.cfg.AmazonLWAClientID)
+	form.Set("client_secret", s.cfg.AmazonLWAClientSecret)
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+		Error       string `json:"error"`
+	}
+	json.NewDecoder(resp.Body).Decode(&body)
+
+	if body.Error != "" || body.AccessToken == "" {
+		return "", time.Time{}, fmt.Errorf("lwa error: %s (status %d)", body.Error, resp.StatusCode)
+	}
+
+	expiry := time.Now().Add(time.Duration(body.ExpiresIn) * time.Second)
+	log.Printf("lwa token refreshed, expires in %ds", body.ExpiresIn)
+	return body.AccessToken, expiry, nil
 }
 
 func jsonReader(b []byte) io.Reader {

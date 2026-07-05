@@ -59,13 +59,15 @@ services:
     container_name: marketcloud_connector
     ports:
       - "8091:8091"
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgres://mcadmin:mcsecret@postgres:5432/marketcloud?sslmode=disable
       REDIS_URL: redis://redis:6379
       PORT: "8091"
       ENV: development
-      AMAZON_LWA_CLIENT_ID: "${AMAZON_LWA_CLIENT_ID:-}"
-      AMAZON_LWA_CLIENT_SECRET: "${AMAZON_LWA_CLIENT_SECRET:-}"
+      AMAZON_LWA_CLIENT_ID: "${AMAZON_LWA_CLIENT_ID}"
+      AMAZON_LWA_CLIENT_SECRET: "${AMAZON_LWA_CLIENT_SECRET}"
       AMAZON_ADS_REDIRECT_URI: "${AMAZON_ADS_REDIRECT_URI:-http://localhost:8091/api/v1/connections/amazon/oauth/callback}"
       AMAZON_ADS_API_URL: "https://advertising-api.amazon.com"
       AMAZON_LWA_TOKEN_URL: "https://api.amazon.com/auth/o2/token"
