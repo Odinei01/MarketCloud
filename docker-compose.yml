@@ -73,6 +73,9 @@ services:
       AMAZON_LWA_TOKEN_URL: "https://api.amazon.com/auth/o2/token"
       AMAZON_ADS_AUTH_URL: "https://www.amazon.com/ap/oa"
       AMC_API_URL: "https://advertising-api.amazon.com/amc/reporting"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      AWS_REGION: "${AWS_REGION:-us-east-1}"
     depends_on:
       postgres:
         condition: service_healthy

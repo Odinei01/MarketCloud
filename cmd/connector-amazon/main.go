@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/zanom/marketcloud/internal/awsv4"
 	"github.com/zanom/marketcloud/internal/config"
 	"github.com/zanom/marketcloud/internal/database"
 )
@@ -104,27 +106,59 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Build AMC query payload
-	paramsJSON, _ := json.Marshal(req.Parameters)
-	queryName := fmt.Sprintf("mc_%s_%d", req.QueryRunID[:8], time.Now().Unix())
-
-	amcPayload := map[string]any{
-		"queryId":   queryName,
-		"queryText": req.SQLTemplate,
-		"timeWindowStart": fmt.Sprintf("%v", req.Parameters["period_start"]),
-		"timeWindowEnd":   fmt.Sprintf("%v", req.Parameters["period_end"]),
+	// Compute time window from lookback_days (fallback: 14 days)
+	lookback := 14
+	if v, ok := req.Parameters["lookback_days"]; ok {
+		switch n := v.(type) {
+		case float64:
+			lookback = int(n)
+		case int:
+			lookback = n
+		}
 	}
-	_ = paramsJSON
+	now := time.Now().UTC()
+	periodEnd := now.Format("2006-01-02")
+	periodStart := now.AddDate(0, 0, -lookback).Format("2006-01-02")
+
+	// Build AMC query execution payload
+	// URL: {baseURL}/{instanceId}/queryExecutions  (not /instances/{id})
+	amcPayload := map[string]any{
+		"timeWindowStart": periodStart,
+		"timeWindowEnd":   periodEnd,
+		"queryText":       req.SQLTemplate,
+	}
 
 	payloadJSON, _ := json.Marshal(amcPayload)
 
-	amcURL := fmt.Sprintf("%s/instances/%s/queries", s.cfg.AMCAPIURL, amcExternalID)
-	amcReq, _ := http.NewRequestWithContext(r.Context(), "POST", amcURL, jsonReader(payloadJSON))
-	amcReq.Header.Set("Authorization", "Bearer "+accessToken)
-	amcReq.Header.Set("Amazon-Advertising-API-ClientId", s.cfg.AmazonLWAClientID)
-	amcReq.Header.Set("Content-Type", "application/json")
+	// Correct AMC endpoint: base already contains the instance path
+	// cfg.AMCAPIURL = "https://advertising-api.amazon.com/amc/reporting"
+	amcURL := fmt.Sprintf("%s/%s/queryExecutions", s.cfg.AMCAPIURL, amcExternalID)
 
-	resp, err := http.DefaultClient.Do(amcReq)
+	amcReq, _ := http.NewRequestWithContext(r.Context(), "POST", amcURL, bytes.NewReader(payloadJSON))
+	amcReq.Header.Set("Content-Type", "application/json")
+	amcReq.Header.Set("Amazon-Advertising-API-ClientId", s.cfg.AmazonLWAClientID)
+	amcReq.Header.Set("Amazon-Advertising-API-Scope", "3084626225435227")
+
+	// Use SigV4 if AWS credentials are configured; fall back to Bearer token
+	awsCreds := awsv4.Credentials{
+		AccessKeyID:     s.cfg.AWSAccessKeyID,
+		SecretAccessKey: s.cfg.AWSSecretAccessKey,
+		Region:          s.cfg.AWSRegion,
+		Service:         "advertising",
+	}
+	if !awsCreds.IsEmpty() {
+		if err := awsv4.SignRequest(amcReq, payloadJSON, awsCreds); err != nil {
+			writeError(w, http.StatusInternalServerError, "SIGV4_SIGNING_FAILED: "+err.Error())
+			return
+		}
+		log.Printf("amc submit using SigV4 (key=%s)", awsCreds.AccessKeyID[:8]+"***")
+	} else {
+		amcReq.Header.Set("Authorization", "Bearer "+accessToken)
+		log.Printf("amc submit using Bearer token (no AWS creds configured)")
+	}
+
+	httpClient := &http.Client{Timeout: 45 * time.Second}
+	resp, err := httpClient.Do(amcReq)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "AMC_QUERY_FAILED: "+err.Error())
 		return
@@ -132,6 +166,8 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+	log.Printf("amc submit status=%d body=%s", resp.StatusCode, string(body))
+
 	if resp.StatusCode == 429 {
 		writeError(w, http.StatusTooManyRequests, "AMC_RATE_LIMITED")
 		return

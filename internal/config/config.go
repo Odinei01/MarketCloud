@@ -19,6 +19,10 @@ type Config struct {
 	AmazonAdsAuthURL      string
 	AMCAPIURL             string
 	ConnectorURL          string
+	// AWS SigV4 — required for AMC API calls
+	AWSAccessKeyID     string
+	AWSSecretAccessKey string
+	AWSRegion          string
 }
 
 func Load() Config {
@@ -36,6 +40,9 @@ func Load() Config {
 		AmazonAdsAuthURL:      env("AMAZON_ADS_AUTH_URL", "https://www.amazon.com/ap/oa"),
 		AMCAPIURL:             env("AMC_API_URL", "https://advertising-api.amazon.com/amc/reporting"),
 		ConnectorURL:          env("CONNECTOR_URL", "http://localhost:8091"),
+		AWSAccessKeyID:        env("AWS_ACCESS_KEY_ID", ""),
+		AWSSecretAccessKey:    env("AWS_SECRET_ACCESS_KEY", ""),
+		AWSRegion:             env("AWS_REGION", "us-east-1"),
 	}
 }
 
