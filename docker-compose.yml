@@ -1,0 +1,103 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: marketcloud_db
+    environment:
+      POSTGRES_USER: mcadmin
+      POSTGRES_PASSWORD: mcsecret
+      POSTGRES_DB: marketcloud
+    ports:
+      - "5433:5432"
+    volumes:
+      - marketcloud_pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcadmin -d marketcloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: marketcloud_redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - marketcloud_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: marketcloud_api
+    ports:
+      - "8090:8090"
+    environment:
+      DATABASE_URL: postgres://mcadmin:mcsecret@postgres:5432/marketcloud?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: change-me-in-production-32chars!!
+      PORT: "8090"
+      ENV: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  connector-amazon:
+    build:
+      context: .
+      dockerfile: Dockerfile.connector
+    container_name: marketcloud_connector
+    ports:
+      - "8091:8091"
+    environment:
+      DATABASE_URL: postgres://mcadmin:mcsecret@postgres:5432/marketcloud?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      PORT: "8091"
+      ENV: development
+      AMAZON_LWA_CLIENT_ID: "${AMAZON_LWA_CLIENT_ID:-}"
+      AMAZON_LWA_CLIENT_SECRET: "${AMAZON_LWA_CLIENT_SECRET:-}"
+      AMAZON_ADS_REDIRECT_URI: "${AMAZON_ADS_REDIRECT_URI:-http://localhost:8091/api/v1/connections/amazon/oauth/callback}"
+      AMAZON_ADS_API_URL: "https://advertising-api.amazon.com"
+      AMAZON_LWA_TOKEN_URL: "https://api.amazon.com/auth/o2/token"
+      AMAZON_ADS_AUTH_URL: "https://www.amazon.com/ap/oa"
+      AMC_API_URL: "https://advertising-api.amazon.com/amc/reporting"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  query-orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    container_name: marketcloud_orchestrator
+    ports:
+      - "8092:8092"
+    environment:
+      DATABASE_URL: postgres://mcadmin:mcsecret@postgres:5432/marketcloud?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      PORT: "8092"
+      ENV: development
+      CONNECTOR_URL: "http://connector-amazon:8091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  marketcloud_pgdata:
+  marketcloud_redisdata:
