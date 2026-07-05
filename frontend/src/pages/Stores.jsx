@@ -1,138 +1,143 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { api } from '../api/client.js'
 
-const DEMO_STORES = [
-  { id: 's1', name: 'Brasil - Loja Principal', marketplace: 'AMAZON_BR', campaigns: 52, roas: 4.32, status: 'ACTIVE', connected: true },
-  { id: 's2', name: 'US - Main Store', marketplace: 'AMAZON_US', campaigns: 35, roas: 3.85, status: 'ACTIVE', connected: true },
-  { id: 's3', name: 'México', marketplace: 'AMAZON_MX', campaigns: 0, roas: 0, status: 'PENDING', connected: false },
-]
-
-const MARKET_COLOR = { AMAZON_BR: 'green', AMAZON_US: 'blue', AMAZON_MX: 'gold', AMAZON_CA: 'purple' }
+const MP_ICON = { AMAZON_BR: '🇧🇷', AMAZON_US: '🇺🇸', AMAZON_MX: '🇲🇽', AMAZON_CA: '🇨🇦' }
+const MP_LABEL = { AMAZON_BR: 'Amazon BR', AMAZON_US: 'Amazon US', AMAZON_MX: 'Amazon MX', AMAZON_CA: 'Amazon CA' }
 
 export default function Stores({ ctx }) {
-  const [modal, setModal] = useState(false)
-  const [form, setForm] = useState({ name: '', marketplace: 'AMAZON_BR', external_id: '' })
+  const { tenantID } = ctx
+  const [stores, setStores] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [showCreate, setShowCreate] = useState(false)
+  const [form, setForm] = useState({ name: '', marketplace: 'AMAZON_BR', seller_id: '' })
+  const [creating, setCreating] = useState(false)
+  const [err, setErr] = useState('')
+
+  const load = async () => {
+    setLoading(true)
+    const r = await api.listStores(tenantID)
+    if (r.ok) setStores(r.data.items || [])
+    setLoading(false)
+  }
+
+  useEffect(() => { if (tenantID) load() }, [tenantID])
+
+  const create = async () => {
+    setCreating(true); setErr('')
+    const r = await api.createStore(tenantID, form)
+    setCreating(false)
+    if (!r.ok) { setErr(r.data.error || 'Erro ao criar loja'); return }
+    setShowCreate(false)
+    setForm({ name: '', marketplace: 'AMAZON_BR', seller_id: '' })
+    load()
+  }
 
   return (
     <div>
       <div className="topbar">
         <div>
           <h2>Multi-Loja</h2>
-          <p>Gerencie suas lojas conectadas ao MarketCloud</p>
+          <p>{stores.length} loja{stores.length !== 1 ? 's' : ''} cadastrada{stores.length !== 1 ? 's' : ''}</p>
         </div>
         <div className="actions">
-          <button className="btn primary" onClick={() => setModal(true)}>+ Nova Loja</button>
+          <button className="btn primary" onClick={() => setShowCreate(true)}>+ Nova Loja</button>
         </div>
       </div>
 
-      <div className="grid three" style={{ marginBottom: 16 }}>
-        {DEMO_STORES.map(s => (
-          <div className="card" key={s.id}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
-              <span className={`pill ${MARKET_COLOR[s.marketplace]}`}>{s.marketplace}</span>
-              <span className={`pill ${s.connected ? 'green' : 'orange'}`}>{s.connected ? 'Conectado' : 'Pendente'}</span>
-            </div>
-            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 8 }}>{s.name}</div>
-            <div style={{ color: 'var(--muted)', fontSize: 13 }}>{s.campaigns} campanhas • ROAS {s.roas > 0 ? s.roas.toFixed(2) + '×' : '—'}</div>
-            <div style={{ marginTop: 12 }}>
-              <div className="bar"><span style={{ width: Math.min(s.roas / 8 * 100, 100) + '%' }} /></div>
+      {loading ? (
+        <div className="loading"><div className="spinner" /><div>Carregando lojas...</div></div>
+      ) : stores.length === 0 ? (
+        <div className="panel" style={{ padding: 40, textAlign: 'center' }}>
+          <p style={{ color: 'var(--muted)', fontSize: 15 }}>Nenhuma loja cadastrada ainda.</p>
+          <button className="btn primary" style={{ marginTop: 16 }} onClick={() => setShowCreate(true)}>Cadastrar primeira loja</button>
+        </div>
+      ) : (
+        <>
+          <div className="grid cards">
+            {stores.map(s => (
+              <div className="card" key={s.id}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                  <span style={{ fontSize: 24 }}>{MP_ICON[s.marketplace] || '🌐'}</span>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 15 }}>{s.name}</div>
+                    <div style={{ color: 'var(--muted)', fontSize: 12 }}>{MP_LABEL[s.marketplace] || s.marketplace}</div>
+                  </div>
+                </div>
+                <div className="s" style={{ fontSize: 12, marginBottom: 8 }}>
+                  <span className="label">Seller ID:</span> <span style={{ color: 'var(--text)' }}>{s.seller_id || '—'}</span>
+                </div>
+                <span className={`pill ${s.status === 'ACTIVE' ? 'green' : 'red'}`}>{s.status || 'ACTIVE'}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="gap" />
+
+          <div className="panel">
+            <div className="panel-head"><h3>Todas as Lojas</h3></div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Nome</th>
+                    <th>Marketplace</th>
+                    <th>Seller ID</th>
+                    <th>Status</th>
+                    <th>Criada em</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stores.map(s => (
+                    <tr key={s.id}>
+                      <td style={{ fontWeight: 700 }}>{s.name}</td>
+                      <td>{MP_LABEL[s.marketplace] || s.marketplace}</td>
+                      <td style={{ color: 'var(--muted)', fontSize: 12 }}>{s.seller_id || '—'}</td>
+                      <td><span className={`pill ${s.status === 'ACTIVE' ? 'green' : 'red'}`}>{s.status || 'ACTIVE'}</span></td>
+                      <td style={{ color: 'var(--muted)', fontSize: 12 }}>{s.created_at ? new Date(s.created_at).toLocaleDateString('pt-BR') : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
-        ))}
-      </div>
-
-      <div className="panel">
-        <div className="panel-head">
-          <h3>Todas as Lojas</h3>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Nome</th>
-                <th>Marketplace</th>
-                <th>Campanhas</th>
-                <th>ROAS</th>
-                <th>Status</th>
-                <th>Conexão Amazon</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {DEMO_STORES.map(s => (
-                <tr key={s.id}>
-                  <td style={{ fontWeight: 700 }}>{s.name}</td>
-                  <td><span className={`pill ${MARKET_COLOR[s.marketplace]}`}>{s.marketplace}</span></td>
-                  <td>{s.campaigns}</td>
-                  <td style={{ color: s.roas >= 4 ? 'var(--green)' : s.roas > 0 ? 'var(--orange)' : 'var(--muted)' }}>
-                    {s.roas > 0 ? s.roas.toFixed(2) + '×' : '—'}
-                  </td>
-                  <td><span className={`pill ${s.status === 'ACTIVE' ? 'green' : 'orange'}`}>{s.status}</span></td>
-                  <td><span className={`pill ${s.connected ? 'green' : 'red'}`}>{s.connected ? '● Online' : '○ Offline'}</span></td>
-                  <td>
-                    {!s.connected && (
-                      <button className="btn sm blue">Conectar OAuth</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {modal && (
-        <Modal title="Nova Loja" onClose={() => setModal(false)}>
-          <div style={{ display: 'grid', gap: 12 }}>
-            <Field label="Nome da Loja">
-              <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Ex: Brasil - Principal" />
-            </Field>
-            <Field label="Marketplace">
-              <select value={form.marketplace} onChange={e => setForm(f => ({ ...f, marketplace: e.target.value }))}>
-                <option>AMAZON_BR</option>
-                <option>AMAZON_US</option>
-                <option>AMAZON_MX</option>
-                <option>AMAZON_CA</option>
-              </select>
-            </Field>
-            <Field label="External ID (opcional)">
-              <input value={form.external_id} onChange={e => setForm(f => ({ ...f, external_id: e.target.value }))} placeholder="ID externo da loja" />
-            </Field>
-            <div style={{ display: 'flex', gap: 10, marginTop: 8, justifyContent: 'flex-end' }}>
-              <button className="btn" onClick={() => setModal(false)}>Cancelar</button>
-              <button className="btn primary" onClick={() => setModal(false)}>Criar Loja</button>
-            </div>
-          </div>
-        </Modal>
+        </>
       )}
-    </div>
-  )
-}
 
-function Field({ label, children }) {
-  return (
-    <div>
-      <div className="label" style={{ marginBottom: 6 }}>{label}</div>
-      {children}
-    </div>
-  )
-}
-
-function Modal({ title, children, onClose }) {
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)',
-      display: 'grid', placeItems: 'center', zIndex: 100,
-    }}>
-      <div style={{
-        background: 'var(--panel)', border: '1px solid var(--line)',
-        borderRadius: 20, padding: 28, width: 420, maxWidth: '95vw',
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 20, alignItems: 'center' }}>
-          <h3 style={{ fontSize: 16 }}>{title}</h3>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 18 }}>✕</button>
+      {showCreate && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'grid', placeItems: 'center', zIndex: 100
+        }}>
+          <div style={{ width: 420, padding: 32, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 20 }}>
+            <h3 style={{ marginBottom: 20 }}>Nova Loja</h3>
+            <div style={{ display: 'grid', gap: 14 }}>
+              <div>
+                <div className="label" style={{ marginBottom: 6 }}>Nome da Loja</div>
+                <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Ex: Minha Loja BR" />
+              </div>
+              <div>
+                <div className="label" style={{ marginBottom: 6 }}>Marketplace</div>
+                <select value={form.marketplace} onChange={e => setForm(f => ({ ...f, marketplace: e.target.value }))}>
+                  <option value="AMAZON_BR">Amazon Brasil</option>
+                  <option value="AMAZON_US">Amazon USA</option>
+                  <option value="AMAZON_MX">Amazon México</option>
+                  <option value="AMAZON_CA">Amazon Canadá</option>
+                </select>
+              </div>
+              <div>
+                <div className="label" style={{ marginBottom: 6 }}>Seller ID</div>
+                <input value={form.seller_id} onChange={e => setForm(f => ({ ...f, seller_id: e.target.value }))} placeholder="AXXXXXXXXXXXXXXX" />
+              </div>
+            </div>
+            {err && <div style={{ marginTop: 12, color: 'var(--red)', fontSize: 13 }}>{err}</div>}
+            <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
+              <button className="btn primary" onClick={create} disabled={creating || !form.name}>
+                {creating ? 'Criando...' : 'Criar Loja'}
+              </button>
+              <button className="btn" onClick={() => { setShowCreate(false); setErr('') }}>Cancelar</button>
+            </div>
+          </div>
         </div>
-        {children}
-      </div>
+      )}
     </div>
   )
 }

@@ -48,7 +48,7 @@ def generate(results: list[ClassificationResult]) -> list[Recommendation]:
                 current_value={"roas": roas},
                 recommended_value={"action": "protect"},
                 impact_estimate={"assist_rate": r.evidence["assist_rate"], "assist_score": r.assist_score},
-                reason=f"Campanha possui assist_rate {r.evidence['assist_rate']*100:.0f}% e aparece em {r.evidence['path_presence_rate']*100:.0f}% das jornadas de conversão. ROAS direto isolado subestima o valor.",
+                reason=f"Campanha possui assist_rate {r.evidence['assist_rate']*100:.0f}% e ROAS direto {roas:.1f}. ROAS direto isolado subestima o valor total no funil.",
                 confidence=r.confidence,
             ))
 

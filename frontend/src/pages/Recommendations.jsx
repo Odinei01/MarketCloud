@@ -1,114 +1,130 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { api } from '../api/client.js'
 
-const DEMO = [
-  {
-    id: 'r1', action: 'INCREASE_BUDGET', campaign: 'Exata - Tênis Nike',
-    title: 'Aumentar budget em 30%',
-    body: 'Campanha com ROAS 6.8× está limitada por orçamento. Elevar budget de R$ 12.400 para R$ 16.120 capturaria estimadas 14 conversões adicionais.',
-    impact: 'high', status: 'PENDING', confidence: 0.91,
-  },
-  {
-    id: 'r2', action: 'DO_NOT_PAUSE', campaign: 'Broad - Esportes',
-    title: 'NÃO pausar esta campanha',
-    body: 'Campanha ASSISTED_CONVERSION com score 71% de assistência. Pausar eliminaria suporte a conversões do funil, reduzindo ROAS geral em até 18%.',
-    impact: 'critical', status: 'PENDING', confidence: 0.96,
-  },
-  {
-    id: 'r3', action: 'DECREASE_BID', campaign: 'Concorrente - Adidas',
-    title: 'Reduzir lance em 60%',
-    body: 'WASTE score 88%. Zero conversões diretas ou assistidas em R$ 5.500 de investimento. Reduzir bid evita desperdício sem eliminar presença.',
-    impact: 'high', status: 'PENDING', confidence: 0.88,
-  },
-  {
-    id: 'r4', action: 'CREATE_AUDIENCE', campaign: 'Remarketing 30d',
-    title: 'Criar audiência de compradores 60d',
-    body: 'Pool de recompra com 1.200 usuários altamente qualificados. Expandir janela para 60 dias aumentaria pool para ~3.800 usuários.',
-    impact: 'medium', status: 'PENDING', confidence: 0.79,
-  },
-  {
-    id: 'r5', action: 'DECREASE_BUDGET', campaign: 'Ampla - Calçados',
-    title: 'Reduzir orçamento em 25%',
-    body: 'ROAS 1.2× abaixo do target. Campanha DISCOVERY com assist_rate 55% ainda tem valor, mas budget pode ser reduzido sem impacto material na jornada.',
-    impact: 'medium', status: 'APPROVED', confidence: 0.72,
-  },
-]
-
-const IMPACT_COLOR = { high: 'red', critical: 'purple', medium: 'orange', low: 'blue' }
 const ACTION_COLOR = {
-  INCREASE_BUDGET: 'green',
-  DO_NOT_PAUSE: 'purple',
-  DECREASE_BID: 'orange',
-  CREATE_AUDIENCE: 'blue',
-  DECREASE_BUDGET: 'red',
+  INCREASE_BUDGET: 'green', DECREASE_BUDGET: 'red', INCREASE_BID: 'green',
+  DECREASE_BID: 'red', DO_NOT_PAUSE: 'purple', CREATE_AUDIENCE: 'blue', DO_NOT_BUY_QUALITY: 'orange',
 }
 
 export default function Recommendations({ ctx }) {
-  const [recs, setRecs] = useState(DEMO)
-  const [filter, setFilter] = useState('ALL')
+  const { tenantID, storeID } = ctx
+  const [recs, setRecs]       = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter]   = useState('PENDING')
+  const [actioning, setActioning] = useState({})
 
-  const approve = (id) => setRecs(r => r.map(x => x.id === id ? { ...x, status: 'APPROVED' } : x))
-  const reject  = (id) => setRecs(r => r.map(x => x.id === id ? { ...x, status: 'REJECTED' } : x))
+  const load = async () => {
+    setLoading(true)
+    const r = await api.listRecs(tenantID, storeID)
+    if (r.ok) setRecs(r.data.items || [])
+    setLoading(false)
+  }
 
-  const rows = filter === 'ALL' ? recs : recs.filter(r => r.status === filter)
+  useEffect(() => { if (tenantID) load() }, [tenantID, storeID])
+
+  const act = async (id, action) => {
+    setActioning(a => ({ ...a, [id]: action }))
+    const fn = action === 'approve' ? api.approveRec : api.rejectRec
+    await fn(tenantID, id)
+    setActioning(a => { const n = { ...a }; delete n[id]; return n })
+    load()
+  }
+
+  const counts = { PENDING: 0, APPROVED: 0, REJECTED: 0 }
+  recs.forEach(r => { if (counts[r.status] !== undefined) counts[r.status]++ })
+
+  const displayed = filter ? recs.filter(r => r.status === filter) : recs
 
   return (
     <div>
       <div className="topbar">
         <div>
           <h2>Recomendações</h2>
-          <p>Ações inteligentes geradas pelo Modeling Worker</p>
+          <p>{counts.PENDING} pendente{counts.PENDING !== 1 ? 's' : ''} • {counts.APPROVED} aprovada{counts.APPROVED !== 1 ? 's' : ''} • {counts.REJECTED} rejeitada{counts.REJECTED !== 1 ? 's' : ''}</p>
         </div>
         <div className="actions">
-          <select value={filter} onChange={e => setFilter(e.target.value)} style={{ width: 160 }}>
-            <option value="ALL">Todas</option>
-            <option value="PENDING">Pendentes</option>
-            <option value="APPROVED">Aprovadas</option>
-            <option value="REJECTED">Rejeitadas</option>
-          </select>
+          {[['PENDING', 'Pendentes'], ['APPROVED', 'Aprovadas'], ['REJECTED', 'Rejeitadas'], ['', 'Todas']].map(([s, label]) => (
+            <button key={label} className={`btn ${filter === s ? 'primary' : ''}`} onClick={() => setFilter(s)}>
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="grid three" style={{ marginBottom: 16 }}>
-        <div className="card">
-          <div className="k">Pendentes</div>
-          <div className="v warn">{recs.filter(r => r.status === 'PENDING').length}</div>
+      {loading ? (
+        <div className="loading"><div className="spinner" /><div>Carregando recomendações...</div></div>
+      ) : displayed.length === 0 ? (
+        <div className="panel" style={{ padding: 48, textAlign: 'center' }}>
+          <p style={{ color: 'var(--muted)', fontSize: 15 }}>
+            {recs.length === 0 ? 'Nenhuma recomendação gerada ainda. Execute um query run.' : `Nenhuma recomendação ${filter ? `com status "${filter}"` : ''}.`}
+          </p>
         </div>
-        <div className="card">
-          <div className="k">Aprovadas</div>
-          <div className="v up">{recs.filter(r => r.status === 'APPROVED').length}</div>
-        </div>
-        <div className="card">
-          <div className="k">Rejeitadas</div>
-          <div className="v down">{recs.filter(r => r.status === 'REJECTED').length}</div>
-        </div>
-      </div>
-
-      <div className="insight-list">
-        {rows.map(r => (
-          <div className="insight" key={r.id} style={{
-            borderColor: r.status === 'APPROVED' ? 'rgba(49,211,154,.3)' : r.status === 'REJECTED' ? 'rgba(255,107,107,.2)' : 'var(--line)'
-          }}>
-            <div className="meta">
-              <span className={`pill ${ACTION_COLOR[r.action]}`}>{r.action}</span>
-              <span className={`pill ${IMPACT_COLOR[r.impact]}`}>Impacto {r.impact}</span>
-              <span className="pill">Confiança {(r.confidence * 100).toFixed(0)}%</span>
-              {r.status !== 'PENDING' && (
-                <span className={`pill ${r.status === 'APPROVED' ? 'green' : 'red'}`}>{r.status}</span>
-              )}
-            </div>
-            <h4>{r.title}</h4>
-            <div style={{ fontSize: 12, color: 'var(--muted)' }}>Campanha: {r.campaign}</div>
-            <p>{r.body}</p>
-            {r.status === 'PENDING' && (
-              <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
-                <button className="btn sm primary" onClick={() => approve(r.id)}>✓ Aprovar</button>
-                <button className="btn sm" style={{ borderColor: 'rgba(255,107,107,.3)', color: 'var(--red)' }} onClick={() => reject(r.id)}>✕ Rejeitar</button>
-              </div>
-            )}
+      ) : (
+        <div className="panel">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Campanha</th>
+                  <th>Ação</th>
+                  <th>Motivo</th>
+                  <th>Confiança</th>
+                  <th>Status</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayed.map(rec => (
+                  <tr key={rec.id}>
+                    <td style={{ fontWeight: 700 }}>{rec.target_name}</td>
+                    <td>
+                      <span className={`pill ${ACTION_COLOR[rec.action_type] || ''}`}>{rec.action_type}</span>
+                    </td>
+                    <td style={{ color: 'var(--muted)', fontSize: 12, maxWidth: 280 }}>{rec.reason}</td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div className="bar" style={{ flex: 1, minWidth: 60 }}>
+                          <div className="fill green" style={{ width: `${(rec.confidence || 0) * 100}%` }} />
+                        </div>
+                        <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 32 }}>
+                          {((rec.confidence || 0) * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`pill ${rec.status === 'APPROVED' ? 'green' : rec.status === 'REJECTED' ? 'red' : 'gold'}`}>
+                        {rec.status}
+                      </span>
+                    </td>
+                    <td>
+                      {rec.status === 'PENDING' ? (
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            className="btn primary" style={{ padding: '5px 12px', fontSize: 11 }}
+                            disabled={!!actioning[rec.id]}
+                            onClick={() => act(rec.id, 'approve')}
+                          >
+                            {actioning[rec.id] === 'approve' ? '...' : 'Aprovar'}
+                          </button>
+                          <button
+                            className="btn" style={{ padding: '5px 12px', fontSize: 11, color: 'var(--red)', borderColor: 'var(--red)' }}
+                            disabled={!!actioning[rec.id]}
+                            onClick={() => act(rec.id, 'reject')}
+                          >
+                            {actioning[rec.id] === 'reject' ? '...' : 'Rejeitar'}
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ color: 'var(--muted)', fontSize: 12 }}>—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        ))}
-        {rows.length === 0 && <div className="empty">Nenhuma recomendação neste filtro.</div>}
-      </div>
+        </div>
+      )}
     </div>
   )
 }

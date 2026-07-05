@@ -1,116 +1,152 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { api } from '../api/client.js'
 
 const ROLES = ['ALL', 'CONVERSION', 'ASSISTED_CONVERSION', 'DISCOVERY', 'REMARKETING', 'WASTE', 'UNKNOWN']
 
 const ROLE_COLOR = {
-  CONVERSION: 'green',
-  DISCOVERY: 'blue',
-  ASSISTED_CONVERSION: 'purple',
-  REMARKETING: 'gold',
-  WASTE: 'red',
-  UNKNOWN: '',
+  CONVERSION: 'green', DISCOVERY: 'blue', ASSISTED_CONVERSION: 'purple',
+  REMARKETING: 'gold', WASTE: 'red', UNKNOWN: '',
 }
 
-const DEMO = [
-  { name: 'Exata - Tênis Nike', role: 'CONVERSION',          roas: 6.80, spend: 12400, rev: 84320, assist: 0.12, direct: 0.88, waste: 0.00, conv: 52 },
-  { name: 'Broad - Esportes',   role: 'ASSISTED_CONVERSION', roas: 2.10, spend: 6800,  rev: 14280, assist: 0.71, direct: 0.21, waste: 0.08, conv: 14 },
-  { name: 'Ampla - Calçados',   role: 'DISCOVERY',           roas: 1.20, spend: 8200,  rev: 9840,  assist: 0.55, direct: 0.12, waste: 0.33, conv: 6  },
-  { name: 'Remarketing 30d',    role: 'REMARKETING',         roas: 3.90, spend: 3100,  rev: 12090, assist: 0.22, direct: 0.68, waste: 0.10, conv: 31 },
-  { name: 'Concorrente - Adidas', role: 'WASTE',             roas: 0.40, spend: 5500,  rev: 2200,  assist: 0.08, direct: 0.04, waste: 0.88, conv: 2  },
-  { name: 'SP Exact - Running', role: 'CONVERSION',          roas: 5.20, spend: 9800,  rev: 50960, assist: 0.09, direct: 0.81, waste: 0.10, conv: 38 },
-  { name: 'Generic Broad',      role: 'UNKNOWN',             roas: 0.00, spend: 1200,  rev: 0,     assist: 0.00, direct: 0.00, waste: 1.00, conv: 0  },
-]
-
-function ScoreBar({ val, color }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <div className="bar" style={{ flex: 1 }}>
-        <span style={{ width: (val * 100) + '%', background: `var(--${color})` }} />
-      </div>
-      <span style={{ fontSize: 12, color: `var(--${color})`, minWidth: 32 }}>{(val * 100).toFixed(0)}%</span>
-    </div>
-  )
+// Derive campaign list from recommendations since there's no dedicated /campaigns endpoint yet
+function campaignsFromRecs(recs) {
+  const map = new Map()
+  for (const r of recs) {
+    if (!map.has(r.target_id)) {
+      map.set(r.target_id, {
+        id: r.target_id,
+        name: r.target_name,
+        role: null,
+        confidence: 0,
+        recs: [],
+        evidence: r.impact_estimate || {},
+      })
+    }
+    map.get(r.target_id).recs.push(r)
+    if (r.confidence > map.get(r.target_id).confidence) {
+      map.get(r.target_id).confidence = r.confidence
+    }
+  }
+  // Infer role from action_type
+  for (const c of map.values()) {
+    const actions = c.recs.map(r => r.action_type)
+    if (actions.includes('INCREASE_BUDGET')) c.role = 'CONVERSION'
+    else if (actions.includes('DO_NOT_PAUSE')) c.role = c.recs[0]?.action_type === 'CREATE_AUDIENCE' ? 'REMARKETING' : 'ASSISTED_CONVERSION'
+    else if (actions.includes('CREATE_AUDIENCE')) c.role = 'REMARKETING'
+    else if (actions.includes('DECREASE_BID') || actions.includes('DECREASE_BUDGET')) c.role = 'WASTE'
+    else c.role = 'UNKNOWN'
+  }
+  return [...map.values()]
 }
 
 export default function Campaigns({ ctx }) {
-  const [roleFilter, setRoleFilter] = useState('ALL')
-  const [q, setQ] = useState('')
+  const { tenantID, storeID } = ctx
+  const [campaigns, setCampaigns] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter] = useState('ALL')
+  const [search, setSearch] = useState('')
 
-  const rows = DEMO
-    .filter(c => roleFilter === 'ALL' || c.role === roleFilter)
-    .filter(c => c.name.toLowerCase().includes(q.toLowerCase()))
+  useEffect(() => {
+    if (!tenantID) return
+    setLoading(true)
+    api.listRecs(tenantID, storeID).then(r => {
+      if (r.ok) setCampaigns(campaignsFromRecs(r.data.items || []))
+      setLoading(false)
+    })
+  }, [tenantID, storeID])
+
+  const filtered = campaigns.filter(c => {
+    if (filter !== 'ALL' && c.role !== filter) return false
+    if (search && !c.name.toLowerCase().includes(search.toLowerCase())) return false
+    return true
+  })
+
+  const counts = {}
+  ROLES.forEach(r => { counts[r] = r === 'ALL' ? campaigns.length : campaigns.filter(c => c.role === r).length })
 
   return (
     <div>
       <div className="topbar">
         <div>
           <h2>Campanhas</h2>
-          <p>Classificação inteligente por papel de conversão</p>
+          <p>{campaigns.length} campanha{campaigns.length !== 1 ? 's' : ''} classificada{campaigns.length !== 1 ? 's' : ''} pelo modelo</p>
         </div>
         <div className="actions">
-          <button className="btn">Exportar CSV</button>
-          <button className="btn primary">Sync Amazon</button>
+          <input
+            style={{ width: 200, fontSize: 13 }}
+            placeholder="Buscar campanha..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
         </div>
       </div>
 
-      <div className="grid cards" style={{ marginBottom: 16 }}>
-        {[
-          { role: 'CONVERSION', count: DEMO.filter(c=>c.role==='CONVERSION').length, color: 'green' },
-          { role: 'ASSISTED', count: DEMO.filter(c=>c.role==='ASSISTED_CONVERSION').length, color: 'purple' },
-          { role: 'DISCOVERY', count: DEMO.filter(c=>c.role==='DISCOVERY').length, color: 'blue' },
-          { role: 'WASTE', count: DEMO.filter(c=>c.role==='WASTE').length, color: 'red' },
-        ].map(r => (
-          <div className="card" key={r.role} style={{ minHeight: 'unset', padding: 16 }}>
-            <div className="k">{r.role}</div>
-            <div className="v" style={{ color: `var(--${r.color})`, fontSize: 26 }}>{r.count}</div>
-          </div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+        {ROLES.map(role => (
+          <button
+            key={role}
+            className={`btn ${filter === role ? 'primary' : ''}`}
+            onClick={() => setFilter(role)}
+            style={{ fontSize: 12 }}
+          >
+            {role === 'ALL' ? 'Todos' : role.replace('_', ' ')} ({counts[role]})
+          </button>
         ))}
       </div>
 
-      <div className="search-row" style={{ marginBottom: 14 }}>
-        <input placeholder="Buscar campanha..." value={q} onChange={e => setQ(e.target.value)} />
-        <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)}>
-          {ROLES.map(r => <option key={r}>{r}</option>)}
-        </select>
-        <span className="pill" style={{ height: '100%', display: 'flex', alignItems: 'center' }}>
-          {rows.length} campanhas
-        </span>
-      </div>
-
-      <div className="panel">
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Campanha</th>
-                <th>Papel AMC</th>
-                <th>ROAS</th>
-                <th>Investimento</th>
-                <th>Receita</th>
-                <th>Conversão Direta</th>
-                <th>Score Assistência</th>
-                <th>Score Desperdício</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(c => (
-                <tr key={c.name}>
-                  <td style={{ fontWeight: 700 }}>{c.name}</td>
-                  <td><span className={`pill ${ROLE_COLOR[c.role]}`}>{c.role}</span></td>
-                  <td style={{ color: c.roas >= 4 ? 'var(--green)' : c.roas < 1 ? 'var(--red)' : 'var(--orange)', fontWeight: 800 }}>
-                    {c.roas.toFixed(2)}×
-                  </td>
-                  <td>R$ {c.spend.toLocaleString('pt-BR')}</td>
-                  <td>R$ {c.rev.toLocaleString('pt-BR')}</td>
-                  <td className="score-cell"><ScoreBar val={c.direct} color="green" /></td>
-                  <td className="score-cell"><ScoreBar val={c.assist} color="purple" /></td>
-                  <td className="score-cell"><ScoreBar val={c.waste} color="red" /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {loading ? (
+        <div className="loading"><div className="spinner" /><div>Carregando campanhas...</div></div>
+      ) : filtered.length === 0 ? (
+        <div className="panel" style={{ padding: 48, textAlign: 'center' }}>
+          <p style={{ color: 'var(--muted)', fontSize: 15 }}>
+            {campaigns.length === 0
+              ? 'Nenhuma campanha classificada ainda. Execute um query run para ativar o modelo.'
+              : 'Nenhuma campanha com os filtros selecionados.'}
+          </p>
         </div>
-      </div>
+      ) : (
+        <div className="panel">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Campanha</th>
+                  <th>Papel</th>
+                  <th>Recomendações</th>
+                  <th>Confiança</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(c => (
+                  <tr key={c.id}>
+                    <td style={{ fontWeight: 700 }}>{c.name}</td>
+                    <td>
+                      <span className={`pill ${ROLE_COLOR[c.role] || ''}`}>{c.role}</span>
+                    </td>
+                    <td>
+                      {c.recs.map(r => (
+                        <span key={r.id} className={`pill`} style={{ marginRight: 4, fontSize: 10 }}>
+                          {r.action_type}
+                        </span>
+                      ))}
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div className="bar" style={{ flex: 1, minWidth: 80 }}>
+                          <div className={`fill ${ROLE_COLOR[c.role] || 'blue'}`} style={{ width: `${c.confidence * 100}%` }} />
+                        </div>
+                        <span style={{ fontSize: 11, color: 'var(--muted)', minWidth: 32 }}>
+                          {(c.confidence * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

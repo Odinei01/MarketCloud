@@ -98,6 +98,19 @@ services:
         condition: service_healthy
     restart: on-failure
 
+  modeling-worker:
+    build:
+      context: ./workers/modeling-worker
+      dockerfile: Dockerfile
+    container_name: marketcloud_modeling_worker
+    environment:
+      DATABASE_URL: postgres://mcadmin:mcsecret@postgres:5432/marketcloud?sslmode=disable
+      ENV: development
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
 volumes:
   marketcloud_pgdata:
   marketcloud_redisdata:
