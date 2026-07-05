@@ -30,7 +30,10 @@ func (c Credentials) IsEmpty() bool {
 // SignRequest adds an AWS SigV4 Authorization header to req.
 // The request body must be readable; pass bodyBytes separately so it
 // can be used for signing and re-set on the request.
-func SignRequest(req *http.Request, bodyBytes []byte, creds Credentials) error {
+// signingPathOverride: if non-empty, use this as the canonical URI instead
+// of req.URL.Path — needed when the API Gateway stage prefix ("/prod") is
+// added internally and not reflected in the client-facing URL.
+func SignRequest(req *http.Request, bodyBytes []byte, creds Credentials, signingPathOverride ...string) error {
 	t := time.Now().UTC()
 	date := t.Format("20060102")
 	datetime := t.Format("20060102T150405Z")
@@ -39,10 +42,13 @@ func SignRequest(req *http.Request, bodyBytes []byte, creds Credentials) error {
 	req.Header.Set("X-Amz-Date", datetime)
 	req.Header.Set("Host", req.URL.Host)
 
-	// Canonical URI
+	// Canonical URI — use override when provided (e.g. API Gateway prepends /prod internally)
 	canonicalURI := req.URL.EscapedPath()
 	if canonicalURI == "" {
 		canonicalURI = "/"
+	}
+	if len(signingPathOverride) > 0 && signingPathOverride[0] != "" {
+		canonicalURI = signingPathOverride[0]
 	}
 
 	// Canonical query string (sorted)

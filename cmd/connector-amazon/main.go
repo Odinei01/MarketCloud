@@ -132,7 +132,7 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 
 	// Correct AMC endpoint: base already contains the instance path
 	// cfg.AMCAPIURL = "https://advertising-api.amazon.com/amc/reporting"
-	amcURL := fmt.Sprintf("%s/%s/queryExecutions", s.cfg.AMCAPIURL, amcExternalID)
+	amcURL := fmt.Sprintf("%s/%s/workflowExecutions", s.cfg.AMCAPIURL, amcExternalID)
 
 	amcReq, _ := http.NewRequestWithContext(r.Context(), "POST", amcURL, bytes.NewReader(payloadJSON))
 	amcReq.Header.Set("Content-Type", "application/json")
@@ -144,14 +144,16 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 		AccessKeyID:     s.cfg.AWSAccessKeyID,
 		SecretAccessKey: s.cfg.AWSSecretAccessKey,
 		Region:          s.cfg.AWSRegion,
-		Service:         "advertising",
+		Service:         "execute-api",
 	}
 	if !awsCreds.IsEmpty() {
-		if err := awsv4.SignRequest(amcReq, payloadJSON, awsCreds); err != nil {
+		// API Gateway prepends /prod internally — sign with that path override
+		signingPath := "/prod" + amcReq.URL.Path
+		if err := awsv4.SignRequest(amcReq, payloadJSON, awsCreds, signingPath); err != nil {
 			writeError(w, http.StatusInternalServerError, "SIGV4_SIGNING_FAILED: "+err.Error())
 			return
 		}
-		log.Printf("amc submit using SigV4 (key=%s)", awsCreds.AccessKeyID[:8]+"***")
+		log.Printf("amc submit using SigV4 (key=%s signing_path=%s)", awsCreds.AccessKeyID[:8]+"***", signingPath)
 	} else {
 		amcReq.Header.Set("Authorization", "Bearer "+accessToken)
 		log.Printf("amc submit using Bearer token (no AWS creds configured)")
@@ -217,7 +219,7 @@ func (s *connectorServer) getQueryStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	amcURL := fmt.Sprintf("%s/instances/%s/queries/%s", s.cfg.AMCAPIURL, amcExternalID, executionID)
+	amcURL := fmt.Sprintf("%s/%s/workflowExecutions/%s", s.cfg.AMCAPIURL, amcExternalID, executionID)
 	req, _ := http.NewRequestWithContext(r.Context(), "GET", amcURL, nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Amazon-Advertising-API-ClientId", s.cfg.AmazonLWAClientID)
