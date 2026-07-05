@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "marketcloud-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "C:/dev/estudo-cloud-native/marketcloud/frontend", "run", "dev", "--", "--port", "3001", "--strictPort"],
+      "port": 3001
+    }
+  ]
+}
