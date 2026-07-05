@@ -3,14 +3,8 @@
 -- access_token starts as placeholder — connector auto-refreshes on first use
 
 INSERT INTO amazon_oauth_connections (
-    tenant_id,
-    store_id,
-    amazon_user_id,
-    access_token,
-    refresh_token,
-    token_expires_at,
-    scopes,
-    status
+    tenant_id, store_id, amazon_user_id,
+    access_token, refresh_token, token_expires_at, scopes, status
 )
 VALUES (
     'd7ec8c23-3f86-4cd1-b4cb-2a753a74c5f9',
@@ -29,51 +23,31 @@ ON CONFLICT (tenant_id, store_id) DO UPDATE SET
     updated_at       = NOW();
 
 INSERT INTO amazon_ads_profiles (
-    tenant_id,
-    store_id,
-    amazon_profile_id,
-    account_type,
-    country_code,
-    currency_code,
-    timezone,
-    status
+    tenant_id, store_id, amazon_profile_id,
+    account_type, country_code, currency_code, timezone, status
 )
 VALUES (
     'd7ec8c23-3f86-4cd1-b4cb-2a753a74c5f9',
     'f1a59d8d-2966-45c1-83be-8e20c87ea1e0',
     '3084626225435227',
-    'SELLER',
-    'BR',
-    'BRL',
-    'America/Sao_Paulo',
-    'ACTIVE'
+    'SELLER', 'BR', 'BRL', 'America/Sao_Paulo', 'ACTIVE'
 )
 ON CONFLICT (tenant_id, amazon_profile_id) DO UPDATE SET
-    store_id   = EXCLUDED.store_id,
-    status     = 'ACTIVE',
-    updated_at = NOW();
+    store_id = EXCLUDED.store_id, status = 'ACTIVE', updated_at = NOW();
 
--- AMC instance placeholder — update amc_instance_id once obtained from Amazon AMC console
 INSERT INTO amc_instances (
-    tenant_id,
-    store_id,
-    amazon_profile_id,
-    amc_instance_id,
-    name,
-    region,
-    country,
-    status
+    tenant_id, store_id, amazon_profile_id,
+    amc_instance_id, name, region, country, status
 )
 SELECT
     'd7ec8c23-3f86-4cd1-b4cb-2a753a74c5f9',
     'f1a59d8d-2966-45c1-83be-8e20c87ea1e0',
     p.id,
-    'amcZANOM_PLACEHOLDER',
+    'amcoo5vzswt',
     'ZANOM Brasil AMC',
-    'NA',
-    'BR',
-    'PENDING'
+    'NA', 'BR', 'ACTIVE'
 FROM amazon_ads_profiles p
 WHERE p.tenant_id = 'd7ec8c23-3f86-4cd1-b4cb-2a753a74c5f9'
   AND p.amazon_profile_id = '3084626225435227'
-ON CONFLICT (tenant_id, amc_instance_id) DO NOTHING;
+ON CONFLICT (tenant_id, amc_instance_id) DO UPDATE SET
+    status = 'ACTIVE', region = 'NA', updated_at = NOW();
