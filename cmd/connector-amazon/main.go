@@ -135,6 +135,20 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 	httpClient := &http.Client{Timeout: 45 * time.Second}
 	base := fmt.Sprintf("%s/%s", s.cfg.AMCAPIURL, amcExternalID)
 
+	// Compute time window from lookback_days parameter
+	lookback := 14
+	if v, ok := req.Parameters["lookback_days"]; ok {
+		switch n := v.(type) {
+		case float64:
+			lookback = int(n)
+		case int:
+			lookback = n
+		}
+	}
+	now := time.Now().UTC()
+	periodEnd := now.Format("2006-01-02T15:04:05")
+	periodStart := now.AddDate(0, 0, -lookback).Format("2006-01-02T15:04:05")
+
 	// ── Step 1: Create workflow (register the SQL query) ──────────────────────
 	// workflowId is customer-provided; derive a stable ID from the template code
 	// so the same template reuses the same workflow definition across runs.
@@ -143,9 +157,13 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 		workflowID = "mc-run-" + req.QueryRunID[:8]
 	}
 
+	// Substitute {{param}} placeholders before sending to AMC.
+	// AMC does not support template variables — the SQL must be valid SQL.
+	resolvedSQL := substituteAMCParams(req.SQLTemplate, req.Parameters, periodStart, periodEnd)
+
 	wfPayload, _ := json.Marshal(map[string]any{
 		"workflowId":     workflowID,
-		"sqlQuery":       req.SQLTemplate,
+		"sqlQuery":       resolvedSQL,
 		"timeWindowType": "EXPLICIT",
 	})
 	wfReq, _ := amcHeaders("POST", base+"/workflows", bytes.NewReader(wfPayload))
@@ -185,19 +203,6 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 		workflowID, req.QueryRunID)
 
 	// ── Step 2: Execute workflow for the requested time window ────────────────
-	lookback := 14
-	if v, ok := req.Parameters["lookback_days"]; ok {
-		switch n := v.(type) {
-		case float64:
-			lookback = int(n)
-		case int:
-			lookback = n
-		}
-	}
-	// AMC expects LocalDateTime format: "2006-01-02T15:04:05"
-	now := time.Now().UTC()
-	periodEnd := now.Format("2006-01-02T15:04:05")
-	periodStart := now.AddDate(0, 0, -lookback).Format("2006-01-02T15:04:05")
 
 	// First try with explicit time window; if the workflow was created as MOST_RECENT_DAY,
 	// AMC rejects explicit dates — in that case retry without dates.
@@ -444,3 +449,68 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 }
 
 var _ = uuid.UUID{} // ensure import used
+
+// substituteAMCParams replaces {{param}} placeholders in the SQL template
+// with actual values. AMC does not support template variables — the SQL must
+// be valid SQL before being submitted.
+//
+// Period dates use date-only format for SQL WHERE clauses (AMC accepts DATE literals).
+// Scalar params (spend, roas, clicks) use their numeric representation.
+// SQL-fragment params (campaign_filter, asin_filter) default to empty string.
+func substituteAMCParams(sqlTpl string, params map[string]any, periodStart, periodEnd string) string {
+	// Date in SQL-friendly format (strip the time component for WHERE clauses)
+	pStart := "'" + periodStart[:10] + "'"
+	pEnd := "'" + periodEnd[:10] + "'"
+
+	defaults := map[string]string{
+		"period_start":          pStart,
+		"period_end":            pEnd,
+		"today":                 pEnd,
+		"min_spend":             "30.0",
+		"min_spend_hour":        "5.0",
+		"target_roas":           "5.0",
+		"min_clicks":            "8",
+		"min_orders_exact":      "1",
+		"assist_rate_threshold": "0.30",
+		"product_group_label":   "'TODOS'",
+		"asin_filter_label":     "'TODOS'",
+		"campaign_filter":       "",
+		"asin_filter":           "",
+		"product_filter":        "1=1",
+		"zanom_asins":           "'B0H2NL3S6T'",
+		"zanom_parent_asins":    "'B0H2NL3S6T'",
+		"source_product_group":  "'LOCALIZADOR'",
+		"target_product_group":  "'TODOS'",
+		"store_id":              "'zanom-brasil'",
+	}
+
+	// Override defaults with caller-supplied params
+	for k, v := range params {
+		if k == "lookback_days" {
+			continue // already consumed to compute period_start/end
+		}
+		switch val := v.(type) {
+		case float64:
+			defaults[k] = fmt.Sprintf("%g", val)
+		case int:
+			defaults[k] = fmt.Sprintf("%d", val)
+		case string:
+			if val != "" {
+				defaults[k] = "'" + strings.ReplaceAll(val, "'", "''") + "'"
+			}
+		}
+	}
+
+	result := sqlTpl
+	for k, v := range defaults {
+		result = strings.ReplaceAll(result, "{{"+k+"}}", v)
+	}
+
+	// Best-effort AMC SQL dialect fixes:
+	// SAFE_DIVIDE(a, b) → (CAST(a AS DOUBLE) / NULLIF(b, 0.0)) is not trivially
+	// replaceable with regex due to nested parens, so we leave it as-is.
+	// Queries using SAFE_DIVIDE will fail in AMC if AMC doesn't support it —
+	// AMC errors will surface in query_runs.error_message after polling.
+
+	return result
+}
