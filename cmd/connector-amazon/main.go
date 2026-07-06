@@ -135,12 +135,19 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 	httpClient := &http.Client{Timeout: 45 * time.Second}
 	base := fmt.Sprintf("%s/%s", s.cfg.AMCAPIURL, amcExternalID)
 
-	// Compute time window: explicit period_start/period_end override lookback_days
+	// Compute time window: explicit period_start/period_end override lookback_days.
+	// AMC requires LocalDateTime format (YYYY-MM-DDTHH:mm:ss), so date-only strings get T00:00:00 appended.
+	ensureDateTime := func(s string) string {
+		if len(s) == 10 { // "2026-05-31" → "2026-05-31T00:00:00"
+			return s + "T00:00:00"
+		}
+		return s
+	}
 	var periodStart, periodEnd string
 	if ps, ok := req.Parameters["period_start"].(string); ok && ps != "" {
-		periodStart = ps
+		periodStart = ensureDateTime(ps)
 		if pe, ok2 := req.Parameters["period_end"].(string); ok2 && pe != "" {
-			periodEnd = pe
+			periodEnd = ensureDateTime(pe)
 		} else {
 			periodEnd = time.Now().UTC().Format("2006-01-02T15:04:05")
 		}

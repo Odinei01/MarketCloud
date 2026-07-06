@@ -171,7 +171,7 @@ func (h *Handler) CreateRun(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO query_runs
 			(tenant_id, store_id, amazon_profile_id, amc_instance_id, query_template_id,
 			 run_type, parameters_json, idempotency_key, status, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CREATED', $9)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'QUEUED', $9)
 		RETURNING id, tenant_id, store_id, amc_instance_id, query_template_id,
 		          run_type, parameters_json, idempotency_key, status, created_at
 	`, tenantID, req.StoreID, nullIfEmpty(req.AmazonProfileID), req.AMCInstanceID, tmplID,
@@ -185,7 +185,7 @@ func (h *Handler) CreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Insert initial status event
-	h.db.Exec(r.Context(), `INSERT INTO query_run_events (query_run_id, status) VALUES ($1, 'CREATED')`, run.ID)
+	h.db.Exec(r.Context(), `INSERT INTO query_run_events (query_run_id, status) VALUES ($1, 'QUEUED')`, run.ID)
 
 	h.audit.LogRequest(r.Context(), r, "QUERY_RUN_CREATED", "query_run", run.ID.String(), nil, run)
 	writeJSON(w, http.StatusCreated, run)
