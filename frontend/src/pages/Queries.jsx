@@ -74,6 +74,8 @@ export default function Queries({ ctx }) {
   const [creating, setCreating]   = useState({})
   const [runningAll, setRunningAll] = useState(false)
   const [runAllProgress, setRunAllProgress] = useState(null)
+  const [dateStart, setDateStart] = useState('2026-05-31')
+  const [dateEnd, setDateEnd]     = useState('2026-07-05')
   const pollRef = useRef(null)
 
   const loadRuns = async () => {
@@ -107,6 +109,8 @@ export default function Queries({ ctx }) {
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
   }, [runs])
 
+  const periodParams = () => ({ period_start: dateStart, period_end: dateEnd })
+
   const runByCode = async (code) => {
     if (!storeID) return
     const tpl = templates.find(t => t.code === code)
@@ -115,7 +119,7 @@ export default function Queries({ ctx }) {
     await api.createRun(tenantID, {
       store_id: storeID,
       template_id: tpl.id,
-      parameters: { lookback_days: 30 },
+      parameters: periodParams(),
     })
     setCreating(c => { const n = { ...c }; delete n[code]; return n })
     loadRuns()
@@ -123,7 +127,7 @@ export default function Queries({ ctx }) {
 
   const runAll = async () => {
     if (!storeID || runningAll) return
-    const confirm = window.confirm(`Enfileirar todas as ${templates.length} queries? O AMC vai processar em lotes de 5.`)
+    const confirm = window.confirm(`Enfileirar todas as ${templates.length} queries?\nPeríodo: ${dateStart} → ${dateEnd}\nO AMC vai processar em lotes de 5.`)
     if (!confirm) return
 
     setRunningAll(true)
@@ -134,7 +138,7 @@ export default function Queries({ ctx }) {
       const r = await api.createRun(tenantID, {
         store_id: storeID,
         template_id: tpl.id,
-        parameters: { lookback_days: 30 },
+        parameters: periodParams(),
       })
       setRunAllProgress(p => ({
         ...p,
@@ -179,7 +183,23 @@ export default function Queries({ ctx }) {
             )}
           </p>
         </div>
-        <div className="actions">
+        <div className="actions" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)' }}>
+            <label style={{ fontWeight: 600, color: 'var(--fg)' }}>De</label>
+            <input
+              type="date"
+              value={dateStart}
+              onChange={e => setDateStart(e.target.value)}
+              style={{ padding: '5px 8px', fontSize: 12, borderRadius: 6, border: '1px solid var(--line)', background: 'var(--card)', color: 'var(--fg)' }}
+            />
+            <label style={{ fontWeight: 600, color: 'var(--fg)' }}>até</label>
+            <input
+              type="date"
+              value={dateEnd}
+              onChange={e => setDateEnd(e.target.value)}
+              style={{ padding: '5px 8px', fontSize: 12, borderRadius: 6, border: '1px solid var(--line)', background: 'var(--card)', color: 'var(--fg)' }}
+            />
+          </div>
           {runAllProgress ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: 'var(--muted)' }}>
               <span style={{ color: '#f5a623' }}>Enfileirando… {runAllProgress.done}/{runAllProgress.total}</span>

@@ -135,19 +135,29 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 	httpClient := &http.Client{Timeout: 45 * time.Second}
 	base := fmt.Sprintf("%s/%s", s.cfg.AMCAPIURL, amcExternalID)
 
-	// Compute time window from lookback_days parameter
-	lookback := 14
-	if v, ok := req.Parameters["lookback_days"]; ok {
-		switch n := v.(type) {
-		case float64:
-			lookback = int(n)
-		case int:
-			lookback = n
+	// Compute time window: explicit period_start/period_end override lookback_days
+	var periodStart, periodEnd string
+	if ps, ok := req.Parameters["period_start"].(string); ok && ps != "" {
+		periodStart = ps
+		if pe, ok2 := req.Parameters["period_end"].(string); ok2 && pe != "" {
+			periodEnd = pe
+		} else {
+			periodEnd = time.Now().UTC().Format("2006-01-02T15:04:05")
 		}
+	} else {
+		lookback := 14
+		if v, ok := req.Parameters["lookback_days"]; ok {
+			switch n := v.(type) {
+			case float64:
+				lookback = int(n)
+			case int:
+				lookback = n
+			}
+		}
+		now := time.Now().UTC()
+		periodEnd = now.Format("2006-01-02T15:04:05")
+		periodStart = now.AddDate(0, 0, -lookback).Format("2006-01-02T15:04:05")
 	}
-	now := time.Now().UTC()
-	periodEnd := now.Format("2006-01-02T15:04:05")
-	periodStart := now.AddDate(0, 0, -lookback).Format("2006-01-02T15:04:05")
 
 	// ── Step 1: Create workflow (register the SQL query) ──────────────────────
 	// workflowId is customer-provided; derive a stable ID from the template code
