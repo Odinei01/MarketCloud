@@ -167,12 +167,18 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 	}
 
 	// ── Step 1: Create workflow (register the SQL query) ──────────────────────
-	// workflowId is customer-provided; derive a stable ID from the template code
-	// so the same template reuses the same workflow definition across runs.
-	workflowID := strings.ToLower(strings.ReplaceAll(req.TemplateCode, "_", "-"))
-	if workflowID == "" {
-		workflowID = "mc-run-" + req.QueryRunID[:8]
+	// WorkflowId includes a date-window suffix so each unique time window gets
+	// its own workflow definition. AMC does not allow changing timeWindowType
+	// after creation, so reusing the same ID would silently ignore the EXPLICIT
+	// type and fall back to MOST_RECENT_DAY.
+	baseID := strings.ToLower(strings.ReplaceAll(req.TemplateCode, "_", "-"))
+	if baseID == "" {
+		baseID = "mc-run-" + req.QueryRunID[:8]
 	}
+	// Append a short date-window fingerprint (start-end yyyymmdd) so EXPLICIT
+	// workflows are created fresh for each distinct time window.
+	dateSuffix := strings.ReplaceAll(periodStart[:10], "-", "") + "-" + strings.ReplaceAll(periodEnd[:10], "-", "")
+	workflowID := baseID + "-" + dateSuffix
 
 	// Substitute {{param}} placeholders before sending to AMC.
 	// AMC does not support template variables — the SQL must be valid SQL.

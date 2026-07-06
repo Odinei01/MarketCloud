@@ -216,10 +216,13 @@ func (o *orchestrator) checkRunningStatus(ctx context.Context) {
 		defer resp.Body.Close()
 
 		var statusResp struct {
-			Status        string `json:"status"`
-			OutputS3Path  string `json:"outputS3Uri"`
+			Status       string `json:"status"`
+			OutputS3Path string `json:"outputS3Uri"`
+			StatusReason string `json:"statusReason"`
 		}
 		json.NewDecoder(resp.Body).Decode(&statusResp)
+
+		log.Printf("run %s AMC status=%s", run.ID, statusResp.Status)
 
 		switch statusResp.Status {
 		case "SUCCEEDED", "COMPLETED":
@@ -231,7 +234,20 @@ func (o *orchestrator) checkRunningStatus(ctx context.Context) {
 			log.Printf("run %s SUCCEEDED", run.ID)
 
 		case "FAILED", "ERROR":
-			o.markFailed(ctx, run.ID, "AMC_QUERY_FAILED", "AMC reported failure")
+			reason := statusResp.StatusReason
+			if reason == "" {
+				reason = "AMC reported failure"
+			}
+			o.markFailed(ctx, run.ID, "AMC_QUERY_FAILED", reason)
+			log.Printf("run %s FAILED: %s", run.ID, reason)
+
+		case "REJECTED":
+			reason := statusResp.StatusReason
+			if reason == "" {
+				reason = "AMC rejected query"
+			}
+			o.markFailed(ctx, run.ID, "AMC_QUERY_REJECTED", reason)
+			log.Printf("run %s REJECTED: %s", run.ID, reason)
 
 		case "RUNNING":
 			o.db.Exec(ctx, `UPDATE query_runs SET status='RUNNING', started_at=COALESCE(started_at,NOW()), updated_at=NOW() WHERE id=$1`, run.ID)
