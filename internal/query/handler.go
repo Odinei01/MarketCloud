@@ -84,19 +84,20 @@ func (h *Handler) CreateRun(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.UserIDFromCtx(r.Context())
 
 	var req struct {
-		StoreID             string         `json:"store_id"`
-		AMCInstanceID       string         `json:"amc_instance_id"`
-		AmazonProfileID     string         `json:"amazon_profile_id"`
-		QueryTemplateCode   string         `json:"query_template_code"`
-		RunType             string         `json:"run_type"`
-		Parameters          map[string]any `json:"parameters"`
+		StoreID           string         `json:"store_id"`
+		AMCInstanceID     string         `json:"amc_instance_id"`
+		AmazonProfileID   string         `json:"amazon_profile_id"`
+		QueryTemplateCode string         `json:"query_template_code"`
+		TemplateID        string         `json:"template_id"` // alias for query_template_code (UUID accepted)
+		RunType           string         `json:"run_type"`
+		Parameters        map[string]any `json:"parameters"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
-	if req.StoreID == "" || req.AMCInstanceID == "" || req.QueryTemplateCode == "" {
-		writeError(w, http.StatusBadRequest, "store_id, amc_instance_id, query_template_code required")
+	if req.StoreID == "" {
+		writeError(w, http.StatusBadRequest, "store_id required")
 		return
 	}
 
@@ -108,15 +109,37 @@ func (h *Handler) CreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve template
+	// Auto-lookup amc_instance_id from store when not provided
+	if req.AMCInstanceID == "" {
+		h.db.QueryRow(r.Context(), `
+			SELECT id::text FROM amc_instances WHERE store_id = $1 LIMIT 1
+		`, req.StoreID).Scan(&req.AMCInstanceID)
+	}
+	if req.AMCInstanceID == "" {
+		writeError(w, http.StatusBadRequest, "no AMC instance configured for this store")
+		return
+	}
+
+	// Resolve template: accept query_template_code (string) or template_id (UUID)
 	var tmplID uuid.UUID
-	err := h.db.QueryRow(r.Context(), `
-		SELECT id FROM query_templates
-		WHERE code = $1 AND (tenant_id IS NULL OR tenant_id = $2) AND status = 'ACTIVE'
-		ORDER BY version DESC LIMIT 1
-	`, req.QueryTemplateCode, tenantID).Scan(&tmplID)
+	var err error
+	if req.TemplateID != "" {
+		err = h.db.QueryRow(r.Context(), `
+			SELECT id FROM query_templates
+			WHERE id = $1 AND (tenant_id IS NULL OR tenant_id = $2) AND status = 'ACTIVE'
+		`, req.TemplateID, tenantID).Scan(&tmplID)
+	} else if req.QueryTemplateCode != "" {
+		err = h.db.QueryRow(r.Context(), `
+			SELECT id FROM query_templates
+			WHERE code = $1 AND (tenant_id IS NULL OR tenant_id = $2) AND status = 'ACTIVE'
+			ORDER BY version DESC LIMIT 1
+		`, req.QueryTemplateCode, tenantID).Scan(&tmplID)
+	} else {
+		writeError(w, http.StatusBadRequest, "query_template_code or template_id required")
+		return
+	}
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "QUERY_TEMPLATE_INVALID: code not found")
+		writeError(w, http.StatusBadRequest, "QUERY_TEMPLATE_INVALID: not found")
 		return
 	}
 
