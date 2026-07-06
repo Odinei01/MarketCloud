@@ -111,7 +111,7 @@ func (o *orchestrator) runStatusLoop(ctx context.Context) {
 func (o *orchestrator) processQueued(ctx context.Context) {
 	rows, err := o.db.Query(ctx, `
 		SELECT qr.id, qr.tenant_id, qr.store_id, qr.amc_instance_id,
-		       qr.parameters_json, qt.sql_template
+		       qr.parameters_json, qt.sql_template, qt.code
 		FROM query_runs qr
 		JOIN query_templates qt ON qt.id = qr.query_template_id
 		WHERE qr.status = 'QUEUED'
@@ -131,12 +131,13 @@ func (o *orchestrator) processQueued(ctx context.Context) {
 		AMCInstanceID string
 		Params        json.RawMessage
 		SQLTemplate   string
+		TemplateCode  string
 	}
 
 	var queued []run
 	for rows.Next() {
 		var run run
-		if err := rows.Scan(&run.ID, &run.TenantID, &run.StoreID, &run.AMCInstanceID, &run.Params, &run.SQLTemplate); err == nil {
+		if err := rows.Scan(&run.ID, &run.TenantID, &run.StoreID, &run.AMCInstanceID, &run.Params, &run.SQLTemplate, &run.TemplateCode); err == nil {
 			queued = append(queued, run)
 		}
 	}
@@ -152,6 +153,7 @@ func (o *orchestrator) processQueued(ctx context.Context) {
 			"store_id":        run.StoreID,
 			"amc_instance_id": run.AMCInstanceID,
 			"sql_template":    run.SQLTemplate,
+			"template_code":   run.TemplateCode,
 			"parameters":      params,
 		})
 
