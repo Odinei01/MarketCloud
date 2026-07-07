@@ -216,14 +216,22 @@ func (o *orchestrator) runIngestLoop(ctx context.Context) {
 }
 
 func (o *orchestrator) ingestSucceededRuns(ctx context.Context, cfg dailyIngestConfig) {
+	// Chave de coordenação: bronze_ingested_at IS NULL — NÃO o status. O
+	// modeling-worker consome SUCCEEDED/RESULT_DOWNLOADED e move para
+	// MODELING_COMPLETED; se dependêssemos de status, ele venceria a corrida e
+	// o Bronze nunca seria ingerido. Rastrear por coluna dedicada torna a
+	// ingestão independente do ciclo de vida do run. Recência de 3 dias evita
+	// reprocessar runs antigos (S3 expirado) indefinidamente.
 	rows, err := o.db.Query(ctx, `
 		SELECT qr.id, qr.external_query_execution_id, qr.amc_instance_id, qt.code
 		FROM query_runs qr
 		JOIN query_templates qt ON qt.id = qr.query_template_id
-		WHERE qr.status = 'SUCCEEDED'
+		WHERE qr.bronze_ingested_at IS NULL
 		  AND COALESCE(qr.result_object_path,'') <> ''
 		  AND qr.external_query_execution_id IS NOT NULL
-		ORDER BY qr.finished_at ASC
+		  AND qt.code LIKE 'MC_ZANOM_E0%'
+		  AND qr.created_at > NOW() - INTERVAL '3 days'
+		ORDER BY qr.created_at ASC
 		LIMIT 20
 	`)
 	if err != nil {
@@ -244,18 +252,17 @@ func (o *orchestrator) ingestSucceededRuns(ctx context.Context, cfg dailyIngestC
 	for _, t := range targets {
 		route := ingestRouteForCode(t.code)
 		if route == "" {
-			// não é uma extração bronze conhecida — não bloqueia a fila
-			o.db.Exec(ctx, `UPDATE query_runs SET status='RESULT_DOWNLOADED', updated_at=NOW() WHERE id=$1`, t.id)
+			// não é uma extração bronze com rota (ex.: código fora de e001..e012)
+			// — marca como resolvido para não reprocessar em loop
+			o.db.Exec(ctx, `UPDATE query_runs SET bronze_ingested_at=NOW() WHERE id=$1`, t.id)
 			continue
 		}
 		inserted, err := o.callIngest(ctx, route, t.execID, t.amcInstance, cfg)
 		if err != nil {
 			log.Printf("[daily-ingest] ingest %s (%s) falhou, retry no próximo tick: %v", t.code, route, err)
-			continue // mantém SUCCEEDED para retry
+			continue // deixa bronze_ingested_at NULL para retry
 		}
-		o.db.Exec(ctx, `UPDATE query_runs SET status='RESULT_DOWNLOADED', updated_at=NOW() WHERE id=$1`, t.id)
-		o.db.Exec(ctx, `INSERT INTO query_run_events (query_run_id, status, message) VALUES ($1,'RESULT_DOWNLOADED',$2)`,
-			t.id, fmt.Sprintf("bronze ingest %s rows_affected=%d", route, inserted))
+		o.db.Exec(ctx, `UPDATE query_runs SET bronze_ingested_at=NOW(), updated_at=NOW() WHERE id=$1`, t.id)
 		log.Printf("[daily-ingest] ingerido %s route=%s rows=%d run=%s", t.code, route, inserted, t.id)
 	}
 }
