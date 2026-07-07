@@ -11,8 +11,11 @@ import (
 )
 
 // POST /internal/amc/ingest/e004/{execution_id}
-// Downloads E004 CSV from S3 and upserts into marketcloud_bronze.bronze_amc_hourly_performance.
+// Downloads E004 V2 CSV from S3 and upserts into marketcloud_bronze.bronze_amc_hourly_performance.
 // Body: { "tenant_id", "amc_instance_id", "ads_profile_id" }
+//
+// V2 grain: data_date / event_hour / campaign_id / ad_product_type / ad_group_name.
+// No targeting/match_type — simplified for bid scheduling scorers.
 func (s *connectorServer) ingestE004(w http.ResponseWriter, r *http.Request) {
 	executionID := chi.URLParam(r, "execution_id")
 
@@ -82,9 +85,8 @@ func (s *connectorServer) ingestE004(w http.ResponseWriter, r *http.Request) {
 		campaignID := col(row, "campaign_id")
 		campaignName := col(row, "campaign_name")
 		adProductType := col(row, "ad_product_type")
-		targeting := col(row, "targeting")
 
-		if campaignID == "" || campaignName == "" || adProductType == "" || targeting == "" {
+		if campaignID == "" || campaignName == "" || adProductType == "" {
 			skipped++
 			continue
 		}
@@ -99,24 +101,23 @@ func (s *connectorServer) ingestE004(w http.ResponseWriter, r *http.Request) {
 			dataDate = dataDate[:10]
 		}
 
-		eventHour := toInt64(col(row, "event_hour"))
-
-		matchType := col(row, "match_type")
-		if matchType == "" {
-			matchType = "NO_MATCH_TYPE"
-		}
-
 		adGroupName := col(row, "ad_group_name")
-		adGroupKey := adGroupName
-		if adGroupKey == "" {
-			adGroupKey = "NO_AD_GROUP"
+		if adGroupName == "" {
+			adGroupName = "NO_AD_GROUP"
+		}
+		portfolioID := col(row, "portfolio_id")
+		if portfolioID == "" {
+			portfolioID = "NO_PORTFOLIO"
+		}
+		portfolioName := col(row, "portfolio_name")
+		if portfolioName == "" {
+			portfolioName = "NO_PORTFOLIO"
 		}
 
 		_, err = s.db.Exec(r.Context(), `
 			INSERT INTO marketcloud_bronze.bronze_amc_hourly_performance (
 				tenant_id, amc_instance_id, ads_profile_id, workflow_run_id,
-				data_date, event_hour, campaign_id, campaign_name, ad_product_type,
-				ad_group_name, ad_group_key, targeting, match_type,
+				data_date, event_hour, campaign_id, campaign_name, ad_product_type, ad_group_name,
 				currency_iso_code, purchase_currency,
 				portfolio_id, portfolio_name,
 				activity_rows,
@@ -131,25 +132,23 @@ func (s *connectorServer) ingestE004(w http.ResponseWriter, r *http.Request) {
 				loaded_at
 			) VALUES (
 				$1,$2,$3,$4,
-				$5,$6,$7,$8,$9,
-				$10,$11,$12,$13,
-				$14,$15,
-				$16,$17,
-				$18,
-				$19,$20,$21,$22,$23,
-				$24,$25,$26,$27,$28,
-				$29,$30,
-				$31,$32,
-				$33,$34,
-				$35,$36,
-				$37,$38,
-				$39,$40,$41,$42,$43,
+				$5,$6,$7,$8,$9,$10,
+				$11,$12,
+				$13,$14,
+				$15,
+				$16,$17,$18,$19,$20,
+				$21,$22,$23,$24,$25,
+				$26,$27,
+				$28,$29,
+				$30,$31,
+				$32,$33,
+				$34,$35,
+				$36,$37,$38,$39,$40,
 				NOW()
 			)
-			ON CONFLICT (tenant_id, amc_instance_id, ads_profile_id, data_date, event_hour, campaign_id, ad_product_type, ad_group_key, targeting, match_type)
+			ON CONFLICT (tenant_id, amc_instance_id, ads_profile_id, data_date, event_hour, campaign_id, ad_product_type, ad_group_name)
 			DO UPDATE SET
 				campaign_name        = EXCLUDED.campaign_name,
-				ad_group_name        = EXCLUDED.ad_group_name,
 				currency_iso_code    = EXCLUDED.currency_iso_code,
 				purchase_currency    = EXCLUDED.purchase_currency,
 				portfolio_id         = EXCLUDED.portfolio_id,
@@ -184,10 +183,9 @@ func (s *connectorServer) ingestE004(w http.ResponseWriter, r *http.Request) {
 				loaded_at            = NOW()
 		`,
 			req.TenantID, req.AMCInstanceID, req.AdsProfileID, workflowRunID,
-			dataDate, eventHour, campaignID, campaignName, adProductType,
-			adGroupName, adGroupKey, targeting, matchType,
+			dataDate, toInt64(col(row, "event_hour")), campaignID, campaignName, adProductType, adGroupName,
 			col(row, "currency_iso_code"), col(row, "purchase_currency"),
-			col(row, "portfolio_id"), col(row, "portfolio_name"),
+			portfolioID, portfolioName,
 			toInt64(col(row, "activity_rows")),
 			toInt64(col(row, "impressions")), toInt64(col(row, "clicks")),
 			toFloat(col(row, "spend")),
@@ -205,7 +203,8 @@ func (s *connectorServer) ingestE004(w http.ResponseWriter, r *http.Request) {
 			toFloat(col(row, "conversion_rate")),
 		)
 		if err != nil {
-			log.Printf("ingest e004: upsert error campaign=%s hour=%d date=%s: %v", campaignID, eventHour, dataDate, err)
+			log.Printf("ingest e004: upsert error campaign=%s adgroup=%s hour=%s date=%s: %v",
+				campaignID, adGroupName, col(row, "event_hour"), dataDate, err)
 			skipped++
 			continue
 		}
@@ -220,4 +219,3 @@ func (s *connectorServer) ingestE004(w http.ResponseWriter, r *http.Request) {
 		"status":       "OK",
 	})
 }
-
