@@ -11,3 +11,4 @@ node_modules/
 frontend/dist/
 frontend/dist-codex/
 *.csv
+*.exe
