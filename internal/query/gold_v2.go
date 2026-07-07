@@ -38,6 +38,11 @@ func (h *Handler) GoldReviewQueue(w http.ResponseWriter, r *http.Request) {
 	add("recommendation_status = ", r.URL.Query().Get("status"))
 	add("human_decision_status = ", r.URL.Query().Get("decision"))
 	add("final_action_type = ", r.URL.Query().Get("action"))
+	add("swarm_state = ", r.URL.Query().Get("swarm_state"))
+	// only_new=true: esconde o que o Robô ZANOM já fez (negativa/hora já reduzida)
+	if r.URL.Query().Get("only_new") == "true" {
+		where = append(where, "swarm_state = 'NEW'")
+	}
 
 	sql := `
 		SELECT
@@ -48,8 +53,13 @@ func (h *Handler) GoldReviewQueue(w http.ResponseWriter, r *http.Request) {
 			agreement, action_conflict, recommendation_status,
 			spend::float8 AS spend, clicks::float8 AS clicks, orders::float8 AS orders,
 			sales::float8 AS sales, roas::float8 AS roas,
+			swarm_state, already_negative,
+			current_hour_multiplier::float8 AS current_hour_multiplier,
+			campaign_avg_bid::float8 AS campaign_avg_bid,
+			target_bid::float8 AS target_bid,
+			swarm_roas_35d::float8 AS swarm_roas_35d,
 			human_decision_status, execution_status, decided_by, decided_at
-		FROM marketcloud_gold.gold_review_queue_v2
+		FROM marketcloud_gold.gold_review_queue_actionable_v2
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY priority_rank
 		LIMIT ` + strconv.Itoa(limit)

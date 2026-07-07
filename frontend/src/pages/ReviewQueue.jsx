@@ -16,7 +16,7 @@ export default function ReviewQueue({ ctx }) {
   const [summary, setSummary] = useState([])
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState({ bucket: '', decision: '' })
+  const [filter, setFilter] = useState({ bucket: '', decision: '', only_new: 'true' })
   const [busy, setBusy] = useState('')
 
   const load = useCallback(async () => {
@@ -104,6 +104,11 @@ export default function ReviewQueue({ ctx }) {
           <option value="APPROVED">Aprovadas</option>
           <option value="REJECTED">Rejeitadas</option>
         </select>
+        <label className="toggle" title="Esconde o que o Robô ZANOM já fez (negativa/hora já reduzida)">
+          <input type="checkbox" checked={filter.only_new === 'true'}
+            onChange={e => setFilter(f => ({ ...f, only_new: e.target.checked ? 'true' : '' }))} />
+          só ações novas
+        </label>
         <span className="count-badge">{items.length} itens</span>
       </div>
 
@@ -134,7 +139,15 @@ export default function ReviewQueue({ ctx }) {
                         {it.customer_search_term ? `"${it.customer_search_term}"` : ''}
                       </div>
                     </td>
-                    <td><span className="action-tag">{it.final_action_type}</span></td>
+                    <td>
+                      <span className="action-tag">{it.final_action_type}</span>
+                      {it.target_bid != null && (
+                        <div className="sub2">bid R$ {fmt(it.campaign_avg_bid, 2)} → <b>R$ {fmt(it.target_bid, 2)}</b></div>
+                      )}
+                      {it.swarm_state && it.swarm_state !== 'NEW' && (
+                        <div className="already">{it.swarm_state === 'ALREADY_NEGATIVE' ? '✓ já negativada' : `✓ hora já em ${fmt(it.current_hour_multiplier, 2)}×`}</div>
+                      )}
+                    </td>
                     <td className="num">R$ {fmt(it.spend, 1)}</td>
                     <td className="num">{fmt(it.roas, 2)}</td>
                     <td><span className="risk-dot" style={{ background: RISK_COLORS[it.final_risk_level] }} />{it.final_risk_level}</td>
@@ -206,6 +219,8 @@ export default function ReviewQueue({ ctx }) {
         .decision-badge.APPROVED{background:#26de8133;color:#26de81}
         .decision-badge.REJECTED{background:#ff547033;color:#ff5470}
         .decision-badge.SNOOZED{background:#54a0ff33;color:#54a0ff}
+        .toggle{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted,#8395a7);cursor:pointer}
+        .already{font-size:11px;color:#26de81;margin-top:3px}
         .empty{padding:40px;text-align:center;color:var(--muted,#8395a7)}
       `}</style>
     </div>
