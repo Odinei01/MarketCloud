@@ -68,6 +68,7 @@ func main() {
 	r.Post("/internal/amc/ingest/e003/{execution_id}", s.ingestE003)
 	r.Post("/internal/amc/ingest/e004/{execution_id}", s.ingestE004)
 	r.Post("/internal/amc/ingest/e005/{execution_id}", s.ingestE005)
+	r.Post("/internal/amc/ingest/e006/{execution_id}", s.ingestE006)
 	r.Post("/internal/amazon/token/refresh", s.refreshTokenForStore)
 
 	addr := ":" + cfg.Port
@@ -192,6 +193,18 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 		runPrefix = runPrefix[:8]
 	}
 	workflowID := baseID + "-" + runPrefix + "-" + dateSuffix
+
+	// If the caller passed template_code without an inline sql_template, load it from the DB.
+	if req.SQLTemplate == "" && req.TemplateCode != "" {
+		s.db.QueryRow(r.Context(),
+			`SELECT sql_template FROM query_templates WHERE code = $1 AND status = 'ACTIVE' ORDER BY version DESC LIMIT 1`,
+			req.TemplateCode,
+		).Scan(&req.SQLTemplate)
+		if req.SQLTemplate == "" {
+			writeError(w, http.StatusNotFound, "TEMPLATE_NOT_FOUND: "+req.TemplateCode)
+			return
+		}
+	}
 
 	// Substitute {{param}} placeholders before sending to AMC.
 	// AMC does not support template variables — the SQL must be valid SQL.
