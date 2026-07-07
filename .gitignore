@@ -12,3 +12,7 @@ frontend/dist/
 frontend/dist-codex/
 *.csv
 *.exe
+
+# ML model artifacts (regeneráveis)
+workers/ml-worker/models/
+*.pkl
