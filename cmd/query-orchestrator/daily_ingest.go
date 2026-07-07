@@ -47,6 +47,7 @@ func loadDailyIngestConfig() dailyIngestConfig {
 			"MC_ZANOM_E001", "MC_ZANOM_E002", "MC_ZANOM_E003",
 			"MC_ZANOM_E004", "MC_ZANOM_E005", "MC_ZANOM_E006",
 			"MC_ZANOM_E007", "MC_ZANOM_E008", "MC_ZANOM_E009",
+			"MC_ZANOM_E013",
 		},
 		LookbackDays:  14,
 		RunHourUTC:    9, // 09:00 UTC = 06:00 BRT
@@ -188,7 +189,7 @@ func (o *orchestrator) resolveActiveTemplateID(ctx context.Context, code string)
 
 // ── Auto-ingest ─────────────────────────────────────────────────────────────
 
-var ingestRouteRe = regexp.MustCompile(`^e0(0[1-9]|1[0-2])$`)
+var ingestRouteRe = regexp.MustCompile(`^e0(0[1-9]|1[0-3])$`)
 
 // ingestRouteForCode: MC_ZANOM_E001 -> "e001". "" se não for uma extração bronze.
 func ingestRouteForCode(code string) string {
