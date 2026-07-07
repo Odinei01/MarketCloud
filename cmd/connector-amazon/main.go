@@ -74,6 +74,7 @@ func main() {
 	r.Post("/internal/amc/ingest/e009/{execution_id}", s.ingestE009)
 	r.Post("/internal/amc/ingest/e010/{execution_id}", s.ingestE010)
 	r.Post("/internal/amc/ingest/e011/{execution_id}", s.ingestE011)
+	r.Post("/internal/amc/ingest/e012/{execution_id}", s.ingestE012)
 	r.Post("/internal/amazon/token/refresh", s.refreshTokenForStore)
 
 	addr := ":" + cfg.Port
