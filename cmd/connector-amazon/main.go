@@ -66,6 +66,8 @@ func main() {
 	r.Post("/internal/amc/ingest/e001/{execution_id}", s.ingestE001)
 	r.Post("/internal/amc/ingest/e002/{execution_id}", s.ingestE002)
 	r.Post("/internal/amc/ingest/e003/{execution_id}", s.ingestE003)
+	r.Post("/internal/amc/ingest/e004/{execution_id}", s.ingestE004)
+	r.Post("/internal/amc/ingest/e005/{execution_id}", s.ingestE005)
 	r.Post("/internal/amazon/token/refresh", s.refreshTokenForStore)
 
 	addr := ":" + cfg.Port
@@ -176,18 +178,20 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 	}
 
 	// ── Step 1: Create workflow (register the SQL query) ──────────────────────
-	// WorkflowId includes a date-window suffix so each unique time window gets
-	// its own workflow definition. AMC does not allow changing timeWindowType
-	// after creation, so reusing the same ID would silently ignore the EXPLICIT
-	// type and fall back to MOST_RECENT_DAY.
+	// WorkflowId includes a run-UUID prefix + date-window suffix to guarantee a
+	// brand-new AMC workflow on every run. AMC silently reuses existing workflows
+	// on POST and does not update their timeWindowType; using a unique ID ensures
+	// the EXPLICIT type is respected on first creation.
 	baseID := strings.ToLower(strings.ReplaceAll(req.TemplateCode, "_", "-"))
 	if baseID == "" {
-		baseID = "mc-run-" + req.QueryRunID[:8]
+		baseID = "mc-run"
 	}
-	// Append a short date-window fingerprint (start-end yyyymmdd) so EXPLICIT
-	// workflows are created fresh for each distinct time window.
 	dateSuffix := strings.ReplaceAll(periodStart[:10], "-", "") + "-" + strings.ReplaceAll(periodEnd[:10], "-", "")
-	workflowID := baseID + "-" + dateSuffix
+	runPrefix := req.QueryRunID
+	if len(runPrefix) > 8 {
+		runPrefix = runPrefix[:8]
+	}
+	workflowID := baseID + "-" + runPrefix + "-" + dateSuffix
 
 	// Substitute {{param}} placeholders before sending to AMC.
 	// AMC does not support template variables — the SQL must be valid SQL.
@@ -230,19 +234,27 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Diagnostic GET: log the timeWindowType AMC actually stored for this workflow.
+	getWfReq, _ := amcHeaders("GET", base+"/workflows/"+workflowID, nil)
+	getWfResp, getWfErr := httpClient.Do(getWfReq)
+	if getWfErr == nil {
+		getWfBody, _ := io.ReadAll(getWfResp.Body)
+		getWfResp.Body.Close()
+		log.Printf("amc GET workflow %s status=%d body=%s", workflowID, getWfResp.StatusCode, string(getWfBody))
+	}
+
 	// AMC returns 200 {} on success — workflowId is the one we provided
 	s.db.Exec(r.Context(), `UPDATE query_runs SET amc_workflow_id=$1, updated_at=NOW() WHERE id=$2`,
 		workflowID, req.QueryRunID)
 
 	// ── Step 2: Execute workflow for the requested time window ────────────────
 
-	// First try with explicit time window; if the workflow was created as MOST_RECENT_DAY,
-	// AMC rejects explicit dates — in that case retry without dates.
-	doExec := func(withDates bool) (resp *http.Response, body []byte, err error) {
-		ep := map[string]any{"workflowId": workflowID}
-		if withDates {
-			ep["timeWindowStart"] = periodStart
-			ep["timeWindowEnd"] = periodEnd
+	execWorkflow := func(wfID string) (resp *http.Response, body []byte, err error) {
+		ep := map[string]any{
+			"workflowId":      wfID,
+			"timeWindowType":  "EXPLICIT",
+			"timeWindowStart": periodStart,
+			"timeWindowEnd":   periodEnd,
 		}
 		pl, _ := json.Marshal(ep)
 		req, _ := amcHeaders("POST", base+"/workflowExecutions", bytes.NewReader(pl))
@@ -252,19 +264,36 @@ func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request)
 		}
 		body, _ = io.ReadAll(resp.Body)
 		resp.Body.Close()
-		log.Printf("amc execute workflow withDates=%v status=%d body=%s", withDates, resp.StatusCode, string(body))
+		log.Printf("amc execute workflow wfID=%s status=%d body=%s", wfID, resp.StatusCode, string(body))
 		return
 	}
 
-	execResp, execBody, err := doExec(true)
+	execResp, execBody, err := execWorkflow(workflowID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "AMC_EXECUTE_WORKFLOW_FAILED: "+err.Error())
 		return
 	}
 
-	// Fallback: MOST_RECENT_DAY workflows cannot have explicit dates
+	// Fallback: workflowId was previously created as MOST_RECENT_DAY — cannot use explicit dates.
+	// Create a fresh EXPLICIT workflow with "-ex" suffix and execute that instead.
 	if execResp.StatusCode >= 400 && strings.Contains(string(execBody), "MOST_RECENT_DAY") {
-		execResp, execBody, err = doExec(false)
+		explicitID := workflowID + "-ex"
+		log.Printf("amc: workflow %s is MOST_RECENT_DAY, creating new explicit workflow %s", workflowID, explicitID)
+		exPayload, _ := json.Marshal(map[string]any{
+			"workflowId":     explicitID,
+			"sqlQuery":       resolvedSQL,
+			"timeWindowType": "EXPLICIT",
+		})
+		exReq, _ := amcHeaders("POST", base+"/workflows", bytes.NewReader(exPayload))
+		exWfResp, exWfErr := httpClient.Do(exReq)
+		if exWfErr == nil {
+			exWfBody, _ := io.ReadAll(exWfResp.Body)
+			exWfResp.Body.Close()
+			log.Printf("amc create explicit fallback workflow status=%d body=%s", exWfResp.StatusCode, string(exWfBody))
+		}
+		s.db.Exec(r.Context(), `UPDATE query_runs SET amc_workflow_id=$1, updated_at=NOW() WHERE id=$2`,
+			explicitID, req.QueryRunID)
+		execResp, execBody, err = execWorkflow(explicitID)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "AMC_EXECUTE_WORKFLOW_FAILED: "+err.Error())
 			return
