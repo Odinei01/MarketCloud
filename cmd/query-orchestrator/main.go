@@ -48,6 +48,8 @@ func main() {
 	// Start background workers
 	go o.runSubmitLoop(ctx)
 	go o.runStatusLoop(ctx)
+	go o.runDailyEnqueueLoop(ctx) // enfileira E001..E009 1x/dia (janela deslizante)
+	go o.runIngestLoop(ctx)       // auto-ingest de runs SUCCEEDED -> bronze
 
 	// HTTP for health + manual trigger
 	r := chi.NewRouter()
