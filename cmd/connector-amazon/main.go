@@ -3,14 +3,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
+
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -57,6 +62,9 @@ func main() {
 	r.Post("/internal/amc/submit", s.submitAMCQuery)
 	r.Get("/internal/amc/status/{execution_id}", s.getQueryStatus)
 	r.Post("/internal/amc/download", s.downloadResult)
+	r.Get("/internal/amc/result/{execution_id}", s.fetchResultCSV)
+	r.Post("/internal/amc/ingest/e001/{execution_id}", s.ingestE001)
+	r.Post("/internal/amc/ingest/e002/{execution_id}", s.ingestE002)
 	r.Post("/internal/amazon/token/refresh", s.refreshTokenForStore)
 
 	addr := ":" + cfg.Port
@@ -443,6 +451,144 @@ func (s *connectorServer) refreshLWAToken(ctx context.Context, refreshToken stri
 	return body.AccessToken, expiry, nil
 }
 
+// GET /internal/amc/result/{execution_id}
+// Downloads the CSV result from S3 using SigV4 signing (stdlib only, no AWS SDK).
+// The execution_id is the AMC workflowExecutionId stored in external_query_execution_id.
+func (s *connectorServer) fetchResultCSV(w http.ResponseWriter, r *http.Request) {
+	executionID := chi.URLParam(r, "execution_id")
+
+	var s3Path string
+	err := s.db.QueryRow(r.Context(), `
+		SELECT COALESCE(result_object_path, '')
+		FROM query_runs
+		WHERE external_query_execution_id = $1
+	`, executionID).Scan(&s3Path)
+	if err != nil || s3Path == "" {
+		writeError(w, http.StatusNotFound, "RESULT_NOT_FOUND")
+		return
+	}
+
+	// Parse s3://bucket/key
+	path := strings.TrimPrefix(s3Path, "s3://")
+	idx := strings.IndexByte(path, '/')
+	if idx < 0 {
+		writeError(w, http.StatusInternalServerError, "INVALID_S3_PATH")
+		return
+	}
+	bucket := path[:idx]
+	key := path[idx+1:]
+
+	region := s.cfg.AWSRegion
+	if region == "" {
+		region = "us-east-1"
+	}
+	s3URL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucket, region, key)
+
+	now := time.Now().UTC()
+	dateTime := now.Format("20060102T150405Z")
+	date := now.Format("20060102")
+
+	req, _ := http.NewRequestWithContext(r.Context(), "GET", s3URL, nil)
+
+	// SigV4 signing — canonical URI must use the percent-encoded path that
+	// Go's HTTP client will actually transmit (req.URL.EscapedPath()).
+	payloadHash := sha256Hex("") // empty body for GET
+	req.Header.Set("x-amz-date", dateTime)
+	req.Header.Set("x-amz-content-sha256", payloadHash)
+	req.Header.Set("host", fmt.Sprintf("%s.s3.%s.amazonaws.com", bucket, region))
+
+	canonicalHeaders := fmt.Sprintf("host:%s.s3.%s.amazonaws.com\nx-amz-content-sha256:%s\nx-amz-date:%s\n",
+		bucket, region, payloadHash, dateTime)
+	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+
+	// SigV4 canonical URI: encode everything except unreserved chars (A-Z a-z 0-9 - _ . ~)
+	// and path separator /. Go's url.EscapedPath() leaves = and : unencoded (RFC 3986
+	// allows them in paths), but SigV4 requires them encoded.
+	canonicalRequest := strings.Join([]string{
+		"GET",
+		sigv4URIPath(key),
+		"", // no query string
+		canonicalHeaders,
+		signedHeaders,
+		payloadHash,
+	}, "\n")
+
+	scope := strings.Join([]string{date, region, "s3", "aws4_request"}, "/")
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		dateTime,
+		scope,
+		sha256Hex(canonicalRequest),
+	}, "\n")
+
+	signingKey := hmacSHA256(
+		hmacSHA256(
+			hmacSHA256(
+				hmacSHA256([]byte("AWS4"+s.cfg.AWSSecretAccessKey), date),
+				region,
+			),
+			"s3",
+		),
+		"aws4_request",
+	)
+	signature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
+
+	req.Header.Set("Authorization", fmt.Sprintf(
+		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=%s",
+		s.cfg.AWSAccessKeyID, scope, signature,
+	))
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "S3_FETCH_FAILED: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("s3 fetch status=%d body=%s", resp.StatusCode, string(body))
+		writeError(w, resp.StatusCode, fmt.Sprintf("S3_FETCH_FAILED: http %d", resp.StatusCode))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.csv"`, executionID))
+	w.WriteHeader(http.StatusOK)
+	io.Copy(w, resp.Body)
+}
+
+// sigv4URIPath returns the SigV4 canonical URI for an S3 key.
+// SigV4 encodes all characters except unreserved (A-Z a-z 0-9 - _ . ~) and /.
+func sigv4URIPath(key string) string {
+	var b strings.Builder
+	b.WriteByte('/')
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == '~' || c == '/' {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+func hmacSHA256(key []byte, data string) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write([]byte(data))
+	return h.Sum(nil)
+}
+
+var _ = sort.Strings // ensure import used
+
 func jsonReader(b []byte) io.Reader {
 	return jsonBody{data: b, pos: 0}
 }
@@ -473,22 +619,20 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 
 var _ = uuid.UUID{} // ensure import used
 
-// substituteAMCParams replaces {{param}} placeholders in the SQL template
-// with actual values. AMC does not support template variables — the SQL must
-// be valid SQL before being submitted.
+// substituteAMCParams replaces {{param}} and ${param} placeholders in the SQL template.
 //
-// Period dates use date-only format for SQL WHERE clauses (AMC accepts DATE literals).
-// Scalar params (spend, roas, clicks) use their numeric representation.
-// SQL-fragment params (campaign_filter, asin_filter) default to empty string.
+// Two syntaxes are supported:
+//   - {{param}} — value is auto-quoted for SQL (dates get 'YYYY-MM-DD', strings get 'val')
+//   - ${param}  — raw substitution, no extra quoting; the template owns all SQL syntax
+//
+// The ${...} syntax is used for templates that embed values inside SQL literals themselves,
+// e.g. TIMESTAMP '${period_start_ts}' or CAST(${min_spend} AS DOUBLE).
 func substituteAMCParams(sqlTpl string, params map[string]any, periodStart, periodEnd string) string {
-	// Date in SQL-friendly format (strip the time component for WHERE clauses)
-	pStart := "'" + periodStart[:10] + "'"
-	pEnd := "'" + periodEnd[:10] + "'"
-
-	defaults := map[string]string{
-		"period_start":          pStart,
-		"period_end":            pEnd,
-		"today":                 pEnd,
+	// {{...}} defaults — auto-quoted where appropriate
+	quoted := map[string]string{
+		"period_start":          "'" + periodStart[:10] + "'",
+		"period_end":            "'" + periodEnd[:10] + "'",
+		"today":                 "'" + periodEnd[:10] + "'",
 		"min_spend":             "30.0",
 		"min_spend_hour":        "5.0",
 		"target_roas":           "5.0",
@@ -507,33 +651,57 @@ func substituteAMCParams(sqlTpl string, params map[string]any, periodStart, peri
 		"store_id":              "'zanom-brasil'",
 	}
 
-	// Override defaults with caller-supplied params
+	// ${...} defaults — raw values, no quoting (template handles SQL syntax)
+	// period_start_ts / period_end_ts: datetime string matching AMC TIMESTAMP literal format.
+	pStartTS := strings.ReplaceAll(periodStart, "T", " ")
+	if len(pStartTS) > 19 {
+		pStartTS = pStartTS[:19]
+	}
+	pEndTS := strings.ReplaceAll(periodEnd, "T", " ")
+	if len(pEndTS) > 19 {
+		pEndTS = pEndTS[:19]
+	}
+	raw := map[string]string{
+		"period_start_ts": pStartTS,
+		"period_end_ts":   pEndTS,
+		"min_spend":       "30.0",
+		"min_spend_hour":  "5.0",
+		"target_roas":     "5.0",
+		"min_clicks":      "8",
+		"min_impressions": "100",
+		"min_orders_exact": "1",
+	}
+
+	// Override both maps with caller-supplied params
 	for k, v := range params {
 		if k == "lookback_days" {
-			continue // already consumed to compute period_start/end
+			continue
 		}
 		switch val := v.(type) {
 		case float64:
-			defaults[k] = fmt.Sprintf("%g", val)
+			s := fmt.Sprintf("%g", val)
+			quoted[k] = s
+			raw[k] = s
 		case int:
-			defaults[k] = fmt.Sprintf("%d", val)
+			s := fmt.Sprintf("%d", val)
+			quoted[k] = s
+			raw[k] = s
 		case string:
 			if val != "" {
-				defaults[k] = "'" + strings.ReplaceAll(val, "'", "''") + "'"
+				quoted[k] = "'" + strings.ReplaceAll(val, "'", "''") + "'"
+				raw[k] = val // raw: no extra quoting
 			}
 		}
 	}
 
 	result := sqlTpl
-	for k, v := range defaults {
+	// Apply ${...} substitutions first (raw)
+	for k, v := range raw {
+		result = strings.ReplaceAll(result, "${"+k+"}", v)
+	}
+	// Apply {{...}} substitutions (auto-quoted)
+	for k, v := range quoted {
 		result = strings.ReplaceAll(result, "{{"+k+"}}", v)
 	}
-
-	// Best-effort AMC SQL dialect fixes:
-	// SAFE_DIVIDE(a, b) → (CAST(a AS DOUBLE) / NULLIF(b, 0.0)) is not trivially
-	// replaceable with regex due to nested parens, so we leave it as-is.
-	// Queries using SAFE_DIVIDE will fail in AMC if AMC doesn't support it —
-	// AMC errors will surface in query_runs.error_message after polling.
-
 	return result
 }

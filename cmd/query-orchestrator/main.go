@@ -225,7 +225,7 @@ func (o *orchestrator) checkRunningStatus(ctx context.Context) {
 		log.Printf("run %s AMC status=%s", run.ID, statusResp.Status)
 
 		switch statusResp.Status {
-		case "SUCCEEDED", "COMPLETED":
+		case "SUCCEEDED", "COMPLETED", "MODELING_COMPLETED":
 			o.db.Exec(ctx, `
 				UPDATE query_runs SET status='SUCCEEDED', finished_at=NOW(), result_object_path=$1, updated_at=NOW()
 				WHERE id=$2
