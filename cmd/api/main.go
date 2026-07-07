@@ -127,6 +127,15 @@ func main() {
 		r.Post("/{id}/reject", queryH.RejectRecommendation)
 	})
 
+	// --- Gold Layer V2 cockpit + feedback loop ---
+	r.Route("/api/v1/gold", func(r chi.Router) {
+		r.Use(auth, tenantIso)
+		r.Get("/review-queue", queryH.GoldReviewQueue)
+		r.Get("/action-summary", queryH.GoldActionSummary)
+		r.Get("/campaign-plans", queryH.GoldCampaignPlans)
+		r.Post("/review-queue/{id}/decision", queryH.GoldDecide)
+	})
+
 	// --- External API (API clients / SWARM) ---
 	r.Route("/api/v1/external", func(r chi.Router) {
 		r.Use(auth, tenantIso)

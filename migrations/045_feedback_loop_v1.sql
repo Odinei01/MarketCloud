@@ -125,8 +125,10 @@ CREATE INDEX IF NOT EXISTS idx_rec_outcomes_rec   ON marketcloud_recommendations
 -- 3) G015 v2 — fila de revisão com status REAL da decisão (join)
 --    Substitui os hardcodes NOT_DECIDED/NOT_EXECUTED da migração 044.
 -- ---------------------------------------------------------------------
-CREATE OR REPLACE VIEW marketcloud_gold.gold_review_queue_v2 AS
+DROP VIEW IF EXISTS marketcloud_gold.gold_review_queue_v2 CASCADE;
+CREATE VIEW marketcloud_gold.gold_review_queue_v2 AS
 SELECT
+    p.tenant_id, p.amc_instance_id, p.ads_profile_id,
     p.recommendation_id, p.priority_rank, p.priority_bucket, p.priority_score,
     p.entity_type, p.entity_key,
     p.campaign_id, p.campaign_name, p.ad_product_type, p.ad_group_name, p.event_hour, p.customer_search_term,

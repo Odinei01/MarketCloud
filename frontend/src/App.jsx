@@ -3,11 +3,12 @@ import { api, getToken, setToken } from './api/client.js'
 import Login from './pages/Login.jsx'
 import Queries from './pages/Queries.jsx'
 import Settings from './pages/Settings.jsx'
+import ReviewQueue from './pages/ReviewQueue.jsx'
 
 export default function App() {
   const [authed, setAuthed]   = useState(!!getToken())
   const [me, setMe]           = useState(null)
-  const [page, setPage]       = useState('queries')
+  const [page, setPage]       = useState('cockpit')
   const [stores, setStores]   = useState([])
   const [storeID, setStoreID] = useState('')
 
@@ -72,6 +73,9 @@ export default function App() {
         </div>
 
         <nav className="nav" style={{ marginTop: 24 }}>
+          <button className={page === 'cockpit' ? 'active' : ''} onClick={() => setPage('cockpit')}>
+            <span>◆  Cockpit</span><span className="dot" />
+          </button>
           <button className={page === 'queries' ? 'active' : ''} onClick={() => setPage('queries')}>
             <span>◉  AMC Queries</span><span className="dot" />
           </button>
@@ -88,6 +92,7 @@ export default function App() {
       </aside>
 
       <main className="main">
+        {page === 'cockpit'  && <ReviewQueue ctx={ctx} key={`cockpit-${storeID}`} />}
         {page === 'queries'  && <Queries  ctx={ctx} key={`queries-${storeID}`} />}
         {page === 'settings' && <Settings ctx={ctx} key={`settings-${storeID}`} />}
       </main>
