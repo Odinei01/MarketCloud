@@ -53,6 +53,7 @@ func (h *Handler) GoldReviewQueue(w http.ResponseWriter, r *http.Request) {
 			agreement, action_conflict, recommendation_status,
 			spend::float8 AS spend, clicks::float8 AS clicks, orders::float8 AS orders,
 			sales::float8 AS sales, roas::float8 AS roas,
+			campaign_status, ad_group_status, swarm_entity_status,
 			swarm_state, already_negative,
 			current_hour_multiplier::float8 AS current_hour_multiplier,
 			campaign_avg_bid::float8 AS campaign_avg_bid,

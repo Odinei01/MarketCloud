@@ -96,6 +96,9 @@ services:
       PORT: "8092"
       ENV: development
       CONNECTOR_URL: "http://connector-amazon:8091"
+      SWARM_SYNC_ENABLED: "true"
+      SWARM_SYNC_INTERVAL_MINUTES: "60"
+      SWARM_SYNC_RUN_IMMEDIATELY: "true"
     depends_on:
       postgres:
         condition: service_healthy

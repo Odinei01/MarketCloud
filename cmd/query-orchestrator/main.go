@@ -20,9 +20,9 @@ import (
 // In production, replace the polling loop with Redis Streams or RabbitMQ.
 
 type orchestrator struct {
-	db           *pgxpool.Pool
-	cfg          config.Config
-	httpClient   *http.Client
+	db         *pgxpool.Pool
+	cfg        config.Config
+	httpClient *http.Client
 }
 
 func main() {
@@ -50,6 +50,7 @@ func main() {
 	go o.runStatusLoop(ctx)
 	go o.runDailyEnqueueLoop(ctx) // enfileira E001..E009 1x/dia (janela deslizante)
 	go o.runIngestLoop(ctx)       // auto-ingest de runs SUCCEEDED -> bronze
+	go o.runSwarmSyncLoop(ctx)    // sync do estado SWARM/ZANOM -> bronze local
 
 	// HTTP for health + manual trigger
 	r := chi.NewRouter()
