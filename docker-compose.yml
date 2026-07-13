@@ -1,5 +1,13 @@
 version: "3.9"
 
+# Teto de log para TODO container: evita que um crash-loop encha o vhdx do WSL2
+# (incidente: marketcloud_connector gerou um json-log de ~194 GB e travou o disco).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -13,11 +21,13 @@ services:
     volumes:
       - marketcloud_pgdata:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mcadmin -d marketcloud"]
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -26,37 +36,58 @@ services:
       - "6380:6379"
     volumes:
       - marketcloud_redisdata:/data
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   api:
     build:
       context: .
       dockerfile: Dockerfile.api
     container_name: marketcloud_api
+    logging: *default-logging
     ports:
       - "8090:8090"
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgres://mcadmin:mcsecret@postgres:5432/marketcloud?sslmode=disable
       REDIS_URL: redis://redis:6379
       JWT_SECRET: change-me-in-production-32chars!!
       PORT: "8090"
       ENV: development
+      # LWA token refresh for Ads subscription setup
+      AMAZON_LWA_CLIENT_ID: "${AMAZON_LWA_CLIENT_ID}"
+      AMAZON_LWA_CLIENT_SECRET: "${AMAZON_LWA_CLIENT_SECRET}"
+      AMAZON_LWA_TOKEN_URL: "https://api.amazon.com/auth/o2/token"
+      AMAZON_ADS_API_URL: "https://advertising-api.amazon.com"
+      AMAZON_ADS_PROFILE_ID: "3084626225435227"
+      # Amazon Marketing Stream SQS consumer
+      STREAM_CONSUMER_ENABLED: "${STREAM_CONSUMER_ENABLED:-false}"
+      STREAM_SQS_URL_TRAFFIC: "${STREAM_SQS_URL_TRAFFIC:-}"
+      STREAM_SQS_URL_CONVERSION: "${STREAM_SQS_URL_CONVERSION:-}"
+      STREAM_DEFAULT_STORE_ID: "${STREAM_DEFAULT_STORE_ID:-}"
+      STREAM_EVENT_TIMEZONE: "${STREAM_EVENT_TIMEZONE:-America/Sao_Paulo}"
+      STREAM_AWS_ACCESS_KEY_ID: "${STREAM_AWS_ACCESS_KEY_ID:-}"
+      STREAM_AWS_SECRET_ACCESS_KEY: "${STREAM_AWS_SECRET_ACCESS_KEY:-}"
+      AWS_REGION: "us-east-1"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: on-failure
+    restart: unless-stopped
 
   connector-amazon:
     build:
       context: .
       dockerfile: Dockerfile.connector
     container_name: marketcloud_connector
+    logging: *default-logging
     ports:
       - "8091:8091"
     env_file:
@@ -81,13 +112,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: on-failure
+    restart: unless-stopped
 
   query-orchestrator:
     build:
       context: .
       dockerfile: Dockerfile.orchestrator
     container_name: marketcloud_orchestrator
+    logging: *default-logging
     ports:
       - "8092:8092"
     environment:
@@ -99,26 +131,44 @@ services:
       SWARM_SYNC_ENABLED: "true"
       SWARM_SYNC_INTERVAL_MINUTES: "60"
       SWARM_SYNC_RUN_IMMEDIATELY: "true"
+      AMS_HOURLY_REFRESH_ENABLED: "true"
+      AMS_HOURLY_REFRESH_INTERVAL_MINUTES: "60"
+      AMS_HOURLY_REFRESH_RUN_IMMEDIATELY: "true"
+      AMS_HOURLY_REFRESH_LOOKBACK_DAYS: "14"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: on-failure
+    restart: unless-stopped
 
   modeling-worker:
     build:
-      context: ./workers/modeling-worker
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: workers/modeling-worker/Dockerfile
     container_name: marketcloud_modeling_worker
+    logging: *default-logging
     environment:
       DATABASE_URL: postgres://mcadmin:mcsecret@postgres:5432/marketcloud?sslmode=disable
       ENV: development
+      HOURLY_REAL_ML_ENABLED: "${HOURLY_REAL_ML_ENABLED:-true}"
+      HOURLY_REAL_ML_INTERVAL_MINUTES: "${HOURLY_REAL_ML_INTERVAL_MINUTES:-60}"
+      HOURLY_REAL_ML_RUN_IMMEDIATELY: "${HOURLY_REAL_ML_RUN_IMMEDIATELY:-true}"
+      ML_AUTO_APPLY_CAMPAIGN_ENABLED: "${ML_AUTO_APPLY_CAMPAIGN_ENABLED:-true}"
+      ML_AUTO_APPLY_DRY_RUN: "${ML_AUTO_APPLY_DRY_RUN:-false}"
+      ML_AUTO_APPLY_MAX_PER_RUN: "${ML_AUTO_APPLY_MAX_PER_RUN:-10}"
+      ML_AUTO_APPLY_CONFIDENCE: "${ML_AUTO_APPLY_CONFIDENCE:-HIGH,MEDIUM}"
+      ML_FULL_AUTO_CAMPAIGN_IDS: "${ML_FULL_AUTO_CAMPAIGN_IDS:-}"
+      ML_FULL_AUTO_CAMPAIGN_NAMES: "${ML_FULL_AUTO_CAMPAIGN_NAMES:-}"
+      ML_FULL_AUTO_REQUIRE_ALLOWLIST: "${ML_FULL_AUTO_REQUIRE_ALLOWLIST:-true}"
+      BID_ROBOT_API_BASE: "${BID_ROBOT_API_BASE:-http://host.docker.internal:8080}"
     depends_on:
       postgres:
         condition: service_healthy
-    restart: on-failure
+    restart: unless-stopped
 
 volumes:
   marketcloud_pgdata:
   marketcloud_redisdata:
+
+

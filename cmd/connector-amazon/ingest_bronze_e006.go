@@ -77,8 +77,12 @@ func (s *connectorServer) ingestE006(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			log.Printf("ingest e006: csv read error: %v", err)
-			continue
+			if _, ok := err.(*csv.ParseError); ok {
+				log.Printf("ingest e006: csv parse error (linha ignorada): %v", err)
+				continue
+			}
+			log.Printf("ingest e006: csv read abortado (I/O), parando: %v", err)
+			break
 		}
 
 		campaignID := col(row, "campaign_id")

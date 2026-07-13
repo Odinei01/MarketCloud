@@ -86,8 +86,12 @@ func (s *connectorServer) ingestE012(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			log.Printf("ingest e012: csv read error: %v", err)
-			continue
+			if _, ok := err.(*csv.ParseError); ok {
+				log.Printf("ingest e012: csv parse error (linha ignorada): %v", err)
+				continue
+			}
+			log.Printf("ingest e012: csv read abortado (I/O), parando: %v", err)
+			break
 		}
 
 		asin := col(row, "asin")

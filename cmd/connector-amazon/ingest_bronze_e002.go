@@ -77,8 +77,12 @@ func (s *connectorServer) ingestE002(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			log.Printf("ingest e002: csv read error: %v", err)
-			continue
+			if _, ok := err.(*csv.ParseError); ok {
+				log.Printf("ingest e002: csv parse error (linha ignorada): %v", err)
+				continue
+			}
+			log.Printf("ingest e002: csv read abortado (I/O), parando: %v", err)
+			break
 		}
 
 		campaignID := col(row, "campaign_id")
@@ -258,7 +262,15 @@ func (s *connectorServer) downloadS3CSV(r *http.Request, s3Path string) (*http.R
 		s.cfg.AWSAccessKeyID, scope, sig,
 	))
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	// Sem teto TOTAL de request: um CSV grande-porém-saudável não pode ser cortado
+	// no meio da leitura do corpo (foi a raiz do incidente do log de 194 GB — o
+	// Timeout de 120s cancelava a conexão durante um download lento). Em vez disso,
+	// timeouts por FASE: dial/TLS (do DefaultTransport), cabeçalho de resposta e
+	// conexão ociosa. Um servidor travado ainda falha rápido; um corpo grande, não.
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = 60 * time.Second
+	tr.IdleConnTimeout = 90 * time.Second
+	client := &http.Client{Transport: tr}
 	resp, err := client.Do(s3Req)
 	if err != nil {
 		return nil, fmt.Errorf("S3_FETCH_FAILED: %w", err)

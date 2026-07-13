@@ -86,8 +86,12 @@ func (s *connectorServer) ingestE010(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			log.Printf("ingest e010: csv read error: %v", err)
-			continue
+			if _, ok := err.(*csv.ParseError); ok {
+				log.Printf("ingest e010: csv parse error (linha ignorada): %v", err)
+				continue
+			}
+			log.Printf("ingest e010: csv read abortado (I/O), parando: %v", err)
+			break
 		}
 
 		rawDate := col(row, "store_event_date")

@@ -16,7 +16,7 @@
 --   E004 hourly .............. 51
 --   E002 target ............... 8
 --   E003 search term .......... 3
---   E005 product ASIN ......... 0   (filtro tracked_asin — ver E005 abaixo)
+--   E005 product ASIN ..... 10548  (RESOLVIDO 2026-07-13: bronze=silver=10548, 05-31..07-12)
 --
 -- Ajuste o time window do workflow AMC para 2026-05-31 .. 2026-07-07.
 -- =====================================================================
@@ -93,10 +93,13 @@ GROUP BY traffic_event_date;
 
 
 -- ─────────────────────────────────────────────────────────────────────
--- E005 — Product ASIN daily  (nosso bronze = 0 — investigar)
--- Escopo: exige tracked_asin IS NOT NULL. Rode a query 1 e a 2:
---   se query 2 (sem tracked_asin) >> query 1, o filtro tracked_asin
---   está zerando o extrato -> bug de escopo a corrigir.
+-- E005 — Product ASIN daily  (RESOLVIDO 2026-07-13)
+-- bronze_amc_product_asin_daily = silver_product_asin_daily = 10548 linhas (05-31..07-12),
+-- ingerindo diariamente (todo run MODELING_COMPLETED com bronze_ingested_at). O E005 NÃO
+-- filtra por tracked_asin (migration 019: "no join com tracked_asin, avoids spend duplication")
+-- — esse filtro pertence ao E008/E009, não ao E005. A antiga suspeita de "bronze=0 por
+-- filtro tracked_asin" era artefato desta validação e não se aplica. Queries abaixo ficam
+-- só como referência histórica.
 -- ─────────────────────────────────────────────────────────────────────
 -- (1) com o filtro atual do extrato:
 SELECT conversion_event_date, campaign_id, ad_product_type, tracked_asin,
