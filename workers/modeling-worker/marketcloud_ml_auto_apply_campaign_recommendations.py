@@ -84,11 +84,22 @@ def load_candidates(conn):
                 WHERE campaign_id IS NOT NULL
                 GROUP BY lower(trim(campaign_name))
             )
-            SELECT r.*, c.campaign_id,
+            -- O ALVO VEM DO ML (migration 073), nao do "atual + 0.3" da v1.
+            -- A v1 sugere LEAST(1.0, mult_min + 0.3): empurra toda hora que o ML
+            -- aprova pra lance cheio, sem nuance, e o alvo se move a cada
+            -- aplicacao (calculado sobre o multiplicador atual). O alvo do ML e
+            -- absoluto e por hora: aplicou, alinhou, acabou.
+            SELECT r.recommendation_id, r.campaign_name, r.event_hour, r.action_type,
+                   r.current_multiplier, r.confidence, r.priority_score, r.roas, r.orders,
+                   r.ml_good_hour, r.ml_agrees, r.ml_conversion_probability, r.ml_expected_roas,
+                   t.ml_multiplier AS suggested_multiplier,
+                   c.campaign_id,
                    COALESCE(i.tenant_id, 'zanom') AS tenant_id,
                    COALESCE(i.amc_instance_id, 'amcoo5vzswt') AS amc_instance_id,
                    COALESCE(i.ads_profile_id, '3084626225435227') AS ads_profile_id
             FROM marketcloud_gold.gold_hourly_recommendations_v1 r
+            JOIN marketcloud_gold.gold_hourly_ml_target_multiplier t
+              ON t.campaign_name = r.campaign_name AND t.event_hour = r.event_hour
             LEFT JOIN campaign_ids c ON c.campaign_norm = lower(trim(r.campaign_name))
             LEFT JOIN LATERAL (
                 SELECT tenant_id, amc_instance_id, ads_profile_id
@@ -100,7 +111,9 @@ def load_candidates(conn):
               AND r.rules_still_need_change > 0
               AND r.ml_good_hour IS TRUE
               AND r.ml_agrees IS TRUE
-              AND r.suggested_multiplier > r.current_multiplier
+              -- so SOBE, e so quando o alvo do ML de fato pede mais que o atual.
+              -- A faixa morta de 0.05 evita aplicar micro-ajuste sozinho.
+              AND t.ml_multiplier > r.current_multiplier + 0.05
             ORDER BY r.priority_score DESC NULLS LAST, r.computed_at DESC
             LIMIT %s
             """,
@@ -196,7 +209,7 @@ def record_decision(conn, row, response):
                 f"{row.get('campaign_name','')}:{row.get('event_hour')}", row.get("campaign_id") or "", row.get("campaign_name"),
                 int(row["event_hour"]), row["action_type"], float(row["suggested_multiplier"]),
                 float(row.get("priority_score") or 0), row.get("confidence"), row.get("confidence"), float(row.get("ml_conversion_probability") or 0),
-                json.dumps({"source": "gold_hourly_recommendations_v1", "roas": float(row.get("roas") or 0), "orders": int(row.get("orders") or 0)}),
+                json.dumps({"source": "gold_hourly_ml_target_multiplier(prior=ML)+gold_hourly_recommendations_v1(gatilho)", "roas": float(row.get("roas") or 0), "orders": int(row.get("orders") or 0)}),
                 json.dumps({"ml_good_hour": row.get("ml_good_hour"), "ml_agrees": row.get("ml_agrees"), "ml_conversion_probability": float(row.get("ml_conversion_probability") or 0), "ml_expected_roas": float(row.get("ml_expected_roas") or 0)}),
                 json.dumps({"bid_robot_response": response, "current_multiplier": float(row.get("current_multiplier") or 0), "suggested_multiplier": float(row.get("suggested_multiplier") or 0)}),
                 row["action_type"], float(row["suggested_multiplier"]), "Aplicado automaticamente pelo ML apos concordancia do modelo com a recomendacao.",
