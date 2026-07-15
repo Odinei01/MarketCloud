@@ -48,47 +48,91 @@ export default function KeywordHorarios({ ctx }) {
 
   useEffect(() => { load() }, [load])
 
-  const [applyBusy, setApplyBusy] = useState('')
   const [applyResult, setApplyResult] = useState({})
+  const [selected, setSelected] = useState(() => new Set())
+  const [progress, setProgress] = useState(null) // {done, total} enquanto aplica
 
-  const applyPin = async (item) => {
-    const key = item.keyword_hour_recommendation_id
+  // So acao de lance da pra aplicar; KEEP_STRONG nao muda nada.
+  const isApplicable = (item) => ['BID_UP', 'BID_DOWN', 'CUT_HOUR'].includes(item.campaign_action_type)
+  const applicable = items.filter(isApplicable)
+  const selectedItems = applicable.filter(i => selected.has(i.keyword_hour_recommendation_id))
+  const allSelected = applicable.length > 0 && selectedItems.length === applicable.length
+
+  // Recarregar troca a lista: descarta selecao de linha que sumiu.
+  useEffect(() => {
+    setSelected(prev => {
+      const vivos = new Set(applicable.map(i => i.keyword_hour_recommendation_id))
+      const next = new Set([...prev].filter(id => vivos.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [items]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleOne = (id) => setSelected(prev => {
+    const next = new Set(prev)
+    next.has(id) ? next.delete(id) : next.add(id)
+    return next
+  })
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(applicable.map(i => i.keyword_hour_recommendation_id)))
+
+  const statusMsg = (st) => ({
+    APPLIED: '✅ Aplicado',
+    ALREADY_ALIGNED: '↔️ Ja estava nesse valor',
+    KEYWORD_NOT_FOUND: '⚠️ Keyword nao existe no robo',
+    KEYWORD_NOT_ENABLED: '⚠️ Keyword nao esta ativa',
+    PUBLISH_FAILED: '⚠️ Falhou ao publicar a agenda',
+  })[st] || `⚠️ ${st}`
+
+  const applyOne = async (item) => {
+    const res = await fetch(`${BID_ROBOT_API_BASE}/api/amazon/ads/bid-robot/schedules/apply-suggestion-entity`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        campaign_id: item.campaign_id, ad_group_id: item.ad_group_id,
+        keyword_text: item.keyword_text, match_type: item.match_type,
+        campaign_name: item.campaign_name,
+        hour: Number(item.event_hour),
+        suggested_multiplier: Number(item.suggested_hour_multiplier),
+        recommendation_id: item.keyword_hour_recommendation_id,
+        base_bid: item.base_bid, suggested_effective_bid: item.suggested_effective_bid,
+        baseline_impressions: item.impressions, baseline_clicks: item.clicks,
+        baseline_spend: item.spend, baseline_orders: item.orders,
+        baseline_sales: item.sales, baseline_roas: item.roas,
+      }),
+    })
+    const data = await res.json().catch(() => ({}))
+    return data.status || `HTTP ${res.status}`
+  }
+
+  const applySelected = async () => {
+    if (selectedItems.length === 0 || progress) return
     const ok = window.confirm(
-      `Fixar "${item.keyword_text}" as ${item.event_hour}h em ${fmt(item.suggested_hour_multiplier, 2)}x ` +
-      `(lance efetivo ${money(item.suggested_effective_bid)})?\n\n` +
-      `Cria um override no nivel da KEYWORD (sobrepoe grupo/campanha) e volta como aprendizado pro ML.`
+      `Aplicar ${selectedItems.length} ajuste(s) de lance?\n\n` +
+      selectedItems.slice(0, 8).map(i =>
+        `• ${i.keyword_text} as ${i.event_hour}h -> ${fmt(i.suggested_hour_multiplier, 2)}x (${money(i.suggested_effective_bid)})`
+      ).join('\n') +
+      (selectedItems.length > 8 ? `\n• ...e mais ${selectedItems.length - 8}` : '') +
+      `\n\nCada um cria um override no nivel da KEYWORD (sobrepoe grupo/campanha) e volta como aprendizado pro ML.`
     )
     if (!ok) return
-    setApplyBusy(key)
-    setApplyResult(prev => ({ ...prev, [key]: '' }))
-    try {
-      const res = await fetch(`${BID_ROBOT_API_BASE}/api/amazon/ads/bid-robot/schedules/apply-suggestion-entity`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          campaign_id: item.campaign_id, ad_group_id: item.ad_group_id,
-          keyword_text: item.keyword_text, match_type: item.match_type,
-          campaign_name: item.campaign_name,
-          hour: Number(item.event_hour),
-          suggested_multiplier: Number(item.suggested_hour_multiplier),
-          recommendation_id: item.keyword_hour_recommendation_id,
-          base_bid: item.base_bid, suggested_effective_bid: item.suggested_effective_bid,
-          baseline_impressions: item.impressions, baseline_clicks: item.clicks,
-          baseline_spend: item.spend, baseline_orders: item.orders,
-          baseline_sales: item.sales, baseline_roas: item.roas,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      const st = data.status || `HTTP ${res.status}`
-      const msg = st === 'APPLIED' ? '✅ Aplicado (override keyword)'
-        : st === 'ALREADY_ALIGNED' ? '↔️ Ja alinhado'
-        : st === 'KEYWORD_NOT_FOUND' ? '⚠️ Keyword nao encontrada no robo'
-        : `⚠️ ${st}`
-      setApplyResult(prev => ({ ...prev, [key]: msg }))
-    } catch (e) {
-      setApplyResult(prev => ({ ...prev, [key]: '⚠️ ' + (e.message || 'falha') }))
+
+    setProgress({ done: 0, total: selectedItems.length })
+    const aplicados = new Set()
+    // Sequencial de proposito: publicar em paralelo disputa o mesmo profile.
+    for (let i = 0; i < selectedItems.length; i++) {
+      const item = selectedItems[i]
+      const key = item.keyword_hour_recommendation_id
+      try {
+        const st = await applyOne(item)
+        setApplyResult(prev => ({ ...prev, [key]: statusMsg(st) }))
+        if (st === 'APPLIED' || st === 'ALREADY_ALIGNED') aplicados.add(key)
+      } catch (e) {
+        setApplyResult(prev => ({ ...prev, [key]: '⚠️ ' + (e.message || 'falha') }))
+      }
+      setProgress({ done: i + 1, total: selectedItems.length })
     }
-    setApplyBusy('')
+    // Mantem marcado so o que falhou, pra dar pra tentar de novo.
+    setSelected(prev => new Set([...prev].filter(id => !aplicados.has(id))))
+    setProgress(null)
   }
 
   const upCount = items.filter(x => x.campaign_action_type === 'BID_UP').length
@@ -134,6 +178,23 @@ export default function KeywordHorarios({ ctx }) {
         <span className="count-badge">{items.length} itens</span>
       </div>
 
+      <div className="apply-bar">
+        <span className="apply-count">
+          {progress
+            ? `Aplicando ${progress.done} de ${progress.total}...`
+            : selectedItems.length > 0
+              ? `${selectedItems.length} selecionado(s) de ${applicable.length} aplicavel(is)`
+              : `Marque as linhas na coluna a direita (${applicable.length} aplicavel(is))`}
+        </span>
+        <button
+          className="btn primary"
+          disabled={selectedItems.length === 0 || !!progress}
+          onClick={applySelected}
+        >
+          {progress ? `Aplicando ${progress.done}/${progress.total}` : `Aplicar${selectedItems.length ? ` (${selectedItems.length})` : ''}`}
+        </button>
+      </div>
+
       {error ? (
         <div className="empty">{error}</div>
       ) : loading ? (
@@ -157,6 +218,18 @@ export default function KeywordHorarios({ ctx }) {
                 <th>ML</th>
                 <th>Fonte</th>
                 <th>Prio</th>
+                <th className="sel-col" title="Marcar todos os aplicaveis">
+                  <label className="sel-all">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      ref={el => { if (el) el.indeterminate = selectedItems.length > 0 && !allSelected }}
+                      disabled={applicable.length === 0 || !!progress}
+                      onChange={toggleAll}
+                    />
+                    <span>Todos</span>
+                  </label>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -173,18 +246,8 @@ export default function KeywordHorarios({ ctx }) {
                     <td>
                       <span className="action-tag" style={{ color: meta.color, borderColor: meta.color }}>{meta.label}</span>
                       <div className="sub2">{item.advisor_action}</div>
-                      {['BID_UP', 'BID_DOWN', 'CUT_HOUR'].includes(item.campaign_action_type) && (
-                        <button
-                          className="btn"
-                          style={{ marginTop: 6, fontSize: 11, padding: '3px 9px' }}
-                          disabled={applyBusy === item.keyword_hour_recommendation_id}
-                          onClick={() => applyPin(item)}
-                        >
-                          {applyBusy === item.keyword_hour_recommendation_id ? 'aplicando...' : 'Aplicar'}
-                        </button>
-                      )}
                       {applyResult[item.keyword_hour_recommendation_id] && (
-                        <div className="sub2" style={{ marginTop: 4 }}>{applyResult[item.keyword_hour_recommendation_id]}</div>
+                        <div className="sub2 apply-msg">{applyResult[item.keyword_hour_recommendation_id]}</div>
                       )}
                     </td>
                     <td className="num">{money(item.base_bid)}</td>
@@ -222,6 +285,18 @@ export default function KeywordHorarios({ ctx }) {
                       <div className="sub2">{item.source_grain}</div>
                     </td>
                     <td className="num">{fmt(item.priority_score, 0)}</td>
+                    <td className="sel-col">
+                      {isApplicable(item) ? (
+                        <input
+                          type="checkbox"
+                          checked={selected.has(item.keyword_hour_recommendation_id)}
+                          disabled={!!progress}
+                          onChange={() => toggleOne(item.keyword_hour_recommendation_id)}
+                        />
+                      ) : (
+                        <span className="muted" title="Manter: nao ha ajuste a aplicar">-</span>
+                      )}
+                    </td>
                   </tr>
                 )
               })}
@@ -350,6 +425,52 @@ export default function KeywordHorarios({ ctx }) {
         .keyword-hour-page th:nth-child(10){width:96px}
         .keyword-hour-page th:nth-child(11){width:150px}
         .keyword-hour-page th:nth-child(12){width:70px}
+        .keyword-hour-page th:nth-child(13){width:74px}
+        .keyword-hour-page .apply-bar{
+          display:flex;
+          justify-content:flex-end;
+          align-items:center;
+          gap:14px;
+          margin-bottom:10px;
+        }
+        .keyword-hour-page .apply-count{
+          color:var(--muted,#9aa7bd);
+          font-size:12.5px;
+        }
+        .keyword-hour-page .btn.primary{
+          background:#1d6ff2;
+          border-color:#1d6ff2;
+          color:#fff;
+          font-weight:800;
+        }
+        .keyword-hour-page .btn.primary:disabled{
+          background:rgba(148,163,184,.16);
+          border-color:rgba(148,163,184,.20);
+          color:var(--muted,#8796ad);
+          cursor:not-allowed;
+        }
+        .keyword-hour-page .sel-col{
+          text-align:center;
+        }
+        .keyword-hour-page .sel-col input{
+          width:16px;
+          height:16px;
+          accent-color:#1d6ff2;
+          cursor:pointer;
+        }
+        .keyword-hour-page .sel-col input:disabled{cursor:not-allowed}
+        .keyword-hour-page .sel-all{
+          display:inline-flex;
+          align-items:center;
+          gap:6px;
+          cursor:pointer;
+        }
+        .keyword-hour-page .apply-msg{
+          margin-top:5px;
+          font-size:11px;
+          font-weight:650;
+          white-space:normal;
+        }
         .keyword-hour-page .camp{
           font-weight:700;
           overflow:hidden;
