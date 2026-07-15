@@ -134,6 +134,7 @@ export const api = {
     Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
     return req('GET', `/gold/hourly-real?${p}`, null, tid)
   },
+  refreshSwarmState: (tid) => req('POST', '/gold/refresh-swarm-state', {}, tid),
   goldKeywordHourlyReal: (tid, filters = {}) => {
     const p = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))

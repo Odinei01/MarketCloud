@@ -197,6 +197,31 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
+// POST /api/v1/gold/refresh-swarm-state
+// Recarrega o snapshot SWARM -> bronze na hora.
+//
+// Por que existe: o loop de sync roda de hora em hora, entao um pin aplicado
+// pela tela ficava invisivel pra ela por ate 60min — a recomendacao "voltava"
+// e o dono clicava de novo no que ja tinha feito. A tela chama isto depois de
+// aplicar, pra ver o efeito do proprio clique.
+func (h *Handler) RefreshSwarmState(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.db.Query(r.Context(), `SELECT source_table, rows_inserted FROM marketcloud_bronze.refresh_swarm_account_state()`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "refresh_failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+	refreshed := map[string]any{}
+	for rows.Next() {
+		var table string
+		var n int64
+		if err := rows.Scan(&table, &n); err == nil {
+			refreshed[table] = n
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"refreshed": refreshed})
+}
+
 // GET /api/v1/gold/keyword-hourly-real?action=&confidence=&source=&limit=
 // Recomendacoes advisor no grao keyword x hora. A execucao continua fora daqui:
 // o endpoint so mostra lance efetivo = base bid da keyword x multiplicador horario.

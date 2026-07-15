@@ -141,6 +141,15 @@ export default function KeywordHorarios({ ctx }) {
     }
     // Mantem marcado so o que falhou, pra dar pra tentar de novo.
     setSelected(prev => new Set([...prev].filter(id => !aplicados.has(id))))
+
+    // O snapshot SWARM->bronze so atualiza de hora em hora: sem forcar aqui, a
+    // tela seguiria mostrando o que voce acabou de aplicar, como se nada tivesse
+    // acontecido. Recarrega depois, ja com o efeito do clique visivel.
+    if (aplicados.size > 0) {
+      setProgress({ done: selectedItems.length, total: selectedItems.length, syncing: true })
+      try { await api.refreshSwarmState(tenantID) } catch { /* recarrega mesmo assim */ }
+      await load()
+    }
     setProgress(null)
   }
 
@@ -196,7 +205,9 @@ export default function KeywordHorarios({ ctx }) {
           {progress ? `Aplicando ${progress.done}/${progress.total}` : `Aplicar${selectedItems.length ? ` (${selectedItems.length})` : ''}`}
         </button>
         <span className="apply-count">
-          {progress
+          {progress?.syncing
+            ? 'Aplicado. Atualizando a lista com o resultado...'
+            : progress
             ? `Aplicando ${progress.done} de ${progress.total}...`
             : selectedItems.length > 0
               ? `${selectedItems.length} selecionado(s) de ${applicable.length} aplicavel(is)`
