@@ -51,7 +51,8 @@ func main() {
 	go o.runDailyEnqueueLoop(ctx)     // enfileira E001..E009 1x/dia (janela deslizante)
 	go o.runIngestLoop(ctx)           // auto-ingest de runs SUCCEEDED -> bronze
 	go o.runSwarmSyncLoop(ctx)        // sync do estado SWARM/ZANOM -> bronze local
-	go o.runAmsHourlyRefreshLoop(ctx) // reconcilia AMS -> hourly em janela movel D-14
+	go o.runAmsHourlyRefreshLoop(ctx)  // reconcilia AMS -> hourly em janela movel D-14
+	go o.runPinOutcomeMeasureLoop(ctx) // mede cada pin no grao keyword x hora -> volta pro ML
 
 	// HTTP for health + manual trigger
 	r := chi.NewRouter()
