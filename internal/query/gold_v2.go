@@ -250,7 +250,7 @@ func (h *Handler) GoldKeywordHourlyReal(w http.ResponseWriter, r *http.Request) 
 			target_spend::float8 AS target_spend,
 			target_orders::float8 AS target_orders,
 			target_sales::float8 AS target_sales
-		FROM marketcloud_gold.gold_keyword_hourly_recommendations_v2
+		FROM marketcloud_gold.gold_keyword_hourly_recommendations_v3
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY priority_score DESC, ABS(effective_bid_delta) DESC
 		LIMIT ` + strconv.Itoa(limit)
