@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+﻿import { useState, useEffect, useCallback } from 'react'
 import { api } from '../api/client.js'
 
 const BUCKET_COLORS = {
@@ -7,7 +7,7 @@ const BUCKET_COLORS = {
 const RISK_COLORS = { HIGH: '#ff5470', MEDIUM: '#ff9f43', LOW: '#26de81', WATCH: '#8395a7' }
 
 function fmt(n, d = 0) {
-  if (n === null || n === undefined) return '—'
+  if (n === null || n === undefined) return '-'
   return Number(n).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d })
 }
 
@@ -64,27 +64,27 @@ export default function ReviewQueue({ ctx }) {
     <div className="page">
       <div className="page-head">
         <div>
-          <h2>Cockpit de Recomendações</h2>
-          <span className="sub">Gold V2 · priorizado · Gold × ML · revisão humana</span>
+          <h2>Cockpit de Recomendacoes</h2>
+          <span className="sub">Gold V2 | priorizado | Gold x ML | revisao humana</span>
         </div>
-        <button className="btn" onClick={load}>↻ Atualizar</button>
+        <button className="btn" onClick={load}>Atualizar</button>
       </div>
 
       {/* KPIs */}
       <div className="kpi-row">
-        <div className="kpi"><div className="kpi-v">{fmt(totalRecs)}</div><div className="kpi-l">Recomendações</div></div>
-        <div className="kpi"><div className="kpi-v" style={{ color: BUCKET_COLORS.P0_CRITICAL }}>{fmt(p0)}</div><div className="kpi-l">P0 Críticas</div></div>
+        <div className="kpi"><div className="kpi-v">{fmt(totalRecs)}</div><div className="kpi-l">Recomendacoes</div></div>
+        <div className="kpi"><div className="kpi-v" style={{ color: BUCKET_COLORS.P0_CRITICAL }}>{fmt(p0)}</div><div className="kpi-l">P0 Criticas</div></div>
         <div className="kpi"><div className="kpi-v" style={{ color: '#ff9f43' }}>R$ {fmt(spendAtRisk, 0)}</div><div className="kpi-l">Gasto em risco</div></div>
-        <div className="kpi"><div className="kpi-v" style={{ color: '#54a0ff' }}>{fmt(conflicts)}</div><div className="kpi-l">Conflitos Gold×ML</div></div>
+        <div className="kpi"><div className="kpi-v" style={{ color: '#54a0ff' }}>{fmt(conflicts)}</div><div className="kpi-l">Conflitos Gold x ML</div></div>
       </div>
 
-      {/* Resumo por ação */}
+      {/* Resumo por acao */}
       <div className="action-cards">
         {byAction.map(a => (
           <div key={a.action} className="action-card" onClick={() => setFilter(f => ({ ...f, bucket: '' }))}>
             <div className="ac-count">{fmt(a.count)}</div>
             <div className="ac-action">{a.action}</div>
-            <div className="ac-meta">R$ {fmt(a.spend, 0)}{a.p0 > 0 ? ` · ${a.p0} P0` : ''}</div>
+            <div className="ac-meta">R$ {fmt(a.spend, 0)}{a.p0 > 0 ? ` | ${a.p0} P0` : ''}</div>
           </div>
         ))}
       </div>
@@ -93,67 +93,67 @@ export default function ReviewQueue({ ctx }) {
       <div className="filters">
         <select value={filter.bucket} onChange={e => setFilter(f => ({ ...f, bucket: e.target.value }))}>
           <option value="">Todas prioridades</option>
-          <option value="P0_CRITICAL">P0 Crítica</option>
+          <option value="P0_CRITICAL">P0 Critica</option>
           <option value="P1_HIGH">P1 Alta</option>
-          <option value="P2_MEDIUM">P2 Média</option>
+          <option value="P2_MEDIUM">P2 Media</option>
           <option value="P3_LOW">P3 Baixa</option>
         </select>
         <select value={filter.decision} onChange={e => setFilter(f => ({ ...f, decision: e.target.value }))}>
-          <option value="">Todas decisões</option>
+          <option value="">Todas decisoes</option>
           <option value="NOT_DECIDED">Pendentes</option>
           <option value="APPROVED">Aprovadas</option>
           <option value="REJECTED">Rejeitadas</option>
         </select>
-        <label className="toggle" title="Esconde o que o Robô ZANOM já fez (negativa/hora já reduzida)">
+        <label className="toggle" title="Esconde o que o Robo ZANOM ja fez">
           <input type="checkbox" checked={filter.only_new === 'true'}
             onChange={e => setFilter(f => ({ ...f, only_new: e.target.checked ? 'true' : '' }))} />
-          só ações novas
+          so acoes novas
         </label>
         <span className="count-badge">{items.length} itens</span>
       </div>
 
       {/* Fila */}
-      {loading ? <div className="empty">Carregando…</div> : (
+      {loading ? <div className="empty">Carregando...</div> : (
         <div className="queue">
           <table>
             <thead>
               <tr>
-                <th>#</th><th>Prio</th><th>Entidade</th><th>Alvo</th><th>Ação</th>
-                <th>Gasto</th><th>ROAS</th><th>Risco</th><th>Gold×ML</th><th>Conf.</th><th>Decisão</th>
+                <th>#</th><th>Prio</th><th>Entidade</th><th>Alvo</th><th>Acao</th>
+                <th>Gasto</th><th>ROAS</th><th>Risco</th><th>Gold x ML</th><th>Conf.</th><th>Decisao</th>
               </tr>
             </thead>
             <tbody>
-              {items.map(it => {
+              {items.map((it, idx) => {
                 const decided = it.human_decision_status && it.human_decision_status !== 'NOT_DECIDED'
                 return (
-                  <tr key={it.recommendation_id} className={decided ? 'decided' : ''}>
+                  <tr key={`${it.recommendation_id || 'rec'}-${it.priority_rank || idx}-${idx}`} className={decided ? 'decided' : ''}>
                     <td className="rank">{it.priority_rank}</td>
                     <td><span className="pill" style={{ background: BUCKET_COLORS[it.priority_bucket] }}>{it.priority_bucket?.replace('_', ' ')}</span>
                       <div className="prio-score">{fmt(it.priority_score, 0)}</div></td>
                     <td className="ent">{it.entity_type?.replace(/_/g, ' ').toLowerCase()}</td>
                     <td className="target">
-                      <div className="camp">{it.campaign_name || '—'}</div>
+                      <div className="camp">{it.campaign_name || '-'}</div>
                       <div className="sub2">
                         {it.event_hour != null ? `${String(it.event_hour).padStart(2, '0')}h` : ''}
-                        {it.ad_group_name ? ` · ${it.ad_group_name}` : ''}
+                        {it.ad_group_name ? ` | ${it.ad_group_name}` : ''}
                         {it.customer_search_term ? `"${it.customer_search_term}"` : ''}
                       </div>
                     </td>
                     <td>
                       <span className="action-tag">{it.final_action_type}</span>
                       {it.target_bid != null && (
-                        <div className="sub2">bid R$ {fmt(it.campaign_avg_bid, 2)} → <b>R$ {fmt(it.target_bid, 2)}</b></div>
+                        <div className="sub2">bid R$ {fmt(it.campaign_avg_bid, 2)} para <b>R$ {fmt(it.target_bid, 2)}</b></div>
                       )}
                       {it.swarm_state && it.swarm_state !== 'NEW' && (
-                        <div className="already">{it.swarm_state === 'ALREADY_NEGATIVE' ? '✓ já negativada' : `✓ hora já em ${fmt(it.current_hour_multiplier, 2)}×`}</div>
+                        <div className="already">{it.swarm_state === 'ALREADY_NEGATIVE' ? 'ja negativada' : `hora ja em ${fmt(it.current_hour_multiplier, 2)}x`}</div>
                       )}
                     </td>
                     <td className="num">R$ {fmt(it.spend, 1)}</td>
                     <td className="num">{fmt(it.roas, 2)}</td>
                     <td><span className="risk-dot" style={{ background: RISK_COLORS[it.final_risk_level] }} />{it.final_risk_level}</td>
-                    <td>{it.agreement === null ? <span className="muted">—</span>
-                      : it.agreement ? <span className="agree">✓ concorda</span>
-                        : <span className="conflict">✗ conflito</span>}</td>
+                    <td>{it.agreement === null ? <span className="muted">-</span>
+                      : it.agreement ? <span className="agree">concorda</span>
+                        : <span className="conflict">conflito</span>}</td>
                     <td className="num">{fmt((it.final_confidence_score || 0) * 100, 0)}%</td>
                     <td className="decide-cell">
                       {decided
@@ -161,11 +161,11 @@ export default function ReviewQueue({ ctx }) {
                         : (
                           <div className="decide-btns">
                             <button disabled={busy === it.recommendation_id} className="btn-approve"
-                              onClick={() => decide(it, 'APPROVED', 'EXECUTED')} title="Aprovar e marcar executado">✓</button>
+                              onClick={() => decide(it, 'APPROVED', 'EXECUTED')} title="Aprovar e marcar executado">OK</button>
                             <button disabled={busy === it.recommendation_id} className="btn-reject"
-                              onClick={() => decide(it, 'REJECTED')} title="Rejeitar">✗</button>
+                              onClick={() => decide(it, 'REJECTED')} title="Rejeitar">X</button>
                             <button disabled={busy === it.recommendation_id} className="btn-snooze"
-                              onClick={() => decide(it, 'SNOOZED')} title="Adiar">⏱</button>
+                              onClick={() => decide(it, 'SNOOZED')} title="Adiar">Adiar</button>
                           </div>
                         )}
                     </td>
@@ -211,7 +211,7 @@ export default function ReviewQueue({ ctx }) {
         .conflict{color:#ff5470;font-size:12px;font-weight:700}
         .muted{color:var(--muted,#8395a7)}
         .decide-btns{display:flex;gap:4px}
-        .decide-btns button{width:28px;height:28px;border-radius:6px;border:1px solid var(--border,#232a38);cursor:pointer;font-size:13px;background:#1c2230;color:inherit}
+        .decide-btns button{min-width:32px;height:28px;padding:0 7px;border-radius:6px;border:1px solid var(--border,#232a38);cursor:pointer;font-size:12px;background:#1c2230;color:inherit}
         .btn-approve:hover{background:#26de81;color:#0b0e14}
         .btn-reject:hover{background:#ff5470;color:#0b0e14}
         .btn-snooze:hover{background:#54a0ff;color:#0b0e14}
@@ -226,3 +226,4 @@ export default function ReviewQueue({ ctx }) {
     </div>
   )
 }
+

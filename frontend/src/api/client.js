@@ -113,6 +113,21 @@ export const api = {
     return req('GET', `/gold/review-queue?${p}`, null, tid)
   },
   goldActionSummary: (tid) => req('GET', '/gold/action-summary', null, tid),
+  amcAlerts: (tid) => req('GET', '/gold/amc-alerts', null, tid),
+  goldHourlyReal: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/hourly-real?${p}`, null, tid)
+  },
+  goldKeywordHourlyReal: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/keyword-hourly-real?${p}`, null, tid)
+  },
+  goldMlAmsStatus: (tid) => req('GET', '/gold/ml-ams-status', null, tid),
+  goldMlFullAutoCampaigns: (tid) => req('GET', '/gold/ml-full-auto-campaigns', null, tid),
+  setGoldMlFullAutoCampaign: (tid, body) => req('PUT', '/gold/ml-full-auto-campaigns', body, tid),
+  goldPartnerCampaignMonitor: (tid) => req('GET', '/gold/partner-campaign-monitor', null, tid),
   goldCampaignPlans: (tid) => req('GET', '/gold/campaign-plans', null, tid),
   goldDecide: (tid, id, body) => req('POST', `/gold/review-queue/${id}/decision`, body, tid),
 }

@@ -48,6 +48,11 @@ func loadDailyIngestConfig() dailyIngestConfig {
 			"MC_ZANOM_E004", "MC_ZANOM_E005", "MC_ZANOM_E006",
 			"MC_ZANOM_E007", "MC_ZANOM_E008", "MC_ZANOM_E009",
 			"MC_ZANOM_E013",
+			// Features de contexto AMC (diarias) -> alimentam o ML horario via join.
+			"MC_ZANOM_Q005", "MC_ZANOM_Q007", "MC_ZANOM_Q008",
+			"MC_ZANOM_Q016", "MC_ZANOM_Q019", "MC_ZANOM_Q020",
+			"MC_ZANOM_Q041", // mid-funnel (DPV/cart) -> feature ML
+			"MC_ZANOM_Q042", // avaliacao retargeting SD -> alertas
 		},
 		LookbackDays:  14,
 		RunHourUTC:    9, // 09:00 UTC = 06:00 BRT
@@ -194,6 +199,10 @@ var ingestRouteRe = regexp.MustCompile(`^e0(0[1-9]|1[0-3])$`)
 // ingestRouteForCode: MC_ZANOM_E001 -> "e001". "" se não for uma extração bronze.
 func ingestRouteForCode(code string) string {
 	route := strings.ToLower(strings.TrimPrefix(strings.ToUpper(code), "MC_ZANOM_"))
+	switch route { // features AMC -> bronze (assist / new-to-brand / mid-funnel / alertas SD)
+	case "q005", "q019", "q041", "q042":
+		return route
+	}
 	if ingestRouteRe.MatchString(route) {
 		return route
 	}
@@ -230,7 +239,7 @@ func (o *orchestrator) ingestSucceededRuns(ctx context.Context, cfg dailyIngestC
 		WHERE qr.bronze_ingested_at IS NULL
 		  AND COALESCE(qr.result_object_path,'') <> ''
 		  AND qr.external_query_execution_id IS NOT NULL
-		  AND qt.code LIKE 'MC_ZANOM_E0%'
+		  AND (qt.code LIKE 'MC_ZANOM_E0%' OR qt.code IN ('MC_ZANOM_Q005','MC_ZANOM_Q019','MC_ZANOM_Q041','MC_ZANOM_Q042'))
 		  AND qr.created_at > NOW() - INTERVAL '3 days'
 		ORDER BY qr.created_at ASC
 		LIMIT 20

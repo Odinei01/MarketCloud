@@ -1,9 +1,12 @@
-"""
+﻿"""
 MarketCloud Modeling Worker
-Polls for SUCCEEDED query_runs → classifies campaigns → writes insights + recommendations.
+Polls for SUCCEEDED query_runs â†’ classifies campaigns â†’ writes insights + recommendations.
 """
 import json
 import os
+import subprocess
+import sys
+import threading
 import time
 import logging
 import psycopg2
@@ -18,10 +21,94 @@ log = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://mcadmin:mcsecret@localhost:5433/marketcloud")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "15"))
+HOURLY_REAL_ML_ENABLED = os.environ.get("HOURLY_REAL_ML_ENABLED", "false").lower() == "true"
+HOURLY_REAL_ML_INTERVAL_SECONDS = int(os.environ.get("HOURLY_REAL_ML_INTERVAL_MINUTES", "60")) * 60
+HOURLY_REAL_ML_RUN_IMMEDIATELY = os.environ.get("HOURLY_REAL_ML_RUN_IMMEDIATELY", "false").lower() == "true"
+ML_AUTO_APPLY_CAMPAIGN_ENABLED = os.environ.get("ML_AUTO_APPLY_CAMPAIGN_ENABLED", "false").lower() == "true"
 
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+
+
+def refresh_learning_outcomes():
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT marketcloud_recommendations.refresh_recommendation_hourly_outcomes() AS refreshed")
+                row = cur.fetchone()
+                conn.commit()
+                refreshed = row["refreshed"] if row else 0
+                log.info("learning-outcomes refresh upserted %s rows", refreshed)
+    except Exception as exc:
+        log.exception("learning-outcomes refresh failed: %s", exc)
+
+
+def auto_apply_ml_campaign_recommendations():
+    if not ML_AUTO_APPLY_CAMPAIGN_ENABLED:
+        log.info("ML campaign auto-apply disabled")
+        return
+    script = os.path.join(os.path.dirname(__file__), "marketcloud_ml_auto_apply_campaign_recommendations.py")
+    if not os.path.exists(script):
+        log.error("ML campaign auto-apply script not found: %s", script)
+        return
+    try:
+        started = time.time()
+        result = subprocess.run(
+            [sys.executable, script],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if result.stdout:
+            log.info("[ml-auto-apply-campaign]\n%s", result.stdout.strip())
+        if result.returncode == 0:
+            log.info("ml-auto-apply-campaign finished in %.1fs", time.time() - started)
+        else:
+            log.error("ml-auto-apply-campaign failed rc=%s in %.1fs", result.returncode, time.time() - started)
+    except Exception as exc:
+        log.exception("ml-auto-apply-campaign scheduler error: %s", exc)
+def hourly_real_ml_loop():
+    if not HOURLY_REAL_ML_ENABLED:
+        log.info("Hourly real ML scheduler disabled")
+        return
+    scripts = [
+        ("hourly-real-ml", os.path.join(os.path.dirname(__file__), "marketcloud_ml_worker_hourly_real_v2.py")),
+        ("hourly-target-real-ml", os.path.join(os.path.dirname(__file__), "marketcloud_ml_worker_hourly_target_real_v3.py")),
+    ]
+    missing = [script for _, script in scripts if not os.path.exists(script)]
+    if missing:
+        log.error("Hourly real ML script(s) not found: %s", ", ".join(missing))
+        return
+    wait = 0 if HOURLY_REAL_ML_RUN_IMMEDIATELY else HOURLY_REAL_ML_INTERVAL_SECONDS
+    log.info("Hourly real ML scheduler enabled interval=%ss run_immediately=%s scripts=%s",
+             HOURLY_REAL_ML_INTERVAL_SECONDS, HOURLY_REAL_ML_RUN_IMMEDIATELY,
+             ",".join(name for name, _ in scripts))
+    while True:
+        if wait > 0:
+            time.sleep(wait)
+        wait = HOURLY_REAL_ML_INTERVAL_SECONDS
+        for name, script in scripts:
+            try:
+                started = time.time()
+                result = subprocess.run(
+                    [sys.executable, script],
+                    check=False,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                )
+                if result.stdout:
+                    log.info("[%s]\n%s", name, result.stdout.strip())
+                if result.returncode == 0:
+                    log.info("%s finished in %.1fs", name, time.time() - started)
+                else:
+                    log.error("%s failed rc=%s in %.1fs", name, result.returncode, time.time() - started)
+            except Exception as exc:
+                log.exception("%s scheduler error: %s", name, exc)
+        auto_apply_ml_campaign_recommendations()
+        refresh_learning_outcomes()
 
 
 def pick_pending_runs(cur) -> list[dict]:
@@ -63,7 +150,7 @@ def mock_campaigns_from_params(params: dict, store_id: str, cur) -> list[Campaig
 
         # Deterministic synthetic signals based on campaign name heuristics
         name = (c["campaign_name"] or "").lower()
-        if any(w in name for w in ["exata", "exact", "branded", "conversão"]):
+        if any(w in name for w in ["exata", "exact", "branded", "conversÃ£o"]):
             roas = 5.0 + rng * 4
             assist = rng * 0.2
             first = 0.1 + rng * 0.2
@@ -206,6 +293,7 @@ def process_run(run: dict, conn):
 
 def main():
     log.info("MarketCloud Modeling Worker starting...")
+    threading.Thread(target=hourly_real_ml_loop, name="hourly-real-ml", daemon=True).start()
     while True:
         try:
             conn = get_conn()
@@ -237,3 +325,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+

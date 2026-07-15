@@ -11,9 +11,9 @@ import (
 	"github.com/zanom/marketcloud/internal/middleware"
 )
 
-// gold_v2.go — endpoints da Gold Layer V2 (cockpit operacional) + loop de
-// feedback. Somente LEITURA das views Gold e ESCRITA de decisão humana.
-// Nenhum endpoint executa ação na Amazon.
+// gold_v2.go â€” endpoints da Gold Layer V2 (cockpit operacional) + loop de
+// feedback. Somente LEITURA das views Gold e ESCRITA de decisÃ£o humana.
+// Nenhum endpoint executa aÃ§Ã£o na Amazon.
 
 // GET /api/v1/gold/review-queue?bucket=&status=&decision=&limit=
 // Fila priorizada (G015) do tenant autenticado.
@@ -39,7 +39,7 @@ func (h *Handler) GoldReviewQueue(w http.ResponseWriter, r *http.Request) {
 	add("human_decision_status = ", r.URL.Query().Get("decision"))
 	add("final_action_type = ", r.URL.Query().Get("action"))
 	add("swarm_state = ", r.URL.Query().Get("swarm_state"))
-	// only_new=true: esconde o que o Robô ZANOM já fez (negativa/hora já reduzida)
+	// only_new=true: esconde o que o RobÃ´ ZANOM jÃ¡ fez (negativa/hora jÃ¡ reduzida)
 	if r.URL.Query().Get("only_new") == "true" {
 		where = append(where, "swarm_state = 'NEW'")
 	}
@@ -78,7 +78,7 @@ func (h *Handler) GoldReviewQueue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
-// GET /api/v1/gold/action-summary — resumo por ação (G012) para cards.
+// GET /api/v1/gold/action-summary â€” resumo por aÃ§Ã£o (G012) para cards.
 func (h *Handler) GoldActionSummary(w http.ResponseWriter, r *http.Request) {
 	tenantID := middleware.TenantIDFromCtx(r.Context()).String()
 	rows, err := h.db.Query(r.Context(), `
@@ -103,7 +103,7 @@ func (h *Handler) GoldActionSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
-// GET /api/v1/gold/campaign-plans — plano por campanha (G013).
+// GET /api/v1/gold/campaign-plans â€” plano por campanha (G013).
 func (h *Handler) GoldCampaignPlans(w http.ResponseWriter, r *http.Request) {
 	tenantID := middleware.TenantIDFromCtx(r.Context()).String()
 	rows, err := h.db.Query(r.Context(), `
@@ -126,8 +126,150 @@ func (h *Handler) GoldCampaignPlans(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
+// GET /api/v1/gold/hourly-real?action=&confidence=&limit=
+// RecomendaÃ§Ãµes horÃ¡rias sobre o DADO REAL (relatÃ³rio da conta, sem supressÃ£o),
+// cruzadas com a agenda de multiplicadores do RobÃ´. Somente leitura.
+// Fonte: gold_hourly_recommendations_v1 (single-tenant ZANOM).
+func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+	where := []string{"1=1"}
+	args := []any{}
+	add := func(cond, val string) {
+		if val != "" {
+			args = append(args, val)
+			where = append(where, cond+"$"+strconv.Itoa(len(args)))
+		}
+	}
+	add("action_type = ", r.URL.Query().Get("action"))
+	add("confidence = ", r.URL.Query().Get("confidence"))
+	// sÃ³ o acionÃ¡vel (esconde KEEP_STRONG) por padrÃ£o
+	if r.URL.Query().Get("include_keep") != "true" {
+		where = append(where, "action_type <> 'KEEP_STRONG'")
+	}
+
+	sql := `
+		SELECT recommendation_id, campaign_name, event_hour, action_type, confidence,
+			spend::float8 AS spend, orders::int AS orders, sales::float8 AS sales,
+			roas::float8 AS roas, cvr::float8 AS cvr, clicks::int AS clicks,
+			impressions::int AS impressions, days_observed::int AS days_observed,
+			current_multiplier::float8 AS current_multiplier,
+			mult_max::float8 AS mult_max, has_schedule,
+			suggested_multiplier::float8 AS suggested_multiplier,
+			overlap_rule_count, rules_still_need_change, rules_already_aligned,
+			overlap_mult_min::float8 AS overlap_mult_min,
+			overlap_mult_max::float8 AS overlap_mult_max,
+			overlap_labels, overlap_rule_details, schedule_overlap_status,
+			priority_score::float8 AS priority_score, label_caveat,
+			window_from, window_to,
+			ml_conversion_probability::float8 AS ml_conversion_probability,
+			ml_expected_roas::float8 AS ml_expected_roas,
+			ml_good_hour, ml_agrees,
+			(SELECT CASE WHEN bool_and(u.conversion_trustworthy) THEN 'MATURE'
+			             WHEN bool_or(u.conversion_trustworthy)  THEN 'MIXED'
+			             ELSE 'IMMATURE' END
+			 FROM marketcloud_gold.gold_hourly_signal_unified u
+			 WHERE LOWER(TRIM(u.campaign_name)) = LOWER(TRIM(gold_hourly_recommendations_v1.campaign_name))
+			   AND u.event_hour = gold_hourly_recommendations_v1.event_hour) AS conversion_maturity,
+			(SELECT CASE WHEN bool_or(u.traffic_source = 'AMS_STREAM') THEN 'AMS_STREAM' ELSE 'REPORTING' END
+			 FROM marketcloud_gold.gold_hourly_signal_unified u
+			 WHERE LOWER(TRIM(u.campaign_name)) = LOWER(TRIM(gold_hourly_recommendations_v1.campaign_name))
+			   AND u.event_hour = gold_hourly_recommendations_v1.event_hour) AS traffic_source
+		FROM marketcloud_gold.gold_hourly_recommendations_v1
+		WHERE ` + strings.Join(where, " AND ") + `
+		ORDER BY priority_score DESC
+		LIMIT ` + strconv.Itoa(limit)
+
+	rows, err := h.db.Query(r.Context(), sql, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "hourly_real_failed: "+err.Error())
+		return
+	}
+	items, err := pgx.CollectRows(rows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+// GET /api/v1/gold/keyword-hourly-real?action=&confidence=&source=&limit=
+// Recomendacoes advisor no grao keyword x hora. A execucao continua fora daqui:
+// o endpoint so mostra lance efetivo = base bid da keyword x multiplicador horario.
+func (h *Handler) GoldKeywordHourlyReal(w http.ResponseWriter, r *http.Request) {
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+	where := []string{"1=1"}
+	args := []any{}
+	add := func(cond, val string) {
+		if val != "" {
+			args = append(args, val)
+			where = append(where, cond+"$"+strconv.Itoa(len(args)))
+		}
+	}
+	add("campaign_action_type = ", r.URL.Query().Get("action"))
+	add("confidence = ", r.URL.Query().Get("confidence"))
+	add("source_grain = ", r.URL.Query().Get("source"))
+
+	sql := `
+		SELECT keyword_hour_recommendation_id, campaign_id, campaign_name,
+			ad_group_id, ad_group_name, keyword_text, match_type, event_hour,
+			campaign_action_type, advisor_action, confidence, source_grain,
+			sample_guard, execution_hint,
+			base_bid::float8 AS base_bid,
+			current_hour_multiplier::float8 AS current_hour_multiplier,
+			suggested_hour_multiplier::float8 AS suggested_hour_multiplier,
+			current_effective_bid::float8 AS current_effective_bid,
+			suggested_effective_bid::float8 AS suggested_effective_bid,
+			effective_bid_delta::float8 AS effective_bid_delta,
+			effective_bid_delta_percent::float8 AS effective_bid_delta_percent,
+			spend::float8 AS spend, orders::int AS orders, sales::float8 AS sales,
+			roas::float8 AS roas, clicks::int AS clicks, impressions::int AS impressions,
+			days_observed::int AS days_observed, window_from, window_to,
+			ml_conversion_probability::float8 AS ml_conversion_probability,
+			ml_expected_roas::float8 AS ml_expected_roas,
+			ml_good_hour, ml_agrees,
+			target_ml_click_probability::float8 AS target_ml_click_probability,
+			target_ml_conversion_probability::float8 AS target_ml_conversion_probability,
+			target_ml_expected_roas::float8 AS target_ml_expected_roas,
+			target_ml_good_hour,
+			target_ml_label_caveat,
+			target_ml_computed_at,
+			priority_score::float8 AS priority_score,
+			target_hour_has_data,
+			target_impressions::float8 AS target_impressions,
+			target_clicks::float8 AS target_clicks,
+			target_spend::float8 AS target_spend,
+			target_orders::float8 AS target_orders,
+			target_sales::float8 AS target_sales
+		FROM marketcloud_gold.gold_keyword_hourly_recommendations_v2
+		WHERE ` + strings.Join(where, " AND ") + `
+		ORDER BY priority_score DESC, ABS(effective_bid_delta) DESC
+		LIMIT ` + strconv.Itoa(limit)
+
+	rows, err := h.db.Query(r.Context(), sql, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "keyword_hourly_real_failed: "+err.Error())
+		return
+	}
+	items, err := pgx.CollectRows(rows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
 // POST /api/v1/gold/review-queue/{id}/decision
-// Registra a decisão humana. NÃO executa nada na Amazon.
+// Registra a decisÃ£o humana. NÃƒO executa nada na Amazon.
 // Body: { decision, decided_action?, decision_notes?, execution_status? }
 func (h *Handler) GoldDecide(w http.ResponseWriter, r *http.Request) {
 	tenantID := middleware.TenantIDFromCtx(r.Context()).String()
@@ -158,7 +300,7 @@ func (h *Handler) GoldDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Snapshot da recomendação vem da própria view (garante consistência) e
+	// Snapshot da recomendaÃ§Ã£o vem da prÃ³pria view (garante consistÃªncia) e
 	// confina ao tenant autenticado.
 	tag, err := h.db.Exec(r.Context(), `
 		INSERT INTO marketcloud_recommendations.recommendation_decisions (

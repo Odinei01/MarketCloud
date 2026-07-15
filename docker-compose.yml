@@ -167,6 +167,25 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  frontend:
+    image: node:20-alpine
+    container_name: marketcloud_frontend
+    working_dir: /app
+    # npm install roda no container (binarios Linux corretos) e cai no volume
+    # anonimo /app/node_modules, sem colidir com o node_modules do host (Windows).
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3001:3001"
+    environment:
+      VITE_API_PROXY_TARGET: "http://api:8090"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - api
+    logging: *default-logging
+    restart: unless-stopped
+
 volumes:
   marketcloud_pgdata:
   marketcloud_redisdata:

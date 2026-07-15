@@ -11,46 +11,46 @@ const STATUS_COLOR = {
 const ACTIVE_STATUSES = new Set(['QUEUED', 'CREATED', 'SUBMITTED', 'RUNNING'])
 
 const OPERATIONS = [
-  { code: 'MC_ZANOM_Q001', icon: '🔥', label: 'Dinheiro queimado', description: 'Campanhas com gasto e zero venda direta ou assistida', color: 'red' },
-  { code: 'MC_ZANOM_Q002', icon: '🚫', label: 'Termos para negativar', description: 'Keywords que gastam sem converter', color: 'red' },
-  { code: 'MC_ZANOM_Q003', icon: '🎯', label: 'Termos para virar exata', description: 'Search terms com conversão para promover a EXACT', color: 'green' },
-  { code: 'MC_ZANOM_Q004', icon: '❌', label: 'Negativar search terms', description: 'Termos irrelevantes para adicionar como negativos', color: 'red' },
-  { code: 'MC_ZANOM_Q005', icon: '🛡️', label: 'Proteger campanhas assistidas', description: 'ROAS direto ruim mas assist_rate ≥ 30% — não pausar', color: 'purple' },
-  { code: 'MC_ZANOM_Q006', icon: '📊', label: 'Funil de keywords', description: 'DISCOVERY / CONSIDERATION / CONVERSION / WASTE', color: 'blue' },
-  { code: 'MC_ZANOM_Q007', icon: '🗺️', label: 'Jornada até compra', description: 'Sequência de campanhas tocadas antes da conversão', color: 'blue' },
-  { code: 'MC_ZANOM_Q008', icon: '🔁', label: 'Saturação de frequência', description: 'Está mostrando anúncio demais para o mesmo público?', color: 'gold' },
-  { code: 'MC_ZANOM_Q009', icon: '💰', label: 'Campanha sem orçamento', description: 'Campanhas boas esgotando budget cedo', color: 'gold' },
-  { code: 'MC_ZANOM_Q010', icon: '📍', label: 'Topo de busca vale?', description: 'Top of Search vendendo ou só encarecendo CPC?', color: 'blue' },
-  { code: 'MC_ZANOM_Q011', icon: '🕐', label: 'Melhor horário', description: 'Hora-pico de conversão vs hora cara sem retorno', color: 'gold' },
-  { code: 'MC_ZANOM_Q012', icon: '📅', label: 'Melhor dia da semana', description: 'Padrão de conversão por dia e produto', color: 'blue' },
-  { code: 'MC_ZANOM_Q013', icon: '🚨', label: 'Horário caro sem conversão', description: 'Janelas com gasto alto e zero conversão', color: 'red' },
-  { code: 'MC_ZANOM_Q014', icon: '🎯', label: 'ASIN target vencedor', description: 'ASINs de product targeting que convertem', color: 'green' },
-  { code: 'MC_ZANOM_Q015', icon: '🗑️', label: 'ASIN target que só rouba clique', description: 'Product targeting com gasto e zero conversão', color: 'red' },
-  { code: 'MC_ZANOM_Q016', icon: '🔗', label: 'Cross-sell entre produtos', description: 'Compradores de um produto que compram outro ZANOM', color: 'green' },
-  { code: 'MC_ZANOM_Q017', icon: '📄', label: 'Página com clique bom mas não converte', description: 'Alta CTR + baixa CVR = problema na página', color: 'gold' },
-  { code: 'MC_ZANOM_Q018', icon: '🌱', label: 'Produto orgânico demais', description: 'Vende bem sem Ads — talvez receba Ads demais', color: 'blue' },
-  { code: 'MC_ZANOM_Q019', icon: '🆕', label: 'Novo cliente vs recorrente', description: 'Ads está trazendo cliente novo ou só recomprador?', color: 'green' },
-  { code: 'MC_ZANOM_Q020', icon: '⏱️', label: 'Tempo até conversão', description: 'Quanto tempo o cliente leva para comprar', color: 'blue' },
-  { code: 'MC_ZANOM_Q021', icon: '🏷️', label: 'Defesa de marca', description: 'Preciso pagar Ads para quem já procura ZANOM?', color: 'purple' },
-  { code: 'MC_ZANOM_Q022', icon: '⚔️', label: 'Concorrente roubando venda', description: 'Quais concorrentes interceptam jornadas ZANOM', color: 'red' },
-  { code: 'MC_ZANOM_Q023', icon: '🎟️', label: 'Cupom: conversão ou margem?', description: 'Cupom aumenta conversão ou só reduz margem?', color: 'gold' },
-  { code: 'MC_ZANOM_Q024', icon: '💸', label: 'CPC caro pelo ticket', description: 'CPC acima do break-even por ticket e margem', color: 'red' },
-  { code: 'MC_ZANOM_Q025', icon: '↔️', label: 'Shift de budget', description: 'De onde tirar orçamento e para onde mandar', color: 'green' },
-  { code: 'MC_ZANOM_Q026', icon: '📈', label: 'Margem real do produto', description: 'ROAS bom mas presta após custo, taxa e margem?', color: 'blue' },
-  { code: 'MC_ZANOM_Q027', icon: '🏆', label: 'Ranking de produtos para Ads', description: 'Qual produto merece mais investimento?', color: 'green' },
-  { code: 'MC_ZANOM_Q028', icon: '📦', label: 'Risco de escalar sem estoque', description: 'VMD vs estoque — evitar ruptura por Ads agressivo', color: 'red' },
-  { code: 'MC_ZANOM_Q029', icon: '🚚', label: 'FBA vs MFN na conversão', description: 'FBA converte melhor que envio próprio?', color: 'blue' },
-  { code: 'MC_ZANOM_Q030', icon: '⛏️', label: 'Mineração em auto campaign', description: 'O que a campanha automática descobriu?', color: 'gold' },
-  { code: 'MC_ZANOM_Q031', icon: '🔀', label: 'Termo vazando para exata', description: 'Broad/Phrase capturando termo que deveria ser EXACT', color: 'gold' },
-  { code: 'MC_ZANOM_Q032', icon: '📋', label: 'Produto: clique bom, página ruim', description: 'Alta CTR + baixa CVR = diagnóstico de página', color: 'gold' },
-  { code: 'MC_ZANOM_Q033', icon: '📦', label: 'Kit vs unitário', description: 'Kit vende melhor que produto unitário?', color: 'blue' },
-  { code: 'MC_ZANOM_Q034', icon: '⚡', label: 'Canibalização entre campanhas', description: 'Campanhas competindo pela mesma venda', color: 'red' },
-  { code: 'MC_ZANOM_Q035', icon: '🧩', label: 'Produto complementar', description: 'Quais complementares atacar com product targeting?', color: 'green' },
-  { code: 'MC_ZANOM_Q036', icon: '💡', label: 'Intenção de uso', description: 'Qual intenção (mala, chave, pet…) converte mais?', color: 'blue' },
-  { code: 'MC_ZANOM_Q037', icon: '📐', label: 'Escalabilidade por campanha', description: 'Qual aguenta mais verba sem quebrar ROAS?', color: 'green' },
-  { code: 'MC_ZANOM_Q038', icon: '🔭', label: 'Boa mas pequena', description: 'Campanha com ROAS alto e volume baixo — escalar?', color: 'green' },
-  { code: 'MC_ZANOM_Q039', icon: '👆', label: 'Muito clique, pouca venda', description: 'Alta CTR de campanha + baixa CVR = problema de oferta', color: 'gold' },
-  { code: 'MC_ZANOM_Q040', icon: '📋', label: 'Plano de ação diário', description: 'O que cortar, proteger e escalar hoje', color: 'green' },
+  { code: 'MC_ZANOM_Q001', icon: 'Q1', label: 'Dinheiro queimado', description: 'Campanhas com gasto e zero venda direta ou assistida', color: 'red' },
+  { code: 'MC_ZANOM_Q002', icon: 'Q2', label: 'Termos para negativar', description: 'Keywords que gastam sem converter', color: 'red' },
+  { code: 'MC_ZANOM_Q003', icon: 'Q3', label: 'Termos para virar exata', description: 'Search terms com conversao para promover a EXACT', color: 'green' },
+  { code: 'MC_ZANOM_Q004', icon: 'Q4', label: 'Negativar search terms', description: 'Termos irrelevantes para adicionar como negativos', color: 'red' },
+  { code: 'MC_ZANOM_Q005', icon: 'Q5', label: 'Proteger campanhas assistidas', description: 'ROAS direto ruim mas assist_rate >= 30%; nao pausar', color: 'purple' },
+  { code: 'MC_ZANOM_Q006', icon: 'Q6', label: 'Funil de keywords', description: 'DISCOVERY / CONSIDERATION / CONVERSION / WASTE', color: 'blue' },
+  { code: 'MC_ZANOM_Q007', icon: 'Q7', label: 'Jornada ate compra', description: 'Sequencia de campanhas tocadas antes da conversao', color: 'blue' },
+  { code: 'MC_ZANOM_Q008', icon: 'Q8', label: 'Saturacao de frequencia', description: 'Esta mostrando anuncio demais para o mesmo publico?', color: 'gold' },
+  { code: 'MC_ZANOM_Q009', icon: 'Q9', label: 'Campanha sem orcamento', description: 'Campanhas boas esgotando budget cedo', color: 'gold' },
+  { code: 'MC_ZANOM_Q010', icon: 'Q10', label: 'Topo de busca vale?', description: 'Top of Search vendendo ou so encarecendo CPC?', color: 'blue' },
+  { code: 'MC_ZANOM_Q011', icon: 'Q11', label: 'Melhor horario', description: 'Hora-pico de conversao vs hora cara sem retorno', color: 'gold' },
+  { code: 'MC_ZANOM_Q012', icon: 'Q12', label: 'Melhor dia da semana', description: 'Padrao de conversao por dia e produto', color: 'blue' },
+  { code: 'MC_ZANOM_Q013', icon: 'Q13', label: 'Horario caro sem conversao', description: 'Janelas com gasto alto e zero conversao', color: 'red' },
+  { code: 'MC_ZANOM_Q014', icon: 'Q14', label: 'ASIN target vencedor', description: 'ASINs de product targeting que convertem', color: 'green' },
+  { code: 'MC_ZANOM_Q015', icon: 'Q15', label: 'ASIN target que so rouba clique', description: 'Product targeting com gasto e zero conversao', color: 'red' },
+  { code: 'MC_ZANOM_Q016', icon: 'Q16', label: 'Cross-sell entre produtos', description: 'Compradores de um produto que compram outro ZANOM', color: 'green' },
+  { code: 'MC_ZANOM_Q017', icon: 'Q17', label: 'Pagina com clique bom mas nao converte', description: 'Alta CTR + baixa CVR = problema na pagina', color: 'gold' },
+  { code: 'MC_ZANOM_Q018', icon: 'Q18', label: 'Produto organico demais', description: 'Vende bem sem Ads; talvez receba Ads demais', color: 'blue' },
+  { code: 'MC_ZANOM_Q019', icon: 'Q19', label: 'Novo cliente vs recorrente', description: 'Ads esta trazendo cliente novo ou so recomprador?', color: 'green' },
+  { code: 'MC_ZANOM_Q020', icon: 'Q20', label: 'Tempo ate conversao', description: 'Quanto tempo o cliente leva para comprar', color: 'blue' },
+  { code: 'MC_ZANOM_Q021', icon: 'Q21', label: 'Defesa de marca', description: 'Preciso pagar Ads para quem ja procura ZANOM?', color: 'purple' },
+  { code: 'MC_ZANOM_Q022', icon: 'Q22', label: 'Concorrente roubando venda', description: 'Quais concorrentes interceptam jornadas ZANOM', color: 'red' },
+  { code: 'MC_ZANOM_Q023', icon: 'Q23', label: 'Cupom: conversao ou margem?', description: 'Cupom aumenta conversao ou so reduz margem?', color: 'gold' },
+  { code: 'MC_ZANOM_Q024', icon: 'Q24', label: 'CPC caro pelo ticket', description: 'CPC acima do break-even por ticket e margem', color: 'red' },
+  { code: 'MC_ZANOM_Q025', icon: 'Q25', label: 'Shift de budget', description: 'De onde tirar orcamento e para onde mandar', color: 'green' },
+  { code: 'MC_ZANOM_Q026', icon: 'Q26', label: 'Margem real do produto', description: 'ROAS bom mas presta apos custo, taxa e margem?', color: 'blue' },
+  { code: 'MC_ZANOM_Q027', icon: 'Q27', label: 'Ranking de produtos para Ads', description: 'Qual produto merece mais investimento?', color: 'green' },
+  { code: 'MC_ZANOM_Q028', icon: 'Q28', label: 'Risco de escalar sem estoque', description: 'VMD vs estoque; evitar ruptura por Ads agressivo', color: 'red' },
+  { code: 'MC_ZANOM_Q029', icon: 'Q29', label: 'FBA vs MFN na conversao', description: 'FBA converte melhor que envio proprio?', color: 'blue' },
+  { code: 'MC_ZANOM_Q030', icon: 'Q30', label: 'Mineracao em auto campaign', description: 'O que a campanha automatica descobriu?', color: 'gold' },
+  { code: 'MC_ZANOM_Q031', icon: 'Q31', label: 'Termo vazando para exata', description: 'Broad/Phrase capturando termo que deveria ser EXACT', color: 'gold' },
+  { code: 'MC_ZANOM_Q032', icon: 'Q32', label: 'Produto: clique bom, pagina ruim', description: 'Alta CTR + baixa CVR = diagnostico de pagina', color: 'gold' },
+  { code: 'MC_ZANOM_Q033', icon: 'Q33', label: 'Kit vs unitario', description: 'Kit vende melhor que produto unitario?', color: 'blue' },
+  { code: 'MC_ZANOM_Q034', icon: 'Q34', label: 'Canibalizacao entre campanhas', description: 'Campanhas competindo pela mesma venda', color: 'red' },
+  { code: 'MC_ZANOM_Q035', icon: 'Q35', label: 'Produto complementar', description: 'Quais complementares atacar com product targeting?', color: 'green' },
+  { code: 'MC_ZANOM_Q036', icon: 'Q36', label: 'Intencao de uso', description: 'Qual intencao de uso converte mais?', color: 'blue' },
+  { code: 'MC_ZANOM_Q037', icon: 'Q37', label: 'Escalabilidade por campanha', description: 'Qual aguenta mais verba sem quebrar ROAS?', color: 'green' },
+  { code: 'MC_ZANOM_Q038', icon: 'Q38', label: 'Boa mas pequena', description: 'Campanha com ROAS alto e volume baixo; escalar?', color: 'green' },
+  { code: 'MC_ZANOM_Q039', icon: 'Q39', label: 'Muito clique, pouca venda', description: 'Alta CTR de campanha + baixa CVR = problema de oferta', color: 'gold' },
+  { code: 'MC_ZANOM_Q040', icon: 'Q40', label: 'Plano de acao diario', description: 'O que cortar, proteger e escalar hoje', color: 'green' },
 ]
 
 const COLOR_BORDER = {
@@ -59,11 +59,11 @@ const COLOR_BORDER = {
 }
 
 function statusIcon(status) {
-  if (['SUCCEEDED', 'INSIGHTS_GENERATED', 'MODELING_COMPLETED'].includes(status)) return '✓'
-  if (['QUEUED', 'CREATED'].includes(status)) return '⏳'
-  if (['SUBMITTED', 'RUNNING'].includes(status)) return '⟳'
-  if (status === 'FAILED') return '✗'
-  return '·'
+  if (['SUCCEEDED', 'INSIGHTS_GENERATED', 'MODELING_COMPLETED'].includes(status)) return 'OK'
+  if (['QUEUED', 'CREATED'].includes(status)) return '..'
+  if (['SUBMITTED', 'RUNNING'].includes(status)) return 'RUN'
+  if (status === 'FAILED') return 'ERR'
+  return '-'
 }
 
 export default function Queries({ ctx }) {

@@ -1,165 +1,180 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { api } from '../api/client.js'
+
+function fmt(n, d = 0) {
+  if (n === null || n === undefined || n === '') return '-'
+  return Number(n).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d })
+}
 
 export default function Settings({ ctx }) {
-  const [tab, setTab] = useState('tenant')
-  const [saved, setSaved] = useState(false)
+  const { tenantID } = ctx
+  const [tab, setTab] = useState('modeling')
+  const [campaigns, setCampaigns] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState('')
+  const [error, setError] = useState('')
 
-  const save = () => { setSaved(true); setTimeout(() => setSaved(false), 1800) }
+  const loadFullAuto = useCallback(async () => {
+    if (!tenantID) return
+    setLoading(true)
+    setError('')
+    const res = await api.goldMlFullAutoCampaigns(tenantID)
+    if (res.ok) {
+      setCampaigns(res.data.items || [])
+    } else {
+      setError(res.data?.error || `HTTP ${res.status}`)
+    }
+    setLoading(false)
+  }, [tenantID])
+
+  useEffect(() => { loadFullAuto() }, [loadFullAuto])
+
+  const toggleFullAuto = async (campaign, enabled) => {
+    const key = campaign.campaign_name
+    setSaving(key)
+    setError('')
+    const res = await api.setGoldMlFullAutoCampaign(tenantID, {
+      campaign_id: campaign.campaign_id || '',
+      campaign_name: campaign.campaign_name,
+      enabled,
+      notes: enabled ? 'Liberada para ML full-auto 360 pela tela Settings > Modeling.' : 'Full-auto 360 desligado pela tela.',
+    })
+    if (res.ok) {
+      setCampaigns(prev => prev.map(it => it.campaign_name === campaign.campaign_name
+        ? { ...it, full_auto_enabled: enabled, flag_updated_at: new Date().toISOString() }
+        : it))
+    } else {
+      setError(res.data?.error || `HTTP ${res.status}`)
+    }
+    setSaving('')
+  }
+
+  const enabledCount = campaigns.filter(c => c.full_auto_enabled).length
 
   return (
     <div>
       <div className="topbar">
         <div>
-          <h2>Configurações</h2>
-          <p>Tenant, conexões e preferências da plataforma</p>
+          <h2>Configuracoes</h2>
+          <p>Controles operacionais do MarketCloud</p>
         </div>
         <div className="actions">
-          <button className="btn primary" onClick={save}>{saved ? '✓ Salvo!' : 'Salvar Alterações'}</button>
+          <button className="btn" onClick={loadFullAuto}>Atualizar</button>
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-        {['tenant', 'amazon', 'modeling', 'users'].map(t => (
+        {['modeling', 'tenant', 'amazon', 'users'].map(t => (
           <button key={t} className={`btn ${tab === t ? 'primary' : ''}`} onClick={() => setTab(t)}>
-            {{ tenant: 'Tenant', amazon: 'Amazon Ads', modeling: 'Modeling', users: 'Usuários' }[t]}
+            {{ modeling: 'Modeling', tenant: 'Tenant', amazon: 'Amazon Ads', users: 'Usuarios' }[t]}
           </button>
         ))}
       </div>
 
-      {tab === 'tenant' && (
-        <div className="grid two">
-          <div className="panel">
-            <div className="panel-head"><h3>Dados do Tenant</h3></div>
-            <div className="panel-body" style={{ display: 'grid', gap: 14 }}>
-              <Field label="Nome do Tenant"><input defaultValue="ZANOM Marketplace" /></Field>
-              <Field label="Slug"><input defaultValue="zanom" /></Field>
-              <Field label="Plano">
-                <select defaultValue="PROFESSIONAL">
-                  <option>FREE</option>
-                  <option>STARTER</option>
-                  <option>PROFESSIONAL</option>
-                  <option>ENTERPRISE</option>
-                </select>
-              </Field>
-              <Field label="Status"><select defaultValue="ACTIVE"><option>ACTIVE</option><option>SUSPENDED</option></select></Field>
-            </div>
-          </div>
-          <div className="panel">
-            <div className="panel-head"><h3>Uso do Plano</h3></div>
-            <div className="panel-body">
-              <UsageRow label="Lojas" used={4} max={10} color="green" />
-              <UsageRow label="Campanhas" used={87} max={500} color="blue" />
-              <UsageRow label="AMC Query Runs / mês" used={23} max={100} color="gold" />
-              <UsageRow label="Webhooks" used={3} max={20} color="purple" />
-              <div style={{ marginTop: 20, padding: 14, background: 'rgba(243,201,107,.07)', borderRadius: 14, border: '1px solid rgba(243,201,107,.2)', fontSize: 13 }}>
-                <div style={{ color: 'var(--gold)', fontWeight: 700, marginBottom: 4 }}>Plano PROFESSIONAL</div>
-                <div style={{ color: 'var(--muted)' }}>Renovação em 26 dias</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {tab === 'amazon' && (
-        <div className="grid two">
-          <div className="panel">
-            <div className="panel-head"><h3>OAuth Amazon Ads</h3></div>
-            <div className="panel-body" style={{ display: 'grid', gap: 14 }}>
-              <Field label="Client ID (LWA)"><input type="password" defaultValue="amzn1.application-oa2-client.XXXX" /></Field>
-              <Field label="Client Secret"><input type="password" defaultValue="••••••••••••••••" /></Field>
-              <Field label="Redirect URI"><input defaultValue="https://app.marketcloud.io/oauth/amazon/callback" /></Field>
-              <div style={{ padding: 14, background: 'rgba(49,211,154,.07)', borderRadius: 14, border: '1px solid rgba(49,211,154,.2)', fontSize: 13 }}>
-                <div style={{ color: 'var(--green)', fontWeight: 700, marginBottom: 4 }}>✓ Brasil — Token Ativo</div>
-                <div style={{ color: 'var(--muted)' }}>Expira em 3h 42min • Auto-refresh habilitado</div>
-              </div>
-            </div>
-          </div>
-          <div className="panel">
-            <div className="panel-head"><h3>AMC Instance</h3></div>
-            <div className="panel-body" style={{ display: 'grid', gap: 14 }}>
-              <Field label="AMC Instance ID"><input defaultValue="amcXXXXXXXXXXXXXXX" /></Field>
-              <Field label="AMC API URL"><input defaultValue="https://amc.amazon.com/api/v1" /></Field>
-              <Field label="Marketplace ID"><input defaultValue="A2Q3Y263D00KWC" /></Field>
-              <button className="btn blue">Testar Conexão AMC</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {tab === 'modeling' && (
-        <div className="panel">
-          <div className="panel-head"><h3>Parâmetros do Modeling Worker</h3></div>
-          <div className="panel-body" style={{ display: 'grid', gap: 14 }}>
-            <div className="grid two" style={{ gap: 14 }}>
-              <Field label="Target ROAS (threshold conversão)"><input type="number" defaultValue="4.0" step="0.1" /></Field>
-              <Field label="Min. Spend para classificar WASTE (R$)"><input type="number" defaultValue="50" /></Field>
-              <Field label="Min. Assist Rate (ASSISTED_CONVERSION)"><input type="number" defaultValue="0.30" step="0.01" /></Field>
-              <Field label="Min. Last Touch Rate (CONVERSION)"><input type="number" defaultValue="0.50" step="0.01" /></Field>
-              <Field label="Min. First Touch Rate (DISCOVERY)"><input type="number" defaultValue="0.35" step="0.01" /></Field>
-              <Field label="Polling interval do worker (segundos)"><input type="number" defaultValue="15" /></Field>
+        <div className="grid two">
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <h3>ML full-auto 360 por campanha</h3>
+                <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
+                  Recomenda, aplica na Agenda de BIDs, monitora AMS e aprende com o resultado.
+                </p>
+              </div>
+              <span className="pill green">{enabledCount} ligadas</span>
             </div>
-            <div style={{ padding: 14, background: 'rgba(184,146,255,.07)', borderRadius: 14, border: '1px solid rgba(184,146,255,.2)', fontSize: 13 }}>
-              <div style={{ color: 'var(--purple)', fontWeight: 700, marginBottom: 4 }}>Classificação Determinística v1</div>
-              <div style={{ color: 'var(--muted)' }}>Nenhum modelo ML usado. Resultados são 100% reproduzíveis com os mesmos dados de entrada.</div>
+            <div className="panel-body">
+              <div className="notice">
+                O modelo continua gerando predicoes para todas as campanhas. O bot so aplica automaticamente nas campanhas com a chave ligada abaixo.
+              </div>
+              {error && <div className="error-box">{error}</div>}
+              {loading ? (
+                <div className="empty">Carregando campanhas...</div>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Campanha</th>
+                        <th>Score</th>
+                        <th>Recs</th>
+                        <th>Full auto</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {campaigns.map(c => (
+                        <tr key={c.campaign_name}>
+                          <td>
+                            <div style={{ fontWeight: 800 }}>{c.campaign_name}</div>
+                            <div className="muted">{c.campaign_id || 'sem campaign_id no lake'}</div>
+                          </td>
+                          <td>{fmt(c.max_priority_score, 0)}</td>
+                          <td>{fmt(c.recommendation_rows)}</td>
+                          <td>
+                            <button
+                              className={`toggle-btn ${c.full_auto_enabled ? 'on' : ''}`}
+                              disabled={saving === c.campaign_name}
+                              onClick={() => toggleFullAuto(c, !c.full_auto_enabled)}
+                            >
+                              {saving === c.campaign_name ? 'Salvando...' : c.full_auto_enabled ? 'Ligado' : 'Desligado'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-head"><h3>Como ler as predicoes</h3></div>
+            <div className="panel-body" style={{ display: 'grid', gap: 12 }}>
+              <Info title="Predicao nao e alteracao">
+                Uma predicao e uma linha avaliada pelo modelo. Exemplo: 50 campanhas x 24 horas = 1200 predicoes.
+              </Info>
+              <Info title="O que vira acao">
+                Depois da predicao entram filtros: confianca, ML concorda, regra pendente, bid sugerido maior que o atual e campanha liberada no full-auto.
+              </Info>
+              <Info title="O que o 360 mede">
+                A decisao aplicada e comparada com AMS depois de 1h, 3h e 24h para rotular se melhorou, piorou ou ficou neutro.
+              </Info>
             </div>
           </div>
         </div>
       )}
 
-      {tab === 'users' && (
+      {tab !== 'modeling' && (
         <div className="panel">
-          <div className="panel-head">
-            <h3>Usuários do Tenant</h3>
-            <button className="btn sm primary">+ Convidar</button>
-          </div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr><th>Nome</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr>
-              </thead>
-              <tbody>
-                {[
-                  { name: 'Odinei Junior', email: 'odinei@zanom.com.br', role: 'TENANT_ADMIN', status: 'ACTIVE' },
-                  { name: 'Ana Marketing', email: 'ana@zanom.com.br', role: 'ANALYST', status: 'ACTIVE' },
-                  { name: 'Bot Worker', email: 'bot@zanom.com.br', role: 'API_CLIENT', status: 'ACTIVE' },
-                ].map(u => (
-                  <tr key={u.email}>
-                    <td style={{ fontWeight: 700 }}>{u.name}</td>
-                    <td style={{ color: 'var(--muted)' }}>{u.email}</td>
-                    <td><span className="pill blue">{u.role}</span></td>
-                    <td><span className="pill green">{u.status}</span></td>
-                    <td><button className="btn sm">Editar</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="panel-head"><h3>{tab}</h3></div>
+          <div className="panel-body">
+            <div className="empty">Configuracao operacional ainda nao editavel nesta aba.</div>
           </div>
         </div>
       )}
+
+      <style>{`
+        .notice{padding:12px 14px;border:1px solid rgba(84,160,255,.35);background:rgba(84,160,255,.09);border-radius:8px;margin-bottom:12px;color:#b8d6ff;font-size:13px}
+        .error-box{padding:10px 12px;border:1px solid rgba(255,84,112,.35);background:rgba(255,84,112,.10);border-radius:8px;margin-bottom:12px;color:#ff9bad;font-size:13px}
+        .muted{color:var(--muted);font-size:12px;margin-top:3px}
+        .empty{padding:24px;text-align:center;color:var(--muted)}
+        .toggle-btn{min-width:92px;border:1px solid var(--border);background:#202838;color:#d8e5ff;border-radius:8px;padding:8px 10px;font-weight:800;cursor:pointer}
+        .toggle-btn.on{background:#0b6b48;border-color:#159c70;color:#dfffee}
+        .toggle-btn:disabled{opacity:.65;cursor:wait}
+        .info-box{border:1px solid var(--border);background:rgba(255,255,255,.03);border-radius:8px;padding:12px}
+        .info-title{font-weight:800;margin-bottom:4px}
+        .info-body{color:var(--muted);font-size:13px;line-height:1.45}
+      `}</style>
     </div>
   )
 }
 
-function Field({ label, children }) {
+function Info({ title, children }) {
   return (
-    <div>
-      <div className="label" style={{ marginBottom: 6 }}>{label}</div>
-      {children}
-    </div>
-  )
-}
-
-function UsageRow({ label, used, max, color }) {
-  const pct = (used / max) * 100
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
-        <span>{label}</span>
-        <span style={{ color: `var(--${color})` }}>{used} / {max}</span>
-      </div>
-      <div className="bar">
-        <span style={{ width: pct + '%', background: `var(--${color})` }} />
-      </div>
+    <div className="info-box">
+      <div className="info-title">{title}</div>
+      <div className="info-body">{children}</div>
     </div>
   )
 }

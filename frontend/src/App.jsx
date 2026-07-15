@@ -4,6 +4,11 @@ import Login from './pages/Login.jsx'
 import Queries from './pages/Queries.jsx'
 import Settings from './pages/Settings.jsx'
 import ReviewQueue from './pages/ReviewQueue.jsx'
+import HorariosReais from './pages/HorariosReais.jsx'
+import AmcAlerts from './pages/AmcAlerts.jsx'
+import KeywordHorarios from './pages/KeywordHorarios.jsx'
+import StatusAmsMl from './pages/StatusAmsMl.jsx'
+import PartnerCampaignMonitor from './pages/PartnerCampaignMonitor.jsx'
 
 export default function App() {
   const [authed, setAuthed]   = useState(!!getToken())
@@ -60,7 +65,7 @@ export default function App() {
         <div className="tenant-box">
           <div className="label">Tenant</div>
           <div style={{ fontSize: 13, padding: '6px 0', fontWeight: 700, color: 'var(--gold)' }}>
-            {me?.name || '…'}
+            {me?.name || '...'}
           </div>
           <div className="label" style={{ marginTop: 8 }}>Loja Ativa</div>
           {stores.length > 0 ? (
@@ -74,13 +79,28 @@ export default function App() {
 
         <nav className="nav" style={{ marginTop: 24 }}>
           <button className={page === 'cockpit' ? 'active' : ''} onClick={() => setPage('cockpit')}>
-            <span>◆  Cockpit</span><span className="dot" />
+            <span>CP Cockpit</span><span className="dot" />
+          </button>
+          <button className={page === 'horarios' ? 'active' : ''} onClick={() => setPage('horarios')}>
+            <span>HR Horarios reais</span><span className="dot" />
+          </button>
+          <button className={page === 'keyword-horarios' ? 'active' : ''} onClick={() => setPage('keyword-horarios')}>
+            <span>KW  Keywords x hora</span><span className="dot" />
+          </button>
+          <button className={page === 'partner-monitor' ? 'active' : ''} onClick={() => setPage('partner-monitor')}>
+            <span>M19 Monitor parceiro</span><span className="dot" />
+          </button>
+          <button className={page === 'status-ams-ml' ? 'active' : ''} onClick={() => setPage('status-ams-ml')}>
+            <span>ST  Status AMS + ML</span><span className="dot" />
+          </button>
+          <button className={page === 'amc-alerts' ? 'active' : ''} onClick={() => setPage('amc-alerts')}>
+            <span>AL Alertas AMC</span><span className="dot" />
           </button>
           <button className={page === 'queries' ? 'active' : ''} onClick={() => setPage('queries')}>
-            <span>◉  AMC Queries</span><span className="dot" />
+            <span>AM AMC Queries</span><span className="dot" />
           </button>
           <button className={page === 'settings' ? 'active' : ''} onClick={() => setPage('settings')}>
-            <span>⚙  Configurações</span><span className="dot" />
+            <span>CF Configuracoes</span><span className="dot" />
           </button>
         </nav>
 
@@ -93,9 +113,15 @@ export default function App() {
 
       <main className="main">
         {page === 'cockpit'  && <ReviewQueue ctx={ctx} key={`cockpit-${storeID}`} />}
+        {page === 'horarios' && <HorariosReais ctx={ctx} key={`horarios-${storeID}`} />}
+        {page === 'keyword-horarios' && <KeywordHorarios ctx={ctx} key={`keyword-horarios-${storeID}`} />}
+        {page === 'partner-monitor' && <PartnerCampaignMonitor ctx={ctx} key={`partner-monitor-${storeID}`} />}
+        {page === 'status-ams-ml' && <StatusAmsMl ctx={ctx} key={`status-ams-ml-${storeID}`} />}
+        {page === 'amc-alerts' && <AmcAlerts ctx={ctx} key={`amc-alerts-${storeID}`} />}
         {page === 'queries'  && <Queries  ctx={ctx} key={`queries-${storeID}`} />}
         {page === 'settings' && <Settings ctx={ctx} key={`settings-${storeID}`} />}
       </main>
     </div>
   )
 }
+

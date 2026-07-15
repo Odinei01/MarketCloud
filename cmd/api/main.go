@@ -15,6 +15,7 @@ import (
 	"github.com/zanom/marketcloud/internal/middleware"
 	"github.com/zanom/marketcloud/internal/query"
 	"github.com/zanom/marketcloud/internal/store"
+	"github.com/zanom/marketcloud/internal/stream"
 	"github.com/zanom/marketcloud/internal/tenant"
 )
 
@@ -37,6 +38,11 @@ func main() {
 	storeH := store.NewHandler(db, auditLogger)
 	queryH := query.NewHandler(db, auditLogger)
 	oauthH := amazon.NewOAuthHandler(db, cfg, auditLogger)
+	streamH := stream.NewHandler(db, cfg)
+
+	// Amazon Marketing Stream — consumidor SQS (hora-a-hora). Dormente até
+	// STREAM_CONSUMER_ENABLED=true + filas configuradas. Não bloqueia o boot.
+	stream.NewConsumer(db, cfg).Start(context.Background())
 
 	auth := middleware.Auth(cfg.JWTSecret)
 	tenantIso := middleware.TenantIsolation()
@@ -133,7 +139,24 @@ func main() {
 		r.Get("/review-queue", queryH.GoldReviewQueue)
 		r.Get("/action-summary", queryH.GoldActionSummary)
 		r.Get("/campaign-plans", queryH.GoldCampaignPlans)
+		r.Get("/hourly-real", queryH.GoldHourlyReal)
+		r.Get("/keyword-hourly-real", queryH.GoldKeywordHourlyReal)
+		r.Get("/ml-ams-status", queryH.GoldMLAmsStatus)
+		r.Get("/ml-full-auto-campaigns", queryH.GoldMLFullAutoCampaigns)
+		r.Put("/ml-full-auto-campaigns", queryH.GoldSetMLFullAutoCampaign)
+		r.Get("/partner-campaign-monitor", queryH.GoldPartnerCampaignMonitor)
+		r.Get("/amc-alerts", queryH.GoldAMCAlerts)
 		r.Post("/review-queue/{id}/decision", queryH.GoldDecide)
+	})
+
+	// --- Amazon Marketing Stream: gerência de subscriptions (Fase 2) ---
+	r.Route("/api/v1/stream/subscriptions", func(r chi.Router) {
+		r.Use(auth, tenantIso)
+		r.With(managerUp).Post("/", streamH.CreateSubscription)
+		r.Get("/", streamH.ListSubscriptions)
+		r.With(managerUp).Delete("/{id}", func(w http.ResponseWriter, req *http.Request) {
+			streamH.DeleteSubscription(w, req, chi.URLParam(req, "id"))
+		})
 	})
 
 	// --- External API (API clients / SWARM) ---

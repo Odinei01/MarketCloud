@@ -13,6 +13,14 @@ frontend/dist-codex/
 *.csv
 *.exe
 
+# Terraform local state/cache (infra is local-state today)
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.*
+**/terraform.tfvars
+.cache-go/
+.gomodcache/
+
 # ML model artifacts (regeneráveis)
 workers/ml-worker/models/
 *.pkl

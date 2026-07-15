@@ -48,9 +48,10 @@ func main() {
 	// Start background workers
 	go o.runSubmitLoop(ctx)
 	go o.runStatusLoop(ctx)
-	go o.runDailyEnqueueLoop(ctx) // enfileira E001..E009 1x/dia (janela deslizante)
-	go o.runIngestLoop(ctx)       // auto-ingest de runs SUCCEEDED -> bronze
-	go o.runSwarmSyncLoop(ctx)    // sync do estado SWARM/ZANOM -> bronze local
+	go o.runDailyEnqueueLoop(ctx)     // enfileira E001..E009 1x/dia (janela deslizante)
+	go o.runIngestLoop(ctx)           // auto-ingest de runs SUCCEEDED -> bronze
+	go o.runSwarmSyncLoop(ctx)        // sync do estado SWARM/ZANOM -> bronze local
+	go o.runAmsHourlyRefreshLoop(ctx) // reconcilia AMS -> hourly em janela movel D-14
 
 	// HTTP for health + manual trigger
 	r := chi.NewRouter()
@@ -61,7 +62,7 @@ func main() {
 		w.Write([]byte(`{"status":"ok","service":"marketcloud-query-orchestrator"}`))
 	})
 
-	// POST /internal/trigger — enqueue a specific run immediately
+	// POST /internal/trigger - enqueue a specific run immediately
 	r.Post("/internal/trigger/{run_id}", func(w http.ResponseWriter, r *http.Request) {
 		runID := chi.URLParam(r, "run_id")
 		db.Exec(r.Context(), `

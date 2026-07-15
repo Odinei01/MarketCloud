@@ -63,6 +63,10 @@ func main() {
 	r.Get("/internal/amc/status/{execution_id}", s.getQueryStatus)
 	r.Post("/internal/amc/download", s.downloadResult)
 	r.Get("/internal/amc/result/{execution_id}", s.fetchResultCSV)
+	r.Post("/internal/amc/ingest/q005/{execution_id}", s.ingestQ005)
+	r.Post("/internal/amc/ingest/q019/{execution_id}", s.ingestQ019)
+	r.Post("/internal/amc/ingest/q041/{execution_id}", s.ingestQ041)
+	r.Post("/internal/amc/ingest/q042/{execution_id}", s.ingestQ042)
 	r.Post("/internal/amc/ingest/e001/{execution_id}", s.ingestE001)
 	r.Post("/internal/amc/ingest/e002/{execution_id}", s.ingestE002)
 	r.Post("/internal/amc/ingest/e003/{execution_id}", s.ingestE003)
@@ -720,6 +724,15 @@ func substituteAMCParams(sqlTpl string, params map[string]any, periodStart, peri
 		"min_clicks":      "8",
 		"min_impressions": "100",
 		"min_orders_exact": "1",
+		// Fragmentos de SQL (expressao/clausula) — raw, sem aspas (B: grouping/filtro custom)
+		"product_group_label":  "'TODOS'",
+		"campaign_filter":      "",
+		"source_product_group": "'TODOS'",
+		"target_product_group": "'TODOS'",
+		"asin_filter":          "",
+		"asin_filter_label":    "'TODOS'",
+		"zanom_asins":          "'B0H2NL3S6T'",
+		"zanom_parent_asins":   "'B0H2NL3S6T'",
 	}
 
 	// Override both maps with caller-supplied params

@@ -1,0 +1,23 @@
+aws_region  = "us-east-1"
+name_prefix = "zanom-ams"
+
+datasets = ["sp-traffic", "sp-conversion"]
+
+# ARNs oficiais por dataset/realm NA vindos de
+# amzn/amazon-marketing-stream-examples/stream_infrastructure_config.yml.
+ams_sns_source_arn_patterns = {
+  sp-traffic    = "arn:aws:sns:us-east-1:906013806264:*"
+  sp-conversion = "arn:aws:sns:us-east-1:802324068763:*"
+}
+
+ams_reviewer_role_arn = "arn:aws:iam::926844853897:role/ReviewerRole"
+
+tags = {
+  project = "zanom-marketcloud"
+  purpose = "amazon-marketing-stream-hourly"
+  managed = "terraform"
+}
+
+# CloudWatch recomendado pela Amazon para confirmar entrega AMS -> SQS e saude do consumidor.
+cloudwatch_monitoring_enabled = true
+cloudwatch_alarm_email        = "" # opcional: preencha e confirme o e-mail SNS para receber alarmes.
