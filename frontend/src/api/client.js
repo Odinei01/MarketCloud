@@ -114,6 +114,7 @@ export const api = {
   },
   goldActionSummary: (tid) => req('GET', '/gold/action-summary', null, tid),
   amcAlerts: (tid) => req('GET', '/gold/amc-alerts', null, tid),
+  robotToday: (tid) => req('GET', '/gold/robot-today', null, tid),
   goldHourlyReal: (tid, filters = {}) => {
     const p = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))

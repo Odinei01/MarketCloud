@@ -146,6 +146,7 @@ func main() {
 		r.Put("/ml-full-auto-campaigns", queryH.GoldSetMLFullAutoCampaign)
 		r.Get("/partner-campaign-monitor", queryH.GoldPartnerCampaignMonitor)
 		r.Get("/amc-alerts", queryH.GoldAMCAlerts)
+		r.Get("/robot-today", queryH.RobotToday)
 		r.Post("/review-queue/{id}/decision", queryH.GoldDecide)
 	})
 

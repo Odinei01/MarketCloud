@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api/client.js'
 
+const BID_ROBOT_API_BASE = import.meta.env.VITE_BID_ROBOT_API_BASE || 'http://localhost:8080'
+
 const actionMeta = {
   BID_UP: { label: 'Subir', color: '#26de81' },
   CUT_HOUR: { label: 'Cortar', color: '#ff5470' },
@@ -45,6 +47,49 @@ export default function KeywordHorarios({ ctx }) {
   }, [tenantID, filter])
 
   useEffect(() => { load() }, [load])
+
+  const [applyBusy, setApplyBusy] = useState('')
+  const [applyResult, setApplyResult] = useState({})
+
+  const applyPin = async (item) => {
+    const key = item.keyword_hour_recommendation_id
+    const ok = window.confirm(
+      `Fixar "${item.keyword_text}" as ${item.event_hour}h em ${fmt(item.suggested_hour_multiplier, 2)}x ` +
+      `(lance efetivo ${money(item.suggested_effective_bid)})?\n\n` +
+      `Cria um override no nivel da KEYWORD (sobrepoe grupo/campanha) e volta como aprendizado pro ML.`
+    )
+    if (!ok) return
+    setApplyBusy(key)
+    setApplyResult(prev => ({ ...prev, [key]: '' }))
+    try {
+      const res = await fetch(`${BID_ROBOT_API_BASE}/api/amazon/ads/bid-robot/schedules/apply-suggestion-entity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          campaign_id: item.campaign_id, ad_group_id: item.ad_group_id,
+          keyword_text: item.keyword_text, match_type: item.match_type,
+          campaign_name: item.campaign_name,
+          hour: Number(item.event_hour),
+          suggested_multiplier: Number(item.suggested_hour_multiplier),
+          recommendation_id: item.keyword_hour_recommendation_id,
+          base_bid: item.base_bid, suggested_effective_bid: item.suggested_effective_bid,
+          baseline_impressions: item.impressions, baseline_clicks: item.clicks,
+          baseline_spend: item.spend, baseline_orders: item.orders,
+          baseline_sales: item.sales, baseline_roas: item.roas,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      const st = data.status || `HTTP ${res.status}`
+      const msg = st === 'APPLIED' ? '✅ Aplicado (override keyword)'
+        : st === 'ALREADY_ALIGNED' ? '↔️ Ja alinhado'
+        : st === 'KEYWORD_NOT_FOUND' ? '⚠️ Keyword nao encontrada no robo'
+        : `⚠️ ${st}`
+      setApplyResult(prev => ({ ...prev, [key]: msg }))
+    } catch (e) {
+      setApplyResult(prev => ({ ...prev, [key]: '⚠️ ' + (e.message || 'falha') }))
+    }
+    setApplyBusy('')
+  }
 
   const upCount = items.filter(x => x.campaign_action_type === 'BID_UP').length
   const downCount = items.filter(x => x.campaign_action_type === 'CUT_HOUR' || x.campaign_action_type === 'BID_DOWN').length
@@ -128,6 +173,19 @@ export default function KeywordHorarios({ ctx }) {
                     <td>
                       <span className="action-tag" style={{ color: meta.color, borderColor: meta.color }}>{meta.label}</span>
                       <div className="sub2">{item.advisor_action}</div>
+                      {['BID_UP', 'BID_DOWN', 'CUT_HOUR'].includes(item.campaign_action_type) && (
+                        <button
+                          className="btn"
+                          style={{ marginTop: 6, fontSize: 11, padding: '3px 9px' }}
+                          disabled={applyBusy === item.keyword_hour_recommendation_id}
+                          onClick={() => applyPin(item)}
+                        >
+                          {applyBusy === item.keyword_hour_recommendation_id ? 'aplicando...' : 'Aplicar'}
+                        </button>
+                      )}
+                      {applyResult[item.keyword_hour_recommendation_id] && (
+                        <div className="sub2" style={{ marginTop: 4 }}>{applyResult[item.keyword_hour_recommendation_id]}</div>
+                      )}
                     </td>
                     <td className="num">{money(item.base_bid)}</td>
                     <td className="num">

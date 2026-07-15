@@ -70,7 +70,9 @@ def load(conn):
                COALESCE(MAX(amc_first_touch_rate),0) AS amc_first_touch_rate,
                COALESCE(MAX(amc_new_customer_rate),0) AS amc_new_customer_rate,
                COALESCE(MAX(amc_dpv_count),0) AS amc_dpv_count,
-               COALESCE(MAX(amc_cart_adds),0) AS amc_cart_adds
+               COALESCE(MAX(amc_cart_adds),0) AS amc_cart_adds,
+               COALESCE(MAX(learn_roas_delta_avg),0) AS learn_roas_delta_avg,
+               COALESCE(MAX(learn_win_rate),0.5)     AS learn_win_rate
         FROM marketcloud_gold.gold_hourly_signal_amc
         WHERE UPPER(COALESCE(campaign_status,'ENABLED')) NOT IN ('ARCHIVED','PAUSED','DELETED')
         GROUP BY LOWER(TRIM(campaign_name)), event_hour
@@ -83,7 +85,8 @@ def load(conn):
     numeric_cols = ["event_hour", "days_observed", "impressions", "clicks", "spend",
                     "orders", "sales", "spend_mature", "mature_days",
                     "amc_assist_rate", "amc_first_touch_rate", "amc_new_customer_rate",
-                    "amc_dpv_count", "amc_cart_adds"]
+                    "amc_dpv_count", "amc_cart_adds",
+                    "learn_roas_delta_avg", "learn_win_rate"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
     df["ctr"] = np.where(df["impressions"] > 0, df["clicks"] / df["impressions"], 0.0)
@@ -104,7 +107,8 @@ def build_X(df):
     base = df[["event_hour", "is_madrugada", "is_manha", "is_tarde", "is_noite",
                "ctr", "cpc", "impr_per_day", "days_observed",
                "amc_assist_rate", "amc_first_touch_rate", "amc_new_customer_rate",
-               "amc_dpv_count", "amc_cart_adds"]].copy()
+               "amc_dpv_count", "amc_cart_adds",
+               "learn_roas_delta_avg", "learn_win_rate"]].copy()
     camp = pd.get_dummies(df["campaign_norm"], prefix="c")
     X = pd.concat([base.reset_index(drop=True), camp.reset_index(drop=True)], axis=1)
     return X.astype(float), list(X.columns)

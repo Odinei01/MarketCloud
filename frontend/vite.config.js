@@ -11,6 +11,9 @@ export default defineConfig({
   server: {
     host: true,
     port: 3001,
+    // Bind mount no Windows nao propaga inotify pro container -> HMR nao detecta
+    // mudanca. Polling garante que o Vite veja edicoes e recompile.
+    watch: { usePolling: true, interval: 300 },
     proxy: {
       '/api': { target: apiProxyTarget, changeOrigin: true }
     }

@@ -21,6 +21,11 @@ services:
     volumes:
       - marketcloud_pgdata:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d
+    # Precisa enxergar o pricing_db (SWARM) pro postgres_fdw (swarm_src.*).
+    # Sem isso o fdw quebra em silencio: "could not translate host name pricing_db".
+    networks:
+      - default
+      - swarm
     logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mcadmin -d marketcloud"]
@@ -185,6 +190,13 @@ services:
       - api
     logging: *default-logging
     restart: unless-stopped
+
+networks:
+  default:
+  # Rede do SWARM (mercado-data-app) — necessaria pro fdw do postgres.
+  swarm:
+    external: true
+    name: mercado-data-app_default
 
 volumes:
   marketcloud_pgdata:

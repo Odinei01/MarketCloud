@@ -6,6 +6,7 @@ import Settings from './pages/Settings.jsx'
 import ReviewQueue from './pages/ReviewQueue.jsx'
 import HorariosReais from './pages/HorariosReais.jsx'
 import AmcAlerts from './pages/AmcAlerts.jsx'
+import MeuRoboHoje from './pages/MeuRoboHoje.jsx'
 import KeywordHorarios from './pages/KeywordHorarios.jsx'
 import StatusAmsMl from './pages/StatusAmsMl.jsx'
 import PartnerCampaignMonitor from './pages/PartnerCampaignMonitor.jsx'
@@ -13,7 +14,7 @@ import PartnerCampaignMonitor from './pages/PartnerCampaignMonitor.jsx'
 export default function App() {
   const [authed, setAuthed]   = useState(!!getToken())
   const [me, setMe]           = useState(null)
-  const [page, setPage]       = useState('cockpit')
+  const [page, setPage]       = useState('robo-hoje')
   const [stores, setStores]   = useState([])
   const [storeID, setStoreID] = useState('')
 
@@ -78,6 +79,9 @@ export default function App() {
         </div>
 
         <nav className="nav" style={{ marginTop: 24 }}>
+          <button className={page === 'robo-hoje' ? 'active' : ''} onClick={() => setPage('robo-hoje')}>
+            <span>🤖 Meu Robô Hoje</span><span className="dot" />
+          </button>
           <button className={page === 'cockpit' ? 'active' : ''} onClick={() => setPage('cockpit')}>
             <span>CP Cockpit</span><span className="dot" />
           </button>
@@ -112,6 +116,7 @@ export default function App() {
       </aside>
 
       <main className="main">
+        {page === 'robo-hoje' && <MeuRoboHoje ctx={ctx} key={`robo-hoje-${storeID}`} />}
         {page === 'cockpit'  && <ReviewQueue ctx={ctx} key={`cockpit-${storeID}`} />}
         {page === 'horarios' && <HorariosReais ctx={ctx} key={`horarios-${storeID}`} />}
         {page === 'keyword-horarios' && <KeywordHorarios ctx={ctx} key={`keyword-horarios-${storeID}`} />}
