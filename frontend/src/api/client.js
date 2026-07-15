@@ -1,10 +1,24 @@
 const BASE = '/api/v1'
 
-let _token = localStorage.getItem('mc_token') || ''
+// Le o token guardado, descartando lixo. setItem(chave, undefined) grava a
+// STRING "undefined", que passa no || como se fosse token e faz o app mandar
+// "Bearer undefined" em toda chamada — 401 sem explicacao. Auto-cura o
+// navegador que ja tem esse lixo preso.
+function readStoredToken() {
+  const raw = localStorage.getItem('mc_token')
+  if (!raw || raw === 'undefined' || raw === 'null') {
+    localStorage.removeItem('mc_token')
+    return ''
+  }
+  return raw
+}
+
+let _token = readStoredToken()
 
 export function setToken(t) {
-  _token = t
-  localStorage.setItem('mc_token', t)
+  _token = typeof t === 'string' && t ? t : ''
+  if (_token) localStorage.setItem('mc_token', _token)
+  else localStorage.removeItem('mc_token')
 }
 
 export function getToken() { return _token }
