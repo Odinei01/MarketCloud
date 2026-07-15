@@ -115,10 +115,11 @@ func (o *orchestrator) runStatusLoop(ctx context.Context) {
 func (o *orchestrator) processQueued(ctx context.Context) {
 	rows, err := o.db.Query(ctx, `
 		SELECT qr.id, qr.tenant_id, qr.store_id, qr.amc_instance_id,
-		       qr.parameters_json, qt.sql_template, qt.code
+		       qr.parameters_json, qt.sql_template, qt.code, qr.submit_attempts
 		FROM query_runs qr
 		JOIN query_templates qt ON qt.id = qr.query_template_id
 		WHERE qr.status = 'QUEUED'
+		  AND (qr.next_retry_at IS NULL OR qr.next_retry_at <= NOW())
 		ORDER BY qr.created_at ASC
 		LIMIT 5
 		FOR UPDATE SKIP LOCKED
@@ -136,12 +137,13 @@ func (o *orchestrator) processQueued(ctx context.Context) {
 		Params        json.RawMessage
 		SQLTemplate   string
 		TemplateCode  string
+		Attempts      int
 	}
 
 	var queued []run
 	for rows.Next() {
 		var run run
-		if err := rows.Scan(&run.ID, &run.TenantID, &run.StoreID, &run.AMCInstanceID, &run.Params, &run.SQLTemplate, &run.TemplateCode); err == nil {
+		if err := rows.Scan(&run.ID, &run.TenantID, &run.StoreID, &run.AMCInstanceID, &run.Params, &run.SQLTemplate, &run.TemplateCode, &run.Attempts); err == nil {
 			queued = append(queued, run)
 		}
 	}
@@ -167,17 +169,43 @@ func (o *orchestrator) processQueued(ctx context.Context) {
 			bytes.NewReader(payload),
 		)
 		if err != nil {
-			log.Printf("submit run %s failed: %v", run.ID, err)
-			o.markFailed(ctx, run.ID, "CONNECTOR_UNREACHABLE", err.Error())
+			o.scheduleSubmitRetry(ctx, run.ID, run.Attempts, "CONNECTOR_UNREACHABLE", err.Error())
 			continue
 		}
 		resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
-			log.Printf("submit run %s: connector returned %d", run.ID, resp.StatusCode)
-			o.markFailed(ctx, run.ID, "AMC_SUBMIT_FAILED", fmt.Sprintf("http %d", resp.StatusCode))
+			o.scheduleSubmitRetry(ctx, run.ID, run.Attempts, "AMC_SUBMIT_FAILED", fmt.Sprintf("http %d", resp.StatusCode))
 		}
 	}
+}
+
+// maxSubmitAttempts: tentativas de submit antes de desistir de vez.
+const maxSubmitAttempts = 5
+
+// scheduleSubmitRetry: em vez de matar o run no primeiro erro, re-tenta com
+// backoff exponencial (1, 2, 4, 8 min). Sem isso um hiccup do AMC (ex.: HTTP 502
+// numa rajada) deixava a feature sem atualizar o dia inteiro, em silencio.
+func (o *orchestrator) scheduleSubmitRetry(ctx context.Context, runID string, attempts int, code, msg string) {
+	next := attempts + 1
+	if next >= maxSubmitAttempts {
+		log.Printf("submit run %s: %s apos %d tentativas -> FAILED", runID, code, next)
+		o.markFailed(ctx, runID, code, fmt.Sprintf("%s (desistiu apos %d tentativas)", msg, next))
+		return
+	}
+	delayMin := 1 << uint(attempts) // 1, 2, 4, 8
+	_, err := o.db.Exec(ctx, `
+		UPDATE query_runs
+		SET submit_attempts=$2,
+		    next_retry_at=NOW() + ($3 || ' minutes')::interval,
+		    error_code=$4, error_message=$5, updated_at=NOW()
+		WHERE id=$1
+	`, runID, next, fmt.Sprintf("%d", delayMin), code, fmt.Sprintf("%s (retry %d/%d em %dmin)", msg, next, maxSubmitAttempts, delayMin))
+	if err != nil {
+		log.Printf("submit run %s: falha ao agendar retry: %v", runID, err)
+		return
+	}
+	log.Printf("submit run %s: %s -> retry %d/%d em %dmin", runID, code, next, maxSubmitAttempts, delayMin)
 }
 
 func (o *orchestrator) checkRunningStatus(ctx context.Context) {

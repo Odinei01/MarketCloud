@@ -18,7 +18,8 @@ export default function AmcAlerts({ ctx }) {
     setLoading(true); setErr('')
     try {
       const r = await api.amcAlerts(tenantID)
-      setItems(r.items || [])
+      if (r.ok) setItems(r.data?.items || [])
+      else setErr(r.data?.error || `Falha ao carregar (${r.status})`)
     } catch (e) { setErr(String(e)) }
     setLoading(false)
   }, [tenantID])

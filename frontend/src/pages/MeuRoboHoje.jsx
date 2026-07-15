@@ -26,7 +26,11 @@ export default function MeuRoboHoje({ ctx }) {
 
   const load = useCallback(async () => {
     setLoading(true); setErr('')
-    try { setD(await api.robotToday(tenantID)) }
+    try {
+      const r = await api.robotToday(tenantID)
+      if (r.ok) setD(r.data)
+      else setErr(r.data?.error || `Falha ao carregar (${r.status})`)
+    }
     catch (e) { setErr(String(e)) }
     setLoading(false)
   }, [tenantID])
