@@ -60,7 +60,7 @@ func (h *Handler) GoldReviewQueue(w http.ResponseWriter, r *http.Request) {
 			target_bid::float8 AS target_bid,
 			swarm_roas_35d::float8 AS swarm_roas_35d,
 			human_decision_status, execution_status, decided_by, decided_at
-		FROM marketcloud_gold.gold_review_queue_actionable_v3
+		FROM marketcloud_gold.gold_review_queue_actionable_v2
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY priority_rank
 		LIMIT ` + strconv.Itoa(limit)
