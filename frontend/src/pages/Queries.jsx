@@ -339,13 +339,16 @@ export default function Queries({ ctx }) {
               </thead>
               <tbody>
                 {runs.slice().reverse().map(run => {
-                  const tpl = templates.find(t => t.id === run.template_id)
+                  // a API devolve query_template_id; template_id so existe no POST de criacao
+                  const tplID = run.query_template_id || run.template_id
+                  const tpl = templates.find(t => t.id === tplID)
                   const op  = OPERATIONS.find(o => o.code === tpl?.code)
                   return (
                     <tr key={run.id}>
                       <td style={{ fontSize: 11 }}>
                         {op?.icon && <span style={{ marginRight: 5 }}>{op.icon}</span>}
-                        {tpl?.code || run.template_id?.substring(0, 8) + '…'}
+                        {tpl?.code ? (op ? `${tpl.code} · ${op.label}` : tpl.code)
+                                   : (tplID ? tplID.substring(0, 8) + '…' : '—')}
                       </td>
                       <td>
                         <span className={`pill ${STATUS_COLOR[run.status] || 'gold'}`} style={{ fontSize: 10 }}>
