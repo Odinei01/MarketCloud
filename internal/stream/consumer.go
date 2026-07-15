@@ -21,8 +21,10 @@ import (
 )
 
 const (
-	datasetTraffic    = "sp-traffic"
-	datasetConversion = "sp-conversion"
+	datasetTraffic      = "sp-traffic"
+	datasetConversion   = "sp-conversion"
+	datasetSDTraffic    = "sd-traffic"
+	datasetSDConversion = "sd-conversion"
 )
 
 type Consumer struct {
@@ -57,8 +59,10 @@ func (c *Consumer) Start(ctx context.Context) {
 	c.loc = loadLocation(c.cfg.StreamEventTimezone)
 
 	queues := map[string]string{
-		datasetTraffic:    c.cfg.StreamSQSURLTraffic,
-		datasetConversion: c.cfg.StreamSQSURLConversion,
+		datasetTraffic:      c.cfg.StreamSQSURLTraffic,
+		datasetConversion:   c.cfg.StreamSQSURLConversion,
+		datasetSDTraffic:    c.cfg.StreamSQSURLSDTraffic,
+		datasetSDConversion: c.cfg.StreamSQSURLSDConversion,
 	}
 	started := 0
 	for dataset, urlStr := range queues {
@@ -125,7 +129,7 @@ func (c *Consumer) handleMessage(ctx context.Context, dataset, body string) erro
 	trimmed := strings.TrimSpace(inner)
 	// DEBUG: captura o payload AMS cru p/ validar delta-vs-absoluto e nomes de
 	// campo reais (§10.6/§41.2). Gated por env; desligar após inspecionar.
-	if os.Getenv("STREAM_DEBUG_RAW") == "true" {
+	if rawDebugEnabled(dataset) {
 		n := len(trimmed)
 		if n > 2500 {
 			n = 2500
@@ -163,6 +167,36 @@ func (c *Consumer) handleMessage(ctx context.Context, dataset, body string) erro
 	return nil
 }
 
+// adProductFor: de qual produto de anuncio o dataset fala. Sem isso a bronze
+// horaria nao sabe dizer o que e SP e o que e SD depois de misturado.
+func adProductFor(dataset string) string {
+	switch dataset {
+	case datasetSDTraffic, datasetSDConversion:
+		return "SPONSORED_DISPLAY"
+	default:
+		return "SPONSORED_PRODUCTS"
+	}
+}
+
+// rawDebugEnabled: log do payload cru, por dataset.
+//
+//	STREAM_DEBUG_RAW_DATASETS=sd-traffic,sd-conversion  -> so esses
+//	STREAM_DEBUG_RAW=true                               -> todos (PERIGOSO)
+//
+// O modo "todos" ligado em conta cheia foi o que encheu 194GB de disco em
+// 12/07. Prefira sempre a lista por dataset.
+func rawDebugEnabled(dataset string) bool {
+	if list := strings.TrimSpace(os.Getenv("STREAM_DEBUG_RAW_DATASETS")); list != "" {
+		for _, d := range strings.Split(list, ",") {
+			if strings.EqualFold(strings.TrimSpace(d), dataset) {
+				return true
+			}
+		}
+		return false
+	}
+	return os.Getenv("STREAM_DEBUG_RAW") == "true"
+}
+
 func (c *Consumer) upsertRecord(ctx context.Context, dataset string, rec map[string]any) (bool, error) {
 	campaignID := str(rec, "campaignId", "campaign_id")
 	if campaignID == "" {
@@ -187,17 +221,19 @@ func (c *Consumer) upsertRecord(ctx context.Context, dataset string, rec map[str
 		}
 	}
 	msgTime := str(rec, "time", "timeWindowStart", "time_window_start", "startTime")
+	adProduct := adProductFor(dataset)
 
 	switch dataset {
-	case datasetTraffic:
+	case datasetTraffic, datasetSDTraffic:
 		_, err := c.db.Exec(ctx, `
 			INSERT INTO marketcloud_bronze.bronze_ams_hourly
 				(data_date, event_hour, campaign_id, campaign_name, ad_group_id,
-				 impressions, clicks, spend, last_traffic_at, traffic_msg_time, updated_at)
-			VALUES ($1::date,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,NOW())
+				 impressions, clicks, spend, last_traffic_at, traffic_msg_time, updated_at, ad_product)
+			VALUES ($1::date,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,NOW(),$10)
 			ON CONFLICT (data_date, event_hour, campaign_id) DO UPDATE SET
 				campaign_name = COALESCE(EXCLUDED.campaign_name, bronze_ams_hourly.campaign_name),
 				ad_group_id   = COALESCE(EXCLUDED.ad_group_id, bronze_ams_hourly.ad_group_id),
+				ad_product    = EXCLUDED.ad_product,
 				-- ACUMULA: cada keyword×hora é um delta; soma dá o total da campanha×hora
 				impressions   = bronze_ams_hourly.impressions + EXCLUDED.impressions,
 				clicks        = bronze_ams_hourly.clicks + EXCLUDED.clicks,
@@ -206,7 +242,7 @@ func (c *Consumer) upsertRecord(ctx context.Context, dataset string, rec map[str
 				traffic_msg_time = EXCLUDED.traffic_msg_time,
 				updated_at    = NOW()
 		`, date, hour, campaignID, strNil(rec, "campaignName", "campaign_name"), strNil(rec, "adGroupId", "ad_group_id"),
-			num(rec, "impressions"), num(rec, "clicks"), num(rec, "cost", "spend"), tsNil(msgTime))
+			num(rec, "impressions"), num(rec, "clicks"), num(rec, "cost", "spend"), tsNil(msgTime), adProduct)
 		if err != nil {
 			return false, err
 		}
@@ -215,16 +251,17 @@ func (c *Consumer) upsertRecord(ctx context.Context, dataset string, rec map[str
 		}
 		return true, nil
 
-	case datasetConversion:
+	case datasetConversion, datasetSDConversion:
 		_, err := c.db.Exec(ctx, `
 			INSERT INTO marketcloud_bronze.bronze_ams_hourly
 				(data_date, event_hour, campaign_id, campaign_name, ad_group_id,
 				 orders_1d, sales_1d, orders_7d, sales_7d, orders_14d, sales_14d,
-				 last_conversion_at, conversion_msg_time, updated_at)
-			VALUES ($1::date,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),$12,NOW())
+				 last_conversion_at, conversion_msg_time, updated_at, ad_product)
+			VALUES ($1::date,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),$12,NOW(),$13)
 			ON CONFLICT (data_date, event_hour, campaign_id) DO UPDATE SET
 				campaign_name = COALESCE(EXCLUDED.campaign_name, bronze_ams_hourly.campaign_name),
 				ad_group_id   = COALESCE(EXCLUDED.ad_group_id, bronze_ams_hourly.ad_group_id),
+				ad_product    = EXCLUDED.ad_product,
 				orders_1d  = EXCLUDED.orders_1d,  sales_1d  = EXCLUDED.sales_1d,
 				orders_7d  = EXCLUDED.orders_7d,  sales_7d  = EXCLUDED.sales_7d,
 				orders_14d = EXCLUDED.orders_14d, sales_14d = EXCLUDED.sales_14d,
@@ -235,7 +272,7 @@ func (c *Consumer) upsertRecord(ctx context.Context, dataset string, rec map[str
 			num(rec, "attributedConversions1d", "attributed_conversions_1d", "purchases1d", "purchases_1d"), num(rec, "attributedSales1d", "attributed_sales_1d", "sales1d", "sales_1d"),
 			num(rec, "attributedConversions7d", "attributed_conversions_7d", "purchases7d", "purchases_7d"), num(rec, "attributedSales7d", "attributed_sales_7d", "sales7d", "sales_7d"),
 			num(rec, "attributedConversions14d", "attributed_conversions_14d", "purchases14d", "purchases_14d"), num(rec, "attributedSales14d", "attributed_sales_14d", "sales14d", "sales_14d"),
-			tsNil(msgTime))
+			tsNil(msgTime), adProduct)
 		if err != nil {
 			return false, err
 		}
@@ -248,6 +285,13 @@ func (c *Consumer) upsertRecord(ctx context.Context, dataset string, rec map[str
 }
 
 func (c *Consumer) upsertTargetRecord(ctx context.Context, dataset string, rec map[string]any, date string, hour int, campaignID string, msgTime string) error {
+	// O grao keyword x hora e de SP. SD segmenta por audiencia/contexto, nao por
+	// keyword: deixar um target de SD entrar aqui poluiria a tela Keywords x hora
+	// com linha que nao tem keyword nem lance pra ajustar. SD fica no grao
+	// campanha x hora (bronze_ams_hourly), que e o que o ML horario usa.
+	if dataset == datasetSDTraffic || dataset == datasetSDConversion {
+		return nil
+	}
 	target, ok := targetEntity(rec)
 	if !ok {
 		return nil

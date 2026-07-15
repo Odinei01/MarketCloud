@@ -26,6 +26,8 @@ type Config struct {
 	StreamConsumerEnabled    bool
 	StreamSQSURLTraffic      string
 	StreamSQSURLConversion   string
+	StreamSQSURLSDTraffic    string
+	StreamSQSURLSDConversion string
 	StreamDefaultStoreID     string
 	StreamEventTimezone      string
 	StreamAWSAccessKeyID     string
@@ -54,6 +56,8 @@ func Load() Config {
 		StreamConsumerEnabled:    env("STREAM_CONSUMER_ENABLED", "false") == "true",
 		StreamSQSURLTraffic:      env("STREAM_SQS_URL_TRAFFIC", ""),
 		StreamSQSURLConversion:   env("STREAM_SQS_URL_CONVERSION", ""),
+		StreamSQSURLSDTraffic:    env("STREAM_SQS_URL_SD_TRAFFIC", ""),
+		StreamSQSURLSDConversion: env("STREAM_SQS_URL_SD_CONVERSION", ""),
 		StreamDefaultStoreID:     env("STREAM_DEFAULT_STORE_ID", ""),
 		StreamEventTimezone:      env("STREAM_EVENT_TIMEZONE", "America/Sao_Paulo"),
 		StreamAWSAccessKeyID:     env("STREAM_AWS_ACCESS_KEY_ID", ""),
