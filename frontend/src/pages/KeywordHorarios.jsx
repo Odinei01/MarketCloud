@@ -10,12 +10,6 @@ const actionMeta = {
   KEEP_STRONG: { label: 'Manter', color: '#54a0ff' },
 }
 
-const confidenceColor = {
-  HIGH: '#26de81',
-  MEDIUM: '#ff9f43',
-  LOW: '#8395a7',
-}
-
 function fmt(n, digits = 0) {
   if (n === null || n === undefined) return '-'
   return Number(n).toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits })
@@ -213,10 +207,8 @@ export default function KeywordHorarios({ ctx }) {
                 <th>Base</th>
                 <th>Atual</th>
                 <th>Sugerido</th>
-                <th>Delta</th>
                 <th>ROAS</th>
                 <th>ML</th>
-                <th>Fonte</th>
                 <th>Prio</th>
                 <th className="sel-col" title="Marcar todos os aplicaveis">
                   <label className="sel-all">
@@ -259,10 +251,6 @@ export default function KeywordHorarios({ ctx }) {
                       <b>{money(item.suggested_effective_bid)}</b>
                       <div className="sub2">{fmt(item.suggested_hour_multiplier, 2)}x</div>
                     </td>
-                    <td className="num" style={{ color: Number(item.effective_bid_delta) >= 0 ? '#26de81' : '#ff5470' }}>
-                      {money(item.effective_bid_delta)}
-                      <div className="sub2">{fmt(item.effective_bid_delta_percent, 1)}%</div>
-                    </td>
                     <td className="num">
                       {fmt(item.roas, 1)}
                       <div className="sub2">{fmt(item.orders)} ped. - {money(item.spend)}</div>
@@ -279,10 +267,6 @@ export default function KeywordHorarios({ ctx }) {
                           <span>P(click) {fmt(Number(item.target_ml_click_probability) * 100, 0)}%</span>
                         </div>
                       )}
-                    </td>
-                    <td>
-                      <span className="conf" style={{ background: `${confidenceColor[item.confidence] || '#8395a7'}22`, color: confidenceColor[item.confidence] || '#8395a7' }}>{item.confidence}</span>
-                      <div className="sub2">{item.source_grain}</div>
                     </td>
                     <td className="num">{fmt(item.priority_score, 0)}</td>
                     <td className="sel-col">
@@ -388,7 +372,6 @@ export default function KeywordHorarios({ ctx }) {
         }
         .keyword-hour-page table{
           width:100%;
-          min-width:1180px;
           border-collapse:collapse;
           table-layout:fixed;
           font-size:12px;
@@ -413,19 +396,18 @@ export default function KeywordHorarios({ ctx }) {
           vertical-align:middle;
           line-height:1.25;
         }
-        .keyword-hour-page th:nth-child(1){width:220px}
-        .keyword-hour-page th:nth-child(2){width:140px}
-        .keyword-hour-page th:nth-child(3){width:62px}
-        .keyword-hour-page th:nth-child(4){width:118px}
-        .keyword-hour-page th:nth-child(5),
-        .keyword-hour-page th:nth-child(6),
-        .keyword-hour-page th:nth-child(7),
-        .keyword-hour-page th:nth-child(8){width:92px}
-        .keyword-hour-page th:nth-child(9){width:84px}
-        .keyword-hour-page th:nth-child(10){width:96px}
-        .keyword-hour-page th:nth-child(11){width:150px}
-        .keyword-hour-page th:nth-child(12){width:70px}
-        .keyword-hour-page th:nth-child(13){width:74px}
+        /* 11 colunas em % — cabem sem scroll horizontal em qualquer largura */
+        .keyword-hour-page th:nth-child(1){width:19%}   /* Keyword   */
+        .keyword-hour-page th:nth-child(2){width:13%}   /* Campanha  */
+        .keyword-hour-page th:nth-child(3){width:6%}    /* Hora      */
+        .keyword-hour-page th:nth-child(4){width:12%}   /* Acao      */
+        .keyword-hour-page th:nth-child(5){width:8%}    /* Base      */
+        .keyword-hour-page th:nth-child(6){width:9%}    /* Atual     */
+        .keyword-hour-page th:nth-child(7){width:9%}    /* Sugerido  */
+        .keyword-hour-page th:nth-child(8){width:8%}    /* ROAS      */
+        .keyword-hour-page th:nth-child(9){width:9%}    /* ML        */
+        .keyword-hour-page th:nth-child(10){width:6%}   /* Prio      */
+        .keyword-hour-page th:nth-child(11){width:64px} /* checkbox  */
         .keyword-hour-page .apply-bar{
           display:flex;
           justify-content:flex-end;
