@@ -63,7 +63,9 @@ func (o *orchestrator) refreshSwarmAccountState(ctx context.Context) {
 	refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	rows, err := o.db.Query(refreshCtx, `SELECT source_table, rows_inserted FROM marketcloud_bronze.refresh_swarm_account_state()`)
+	// ..._and_target: sync + refresh do alvo do ML materializado, juntos. Separar
+	// os dois deixaria a tela com agenda nova e alvo velho.
+	rows, err := o.db.Query(refreshCtx, `SELECT source_table, rows_inserted FROM marketcloud_bronze.refresh_swarm_state_and_target()`)
 	if err != nil {
 		log.Printf("[swarm-sync] refresh failed: %v marker=%s", err, swarmSyncMarker)
 		return

@@ -60,7 +60,7 @@ func (h *Handler) GoldReviewQueue(w http.ResponseWriter, r *http.Request) {
 			target_bid::float8 AS target_bid,
 			swarm_roas_35d::float8 AS swarm_roas_35d,
 			human_decision_status, execution_status, decided_by, decided_at
-		FROM marketcloud_gold.gold_review_queue_actionable_v2
+		FROM marketcloud_gold.gold_review_queue_actionable_v3
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY priority_rank
 		LIMIT ` + strconv.Itoa(limit)
@@ -205,7 +205,9 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 // e o dono clicava de novo no que ja tinha feito. A tela chama isto depois de
 // aplicar, pra ver o efeito do proprio clique.
 func (h *Handler) RefreshSwarmState(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.db.Query(r.Context(), `SELECT source_table, rows_inserted FROM marketcloud_bronze.refresh_swarm_account_state()`)
+	// refresh_swarm_state_and_target: sync do SWARM + refresh do alvo do ML
+	// materializado. Os dois juntos, senao a tela mostra agenda nova com alvo velho.
+	rows, err := h.db.Query(r.Context(), `SELECT source_table, rows_inserted FROM marketcloud_bronze.refresh_swarm_state_and_target()`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "refresh_failed: "+err.Error())
 		return
