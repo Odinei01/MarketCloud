@@ -3,6 +3,12 @@ import { api } from '../api/client.js'
 
 const BID_ROBOT_API_BASE = import.meta.env.VITE_BID_ROBOT_API_BASE || 'http://localhost:8080'
 
+const confidenceColor = {
+  HIGH: '#26de81',
+  MEDIUM: '#ff9f43',
+  LOW: '#8395a7',
+}
+
 const actionMeta = {
   BID_UP: { label: 'Subir', color: '#26de81' },
   CUT_HOUR: { label: 'Cortar', color: '#ff5470' },
@@ -173,13 +179,6 @@ export default function KeywordHorarios({ ctx }) {
       </div>
 
       <div className="apply-bar">
-        <span className="apply-count">
-          {progress
-            ? `Aplicando ${progress.done} de ${progress.total}...`
-            : selectedItems.length > 0
-              ? `${selectedItems.length} selecionado(s) de ${applicable.length} aplicavel(is)`
-              : `Marque as linhas na coluna a direita (${applicable.length} aplicavel(is))`}
-        </span>
         <button
           className="btn primary"
           disabled={selectedItems.length === 0 || !!progress}
@@ -187,6 +186,13 @@ export default function KeywordHorarios({ ctx }) {
         >
           {progress ? `Aplicando ${progress.done}/${progress.total}` : `Aplicar${selectedItems.length ? ` (${selectedItems.length})` : ''}`}
         </button>
+        <span className="apply-count">
+          {progress
+            ? `Aplicando ${progress.done} de ${progress.total}...`
+            : selectedItems.length > 0
+              ? `${selectedItems.length} selecionado(s) de ${applicable.length} aplicavel(is)`
+              : `Marque as linhas na coluna a direita (${applicable.length} aplicavel(is))`}
+        </span>
       </div>
 
       {error ? (
@@ -231,7 +237,14 @@ export default function KeywordHorarios({ ctx }) {
                   <tr key={item.keyword_hour_recommendation_id}>
                     <td className="camp">
                       {item.keyword_text}
-                      <div className="sub2">{item.match_type || '-'} - {item.ad_group_name || item.ad_group_id || '-'}</div>
+                      <div className="kw-meta">
+                        <span
+                          className="conf"
+                          title={`Confianca ${item.confidence}`}
+                          style={{ background: `${confidenceColor[item.confidence] || '#8395a7'}22`, color: confidenceColor[item.confidence] || '#8395a7' }}
+                        >{item.confidence}</span>
+                        <span className="sub2">{item.match_type || '-'} - {item.ad_group_name || item.ad_group_id || '-'}</span>
+                      </div>
                     </td>
                     <td className="camp">{item.campaign_name}</td>
                     <td className="num">{String(item.event_hour).padStart(2, '0')}h</td>
@@ -310,9 +323,31 @@ export default function KeywordHorarios({ ctx }) {
           font-size:13px;
         }
         .keyword-hour-page .btn{
-          min-width:96px;
+          min-width:104px;
           height:38px;
-          padding:0 14px;
+          padding:0 16px;
+          display:inline-flex;
+          align-items:center;
+          justify-content:center;
+          gap:7px;
+          border-radius:9px;
+          border:1px solid rgba(148,163,184,.22);
+          background:rgba(255,255,255,.045);
+          color:#dbe6f7;
+          font-size:13px;
+          font-weight:700;
+          letter-spacing:.01em;
+          cursor:pointer;
+          transition:background .16s ease, border-color .16s ease, transform .06s ease, box-shadow .16s ease;
+        }
+        .keyword-hour-page .btn:hover:not(:disabled){
+          background:rgba(255,255,255,.085);
+          border-color:rgba(148,163,184,.38);
+        }
+        .keyword-hour-page .btn:active:not(:disabled){transform:translateY(1px)}
+        .keyword-hour-page .btn:focus-visible{
+          outline:none;
+          box-shadow:0 0 0 3px rgba(56,124,255,.38);
         }
         .keyword-hour-page .kpi-row{
           display:grid;
@@ -396,56 +431,118 @@ export default function KeywordHorarios({ ctx }) {
           vertical-align:middle;
           line-height:1.25;
         }
-        /* 11 colunas em % — cabem sem scroll horizontal em qualquer largura */
-        .keyword-hour-page th:nth-child(1){width:19%}   /* Keyword   */
-        .keyword-hour-page th:nth-child(2){width:13%}   /* Campanha  */
-        .keyword-hour-page th:nth-child(3){width:6%}    /* Hora      */
-        .keyword-hour-page th:nth-child(4){width:12%}   /* Acao      */
-        .keyword-hour-page th:nth-child(5){width:8%}    /* Base      */
-        .keyword-hour-page th:nth-child(6){width:9%}    /* Atual     */
-        .keyword-hour-page th:nth-child(7){width:9%}    /* Sugerido  */
-        .keyword-hour-page th:nth-child(8){width:8%}    /* ROAS      */
-        .keyword-hour-page th:nth-child(9){width:9%}    /* ML        */
-        .keyword-hour-page th:nth-child(10){width:6%}   /* Prio      */
-        .keyword-hour-page th:nth-child(11){width:64px} /* checkbox  */
+        /* 11 colunas somando 100% exatos. Misturar % com px (o checkbox era 64px)
+           estourava a largura e trazia o scroll lateral de volta. */
+        .keyword-hour-page th:nth-child(1){width:20%}  /* Keyword  */
+        .keyword-hour-page th:nth-child(2){width:13%}  /* Campanha */
+        .keyword-hour-page th:nth-child(3){width:5%}   /* Hora     */
+        .keyword-hour-page th:nth-child(4){width:12%}  /* Acao     */
+        .keyword-hour-page th:nth-child(5){width:8%}   /* Base     */
+        .keyword-hour-page th:nth-child(6){width:9%}   /* Atual    */
+        .keyword-hour-page th:nth-child(7){width:9%}   /* Sugerido */
+        .keyword-hour-page th:nth-child(8){width:7%}   /* ROAS     */
+        .keyword-hour-page th:nth-child(9){width:8%}   /* ML       */
+        .keyword-hour-page th:nth-child(10){width:4%}  /* Prio     */
+        .keyword-hour-page th:nth-child(11){width:5%}  /* checkbox */
+        .keyword-hour-page .queue{overflow-x:hidden}
+        .keyword-hour-page .kw-meta{
+          display:flex;
+          align-items:center;
+          gap:6px;
+          margin-top:4px;
+          min-width:0;
+        }
+        .keyword-hour-page .kw-meta .sub2{
+          margin-top:0;
+          min-width:0;
+        }
         .keyword-hour-page .apply-bar{
           display:flex;
-          justify-content:flex-end;
+          justify-content:flex-start;
           align-items:center;
           gap:14px;
-          margin-bottom:10px;
+          margin-bottom:12px;
         }
         .keyword-hour-page .apply-count{
           color:var(--muted,#9aa7bd);
           font-size:12.5px;
         }
         .keyword-hour-page .btn.primary{
-          background:#1d6ff2;
-          border-color:#1d6ff2;
+          background:linear-gradient(180deg,#3d8bff 0%,#1f6ae8 100%);
+          border-color:#1f6ae8;
           color:#fff;
           font-weight:800;
+          box-shadow:0 1px 0 rgba(255,255,255,.16) inset, 0 6px 16px -6px rgba(31,106,232,.85);
+        }
+        .keyword-hour-page .btn.primary:hover:not(:disabled){
+          background:linear-gradient(180deg,#4d97ff 0%,#2a75f5 100%);
+          border-color:#2a75f5;
+          box-shadow:0 1px 0 rgba(255,255,255,.2) inset, 0 8px 22px -6px rgba(31,106,232,.95);
         }
         .keyword-hour-page .btn.primary:disabled{
-          background:rgba(148,163,184,.16);
-          border-color:rgba(148,163,184,.20);
-          color:var(--muted,#8796ad);
+          background:rgba(148,163,184,.10);
+          border-color:rgba(148,163,184,.18);
+          color:rgba(148,163,184,.75);
+          box-shadow:none;
           cursor:not-allowed;
         }
         .keyword-hour-page .sel-col{
           text-align:center;
         }
-        .keyword-hour-page .sel-col input{
-          width:16px;
-          height:16px;
-          accent-color:#1d6ff2;
+        .keyword-hour-page .sel-col input[type=checkbox]{
+          appearance:none;
+          -webkit-appearance:none;
+          width:17px;
+          height:17px;
+          margin:0;
+          border:1.5px solid rgba(148,163,184,.5);
+          border-radius:5px;
+          background:rgba(10,16,31,.6);
           cursor:pointer;
+          position:relative;
+          transition:background .14s ease, border-color .14s ease;
         }
-        .keyword-hour-page .sel-col input:disabled{cursor:not-allowed}
+        .keyword-hour-page .sel-col input[type=checkbox]:hover:not(:disabled){border-color:#4d97ff}
+        .keyword-hour-page .sel-col input[type=checkbox]:checked{
+          background:linear-gradient(180deg,#3d8bff 0%,#1f6ae8 100%);
+          border-color:#1f6ae8;
+        }
+        .keyword-hour-page .sel-col input[type=checkbox]:checked::after{
+          content:'';
+          position:absolute;
+          left:5px;
+          top:1px;
+          width:4px;
+          height:9px;
+          border:solid #fff;
+          border-width:0 2px 2px 0;
+          transform:rotate(45deg);
+        }
+        .keyword-hour-page .sel-col input[type=checkbox]:indeterminate{
+          background:linear-gradient(180deg,#3d8bff 0%,#1f6ae8 100%);
+          border-color:#1f6ae8;
+        }
+        .keyword-hour-page .sel-col input[type=checkbox]:indeterminate::after{
+          content:'';
+          position:absolute;
+          left:3px;
+          top:6.5px;
+          width:9px;
+          height:2px;
+          background:#fff;
+          border-radius:1px;
+        }
+        .keyword-hour-page .sel-col input[type=checkbox]:focus-visible{
+          outline:none;
+          box-shadow:0 0 0 3px rgba(56,124,255,.38);
+        }
+        .keyword-hour-page .sel-col input:disabled{cursor:not-allowed;opacity:.45}
         .keyword-hour-page .sel-all{
           display:inline-flex;
           align-items:center;
-          gap:6px;
+          gap:7px;
           cursor:pointer;
+          user-select:none;
         }
         .keyword-hour-page .apply-msg{
           margin-top:5px;
