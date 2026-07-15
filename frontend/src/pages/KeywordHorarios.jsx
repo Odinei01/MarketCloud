@@ -33,17 +33,26 @@ export default function KeywordHorarios({ ctx }) {
   const [error, setError] = useState('')
   const [filter, setFilter] = useState({ action: '', confidence: 'HIGH', source: 'CAMPAIGN_HOUR_INHERITED' })
 
+  // O finally e o que importa aqui: sem ele, qualquer excecao deixava a tela em
+  // "Carregando..." pra sempre, sem dizer o motivo — foi assim que uma query
+  // lenta (4min) virou "a tela travou" em 15/07.
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
-    const res = await api.goldKeywordHourlyReal(tenantID, { ...filter, limit: 500 })
-    if (res.ok) {
-      setItems(res.data.items || [])
-    } else {
+    try {
+      const res = await api.goldKeywordHourlyReal(tenantID, { ...filter, limit: 500 })
+      if (res.ok) {
+        setItems(res.data.items || [])
+      } else {
+        setItems([])
+        setError(res.data?.error || `Falha ao carregar (${res.status})`)
+      }
+    } catch (e) {
       setItems([])
-      setError(res.data?.error || `Falha ao carregar (${res.status})`)
+      setError(e?.message || 'Falha de rede ao carregar')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }, [tenantID, filter])
 
   useEffect(() => { load() }, [load])
