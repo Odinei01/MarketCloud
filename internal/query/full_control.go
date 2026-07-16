@@ -221,6 +221,99 @@ func (h *Handler) FullControlGovernance(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
 }
 
+// GET /api/v1/settings/full-control-monitoring
+func (h *Handler) FullControlMonitoring(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromCtx(r.Context()).String()
+
+	pilotRows, err := h.db.Query(r.Context(), `
+		SELECT pilot_id, product_asin, seller_sku, product_title,
+		       campaign_id, campaign_name, mode, status,
+		       sale_price_brl::float8 AS sale_price_brl,
+		       unit_cost_brl::float8 AS unit_cost_brl,
+		       stock_available::float8 AS stock_available,
+		       max_daily_budget_brl::float8 AS max_daily_budget_brl,
+		       max_spend_without_order_brl::float8 AS max_spend_without_order_brl,
+		       min_roas::float8 AS min_roas,
+		       spend_today::float8 AS spend_today,
+		       orders_today::float8 AS orders_today,
+		       sales_today::float8 AS sales_today,
+		       roas_today::float8 AS roas_today,
+		       current_budget_brl::float8 AS current_budget_brl,
+		       can_control, gate_reason,
+		       last_ams_update, updated_at
+		FROM marketcloud_gold.full_control_effective_governance_v1
+		WHERE tenant_id = $1
+		  AND status IN ('active','paused','draft')
+		ORDER BY
+		  CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
+		  updated_at DESC,
+		  campaign_name`, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "full_control_monitoring_pilots_failed: "+err.Error())
+		return
+	}
+	pilots, err := pgx.CollectRows(pilotRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "full_control_monitoring_pilots_scan_failed: "+err.Error())
+		return
+	}
+
+	actionRows, err := h.db.Query(r.Context(), `
+		WITH pilots AS (
+			SELECT DISTINCT campaign_id, lower(trim(campaign_name)) AS campaign_norm
+			FROM marketcloud_gold.full_control_effective_governance_v1
+			WHERE tenant_id = $1
+			  AND status IN ('active','paused','draft')
+		)
+		SELECT a.recommendation_id,
+		       a.campaign_id,
+		       a.campaign_name,
+		       a.ad_group_name,
+		       a.event_hour,
+		       a.recommended_action,
+		       a.recommended_bid_multiplier::float8 AS recommended_bid_multiplier,
+		       a.decided_action,
+		       a.decided_bid_multiplier::float8 AS decided_bid_multiplier,
+		       a.decided_by,
+		       a.execution_status,
+		       a.executed_at,
+		       a.priority_score::float8 AS priority_score,
+		       a.priority_bucket,
+		       a.audit_result,
+		       a.model_result,
+		       a.measured_windows,
+		       a.outcome_label_1h,
+		       a.delta_roas_1h::float8 AS delta_roas_1h,
+		       a.outcome_label_3h,
+		       a.delta_roas_3h::float8 AS delta_roas_3h,
+		       a.outcome_label_24h,
+		       a.delta_roas_24h::float8 AS delta_roas_24h,
+		       a.last_measured_at
+		FROM marketcloud_recommendations.v_auto_apply_audit_360_v1 a
+		JOIN pilots p
+		  ON (a.campaign_id IS NOT NULL AND a.campaign_id = p.campaign_id)
+		  OR (a.campaign_id IS NULL AND lower(trim(a.campaign_name)) = p.campaign_norm)
+		WHERE a.tenant_id = $1
+		ORDER BY a.executed_at DESC NULLS LAST, a.last_measured_at DESC NULLS LAST
+		LIMIT 80`, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "full_control_monitoring_actions_failed: "+err.Error())
+		return
+	}
+	actions, err := pgx.CollectRows(actionRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "full_control_monitoring_actions_scan_failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pilots":       pilots,
+		"actions":      actions,
+		"pilot_count":  len(pilots),
+		"action_count": len(actions),
+	})
+}
+
 func validFullControlMode(mode string) bool {
 	return mode == "monitor_only" || mode == "semi_auto" || mode == "full_control"
 }

@@ -33,24 +33,27 @@ export default function Settings({ ctx }) {
   const [campaigns, setCampaigns] = useState([])
   const [fullControlProducts, setFullControlProducts] = useState([])
   const [fullControlGovernance, setFullControlGovernance] = useState([])
+  const [fullControlMonitoring, setFullControlMonitoring] = useState({ pilots: [], actions: [] })
   const [selectedProductASIN, setSelectedProductASIN] = useState('')
   const [pilotDrafts, setPilotDrafts] = useState({})
   const [settings, setSettings] = useState(null)
   const [health, setHealth] = useState([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState('')
+  const [saveNotice, setSaveNotice] = useState('')
   const [error, setError] = useState('')
 
   const loadAll = useCallback(async () => {
     if (!tenantID) return
     setLoading(true)
     setError('')
-    const [campaignRes, settingsRes, healthRes, fullControlRes, fullControlGovRes] = await Promise.all([
+    const [campaignRes, settingsRes, healthRes, fullControlRes, fullControlGovRes, fullControlMonitoringRes] = await Promise.all([
       api.goldMlFullAutoCampaigns(tenantID),
       api.tenantSettings(tenantID),
       api.tenantHealth(tenantID),
       api.fullControlProducts(tenantID),
       api.fullControlGovernance(tenantID),
+      api.fullControlMonitoring(tenantID),
     ])
     if (campaignRes.ok) setCampaigns(campaignRes.data.items || [])
     else setError(campaignRes.data?.error || `HTTP ${campaignRes.status}`)
@@ -63,6 +66,12 @@ export default function Settings({ ctx }) {
       setSelectedProductASIN(prev => prev || items[0]?.product_asin || '')
     }
     if (fullControlGovRes.ok) setFullControlGovernance(fullControlGovRes.data.items || [])
+    if (fullControlMonitoringRes.ok) {
+      setFullControlMonitoring({
+        pilots: fullControlMonitoringRes.data.pilots || [],
+        actions: fullControlMonitoringRes.data.actions || [],
+      })
+    }
     setLoading(false)
   }, [tenantID])
 
@@ -163,6 +172,7 @@ export default function Settings({ ctx }) {
   const persistPilot = async (product, campaign, draft, key) => {
     setSaving(key)
     setError('')
+    setSaveNotice('')
     const res = await api.setFullControlPilot(tenantID, {
       ...draft,
       product_asin: product.product_asin,
@@ -173,6 +183,8 @@ export default function Settings({ ctx }) {
     })
     if (res.ok) {
       await loadAll()
+      const modeLabel = draft.mode === 'full_control' ? 'Full Control' : draft.mode === 'semi_auto' ? 'Semi-auto' : 'Monitoria'
+      setSaveNotice(`${modeLabel} salvo para ${campaign.campaign_name}. Acompanhe em "Pilotos ativos" abaixo.`)
     } else {
       setError(res.data?.error || `HTTP ${res.status}`)
     }
@@ -206,6 +218,7 @@ export default function Settings({ ctx }) {
       </div>
 
       {error && <div className="error-box">{error}</div>}
+      {saveNotice && <div className="success-box">{saveNotice}</div>}
       {loading && <div className="loading"><div className="spinner" />Carregando configuracoes...</div>}
 
       {!loading && tab === 'health' && (
@@ -355,6 +368,7 @@ export default function Settings({ ctx }) {
       )}
 
       {!loading && tab === 'full-control' && (
+        <>
         <div className="grid two full-control-grid">
           <div className="panel">
             <div className="panel-head">
@@ -423,7 +437,7 @@ export default function Settings({ ctx }) {
             <div className="panel-head">
               <div>
                 <h3>Campanhas derivadas</h3>
-                <p className="subtle">Clique em Iniciar monitoria para escolher a campanha. Isso nao aplica lance nem budget.</p>
+                <p className="subtle">Clique em Iniciar monitoria para observar, ou salve como Full Control + Active para liberar o robo dentro dos tetos.</p>
               </div>
             </div>
             <div className="panel-body full-campaign-list">
@@ -475,7 +489,7 @@ export default function Settings({ ctx }) {
                     <div className="pilot-actions">
                       <span className={`pill ${economicsReady ? 'green' : 'orange'}`}>{economicsReady ? 'economia pronta' : 'faltam dados economicos'}</span>
                       <button className="btn primary" disabled={saving === key} onClick={() => savePilot(selectedProduct, campaign)}>
-                        {saving === key ? 'Salvando...' : 'Salvar piloto'}
+                        {saving === key ? 'Salvando...' : 'Salvar plano'}
                       </button>
                     </div>
                   </div>
@@ -485,6 +499,8 @@ export default function Settings({ ctx }) {
             </div>
           </div>
         </div>
+        <FullControlMonitoringPanel monitoring={fullControlMonitoring} />
+        </>
       )}
 
       {!loading && tab === 'alerts' && settings && (
@@ -510,6 +526,7 @@ export default function Settings({ ctx }) {
       <style>{`
         .settings-tabs{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
         .notice{padding:12px 14px;border:1px solid rgba(84,160,255,.35);background:rgba(84,160,255,.09);border-radius:8px;margin-bottom:12px;color:#b8d6ff;font-size:13px}
+        .success-box{padding:10px 12px;border:1px solid rgba(44,224,139,.35);background:rgba(44,224,139,.10);border-radius:8px;margin-bottom:12px;color:#93f5c2;font-size:13px;font-weight:800}
         .error-box{padding:10px 12px;border:1px solid rgba(255,84,112,.35);background:rgba(255,84,112,.10);border-radius:8px;margin-bottom:12px;color:#ff9bad;font-size:13px}
         .muted{color:var(--muted);font-size:12px;margin-top:3px}
         .subtle{color:var(--muted);font-size:13px;margin:4px 0 0;line-height:1.45}
@@ -561,8 +578,18 @@ export default function Settings({ ctx }) {
         .pilot-form label{display:grid;gap:5px}
         .pilot-form label span{font-size:11px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.04em}
         .pilot-actions{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:12px}
+        .monitor-panel{margin-top:18px}
+        .mini-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:10px;margin-bottom:14px}
+        .section-title{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:18px 0 8px}
+        .pilot-monitor-list{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.025);padding:0 12px}
+        .pilot-monitor-row{display:grid;grid-template-columns:1.3fr .7fr .8fr .8fr .9fr;gap:10px;align-items:center;border-bottom:1px solid var(--line);padding:10px 0}
+        .pilot-monitor-row:last-child{border-bottom:0}
+        .pilot-monitor-row strong{display:block}
+        .pilot-monitor-row span:not(.pill){display:block;color:var(--muted);font-size:12px;margin-top:3px}
+        .actions-table td{vertical-align:top}
+        .actions-table small{display:block;color:var(--muted);font-size:11px;margin-top:3px}
         select{min-width:150px}
-        @media(max-width:1100px){.full-control-grid{grid-template-columns:1fr}.pilot-form{grid-template-columns:repeat(2,minmax(110px,1fr))}.monitor-banner{align-items:stretch;flex-direction:column}}
+        @media(max-width:1100px){.full-control-grid{grid-template-columns:1fr}.pilot-form{grid-template-columns:repeat(2,minmax(110px,1fr))}.monitor-banner{align-items:stretch;flex-direction:column}.mini-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.pilot-monitor-row{grid-template-columns:1fr}}
       `}</style>
     </div>
   )
@@ -580,6 +607,117 @@ function defaultSettings() {
   }
 }
 
+function FullControlMonitoringPanel({ monitoring }) {
+  const pilots = monitoring?.pilots || []
+  const actions = monitoring?.actions || []
+  const activePilots = pilots.filter(p => p.status === 'active')
+  const fullControl = activePilots.filter(p => p.mode === 'full_control')
+  const monitorOnly = activePilots.filter(p => p.mode === 'monitor_only')
+  const blocked = fullControl.filter(p => !p.can_control)
+
+  return (
+    <div className="panel monitor-panel">
+      <div className="panel-head">
+        <div>
+          <h3>Pilotos ativos e acoes do robo</h3>
+          <p className="subtle">Aqui voce monitora o piloto escolhido e qualquer campanha sinalizada como monitoria ou Full Control.</p>
+        </div>
+        <span className="pill blue">{pilots.length} pilotos</span>
+      </div>
+      <div className="panel-body">
+        <div className="mini-grid">
+          <Metric label="Ativos" value={activePilots.length} />
+          <Metric label="Monitoria" value={monitorOnly.length} />
+          <Metric label="Full Control" value={fullControl.length} />
+          <Metric label="Bloqueados" value={blocked.length} />
+        </div>
+
+        <h4 className="section-title">Pilotos ativos</h4>
+        {pilots.length ? (
+          <div className="pilot-monitor-list">
+            {pilots.map(pilot => (
+              <div className="pilot-monitor-row" key={pilot.pilot_id}>
+                <div>
+                  <strong>{pilot.campaign_name}</strong>
+                  <span>{pilot.product_asin} | {pilot.seller_sku || 'sem SKU'} | {labelFullControlMode(pilot.mode)}</span>
+                </div>
+                <div>
+                  <strong>{pilot.status}</strong>
+                  <span>atualizado {fmtDateTime(pilot.updated_at)}</span>
+                </div>
+                <div>
+                  <strong>R$ {fmt(pilot.spend_today, 2)}</strong>
+                  <span>gasto hoje</span>
+                </div>
+                <div>
+                  <strong>{fmt(pilot.orders_today)}</strong>
+                  <span>pedidos hoje</span>
+                </div>
+                <div>
+                  <span className={`pill ${pilot.can_control ? 'green' : 'orange'}`}>
+                    {pilot.can_control ? 'robo liberado' : pilot.gate_reason}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty">Nenhum piloto salvo ainda. Use Iniciar monitoria ou Salvar plano em uma campanha derivada.</div>
+        )}
+
+        <h4 className="section-title">Ultimas acoes e medicoes</h4>
+        {actions.length ? (
+          <div className="table-wrap">
+            <table className="actions-table">
+              <thead>
+                <tr>
+                  <th>Campanha</th>
+                  <th>Hora</th>
+                  <th>Proposta</th>
+                  <th>Aplicado</th>
+                  <th>Resultado</th>
+                  <th>Medicao</th>
+                </tr>
+              </thead>
+              <tbody>
+                {actions.map(action => (
+                  <tr key={`${action.recommendation_id}-${action.event_hour}`}>
+                    <td>
+                      <strong>{action.campaign_name}</strong>
+                      <small>{action.ad_group_name || action.campaign_id || '-'}</small>
+                    </td>
+                    <td>{String(action.event_hour ?? '-').padStart(2, '0')}h</td>
+                    <td>
+                      {action.recommended_action || '-'}
+                      <small>{fmtMultiplier(action.recommended_bid_multiplier)}</small>
+                    </td>
+                    <td>
+                      {action.execution_status || '-'}
+                      <small>{fmtDateTime(action.executed_at)}</small>
+                    </td>
+                    <td>
+                      <span className={`pill ${action.audit_result === 'WINNING' ? 'green' : action.audit_result === 'LOSING' ? 'red' : 'orange'}`}>
+                        {action.audit_result || 'PENDING'}
+                      </span>
+                      <small>{action.model_result || 'INCONCLUSIVE'}</small>
+                    </td>
+                    <td>
+                      1h {labelOutcome(action.outcome_label_1h, action.delta_roas_1h)}
+                      <small>3h {labelOutcome(action.outcome_label_3h, action.delta_roas_3h)} | 24h {labelOutcome(action.outcome_label_24h, action.delta_roas_24h)}</small>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty">Ainda nao ha acao aplicada pelo robo para os pilotos atuais. Monitoria nao altera BID; Full Control so aplica se estiver Active e com gate liberado.</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function normalizeSettings(settings) {
   return {
     operational_mode: settings.operational_mode || 'advisor',
@@ -594,6 +732,23 @@ function normalizeSettings(settings) {
 
 function labelForMode(mode) {
   return MODES.find(m => m.value === mode)?.label || mode || '-'
+}
+
+function labelFullControlMode(mode) {
+  if (mode === 'full_control') return 'Full Control'
+  if (mode === 'monitor_only') return 'Monitoria'
+  if (mode === 'semi_auto') return 'Semi-auto'
+  return mode || '-'
+}
+
+function fmtMultiplier(value) {
+  if (value === null || value === undefined || value === '') return '-'
+  return `${fmt(Number(value), 2)}x`
+}
+
+function labelOutcome(label, deltaRoas) {
+  const roas = deltaRoas === null || deltaRoas === undefined ? '' : ` (${fmt(deltaRoas, 2)} ROAS)`
+  return `${label || 'pendente'}${roas}`
 }
 
 function Metric({ label, value }) {

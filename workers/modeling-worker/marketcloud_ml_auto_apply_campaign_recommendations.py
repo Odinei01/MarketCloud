@@ -246,8 +246,32 @@ def load_full_control_gates(conn):
                 if campaign_id:
                     gates[campaign_id] = dict(row)
         except Exception as exc:
-            log.warning("full_control_governance indisponivel; sem gate adicional: %s", exc)
+            log.warning("full_control_governance indisponivel; aplicando fail-closed para pilotos full_control ativos: %s", exc)
             conn.rollback()
+            with conn.cursor() as fallback_cur:
+                try:
+                    fallback_cur.execute(
+                        """
+                        SELECT campaign_id
+                        FROM marketcloud_control.full_control_pilots
+                        WHERE mode = 'full_control'
+                          AND status = 'active'
+                          AND COALESCE(campaign_id,'') <> ''
+                        """
+                    )
+                    for row in fallback_cur.fetchall():
+                        campaign_id = str(row.get("campaign_id") or "").strip()
+                        if campaign_id:
+                            gates[campaign_id] = {
+                                "campaign_id": campaign_id,
+                                "can_control": False,
+                                "gate_reason": "GOVERNANCE_UNAVAILABLE",
+                                "spend_today": 0,
+                                "orders_today": 0,
+                            }
+                except Exception as fallback_exc:
+                    log.error("full_control fail-closed fallback tambem falhou; bloqueando candidatos full-control conhecidos fica indisponivel: %s", fallback_exc)
+                    conn.rollback()
     return gates
 
 

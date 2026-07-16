@@ -159,6 +159,7 @@ func main() {
 		r.Get("/health", queryH.TenantHealth)
 		r.Get("/full-control-products", queryH.FullControlProducts)
 		r.Get("/full-control-governance", queryH.FullControlGovernance)
+		r.Get("/full-control-monitoring", queryH.FullControlMonitoring)
 		r.With(managerUp).Put("/full-control-pilot", queryH.SetFullControlPilot)
 	})
 	// --- Amazon Marketing Stream: gerÃªncia de subscriptions (Fase 2) ---

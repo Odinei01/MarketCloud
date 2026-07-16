@@ -4047,3 +4047,170 @@ Isso deixava a tela parecendo que nao havia estoque real para varios produtos qu
 #### Interpretacao operacional
 
 Agora a tela de Full Control usa o mesmo conceito de estoque robusto do SWARM: fisico local + fisico FBA/transito, sem depender somente do estoque local. O gate do worker tambem deixa de depender de snapshot antigo do piloto e passa a avaliar o estoque atual antes de liberar automacao.
+
+---
+
+### 2026-07-16 - UX Full Control: escolher campanha para monitoria
+
+Status: implementado e validado localmente.
+
+#### Problema
+
+A tela exigia que o operador entendesse a combinacao tecnica `mode=monitor_only` + `status=active` para escolher qual campanha seria monitorada. Isso deixava o fluxo confuso para o caso de uso do piloto de 1 a 2 semanas.
+
+#### Correcao
+
+Na aba `Config Center > Full Control`, cada campanha derivada agora tem um bloco principal:
+
+- `Escolher esta campanha para monitoria`;
+- botao `Iniciar monitoria`;
+- texto explicito informando que isso nao aplica lance nem budget.
+
+Ao clicar, o frontend salva automaticamente:
+
+- `mode='monitor_only'`;
+- `status='active'`;
+- `notes='Monitoria iniciada pelo Config Center.'`.
+
+Os campos avancados continuam disponiveis abaixo para ajustar tetos ou evoluir futuramente para `full_control`, mas a acao primaria agora e direta.
+
+#### Validacao
+
+- `npm run build` OK no frontend.
+- Nenhuma mudanca de backend foi necessaria; o botao usa o endpoint ja existente `PUT /api/v1/settings/full-control-pilot`.
+
+#### Interpretacao operacional
+
+Para selecionar a campanha do piloto:
+
+1. abrir `Config Center > Full Control`;
+2. selecionar o produto/ASIN;
+3. clicar `Iniciar monitoria` na campanha desejada.
+
+Isso cria um piloto ativo em modo observacional. O robo passa a acompanhar a campanha, mas nao aplica alteracao automatica por causa desse botao.
+
+---
+
+### 2026-07-16 - Full Control: monitoramento visivel e feedback do Salvar plano
+
+Status: implementado e validado localmente.
+
+#### Problema
+
+O operador conseguia montar o plano do piloto, mas ao clicar em `Salvar plano` a tela nao dava retorno operacional claro. Tambem nao havia um lugar obvio para acompanhar:
+
+- quais campanhas estavam marcadas como piloto;
+- se o robo estava autorizado a agir;
+- por que o Full Control estava bloqueado;
+- quais acoes do robo ja tinham sido aplicadas e medidas.
+
+Isso dava a impressao de que o clique nao fazia nada, mesmo quando a linha era salva no banco.
+
+#### Correcao
+
+- Novo endpoint:
+  - `GET /api/v1/settings/full-control-monitoring`.
+- O endpoint retorna:
+  - pilotos `draft`, `active` e `paused` da governanca efetiva;
+  - ultimas acoes/medicoes vindas de `marketcloud_recommendations.v_auto_apply_audit_360_v1` para campanhas marcadas como piloto.
+- A aba `Config Center > Full Control` agora:
+  - mostra mensagem verde apos salvar o plano;
+  - recarrega produtos, governanca e monitoramento depois do save;
+  - renomeia o botao tecnico para `Salvar plano`;
+  - adiciona o painel `Pilotos ativos e acoes do robo`;
+  - mostra contadores de ativos, monitoria, Full Control e bloqueados;
+  - lista cada piloto com modo/status, gasto hoje, pedidos hoje e motivo do gate;
+  - lista as ultimas acoes aplicadas pelo robo e resultado 1h/3h/24h quando existirem.
+
+#### Validacao executada
+
+- `go test ./internal/query ./cmd/api` OK.
+- `npm run build` OK.
+- `docker compose build api` OK.
+- `docker compose up -d api` OK.
+- Chamada autenticada para `GET /api/v1/settings/full-control-monitoring` OK.
+
+Resultado atual retornado pela API:
+
+- `pilot_count=1`;
+- `action_count=0`;
+- piloto salvo: `Forma Silicone`;
+- `mode=full_control`;
+- `status=active`;
+- `can_control=false`;
+- `gate_reason=MISSING_DAILY_BUDGET`;
+- gasto hoje AMS: `R$ 3,23`;
+- pedidos hoje AMS: `0`;
+- estoque efetivo: `99`.
+
+#### Interpretacao operacional
+
+Hoje o piloto existe e esta ativo, mas o robo nao pode agir porque o plano foi salvo sem teto diario (`max_daily_budget_brl=0`). Para o Full Control executar de verdade, a campanha precisa estar:
+
+- `mode=full_control`;
+- `status=active`;
+- com preco, custo e estoque validos;
+- com `max_daily_budget_brl > 0`;
+- com `max_spend_without_order_brl > 0`;
+- sem estourar os gates de gasto/pedido.
+
+Monitoria (`monitor_only + active`) observa e aparece no painel, mas nao aplica BID nem budget.
+
+---
+
+### 2026-07-16 - Full Control: fonte canonica e fail-closed no gate
+
+Status: implementado e validado localmente.
+
+#### Problemas corrigidos
+
+1. A governanca efetiva do Full Control calculava `spend_today`, `orders_today` e `sales_today` a partir de `marketcloud_bronze.bronze_ams_hourly`.
+   - Essa fonte e util para AMS SP, mas nao deve ser a fonte de teto economico porque pode ficar cega/subcontada para outros ad products e para reconciliacao com relatorio.
+   - O mesmo problema ja tinha sido corrigido no Audit 360 pela migration 101.
+
+2. O worker de auto-apply falhava aberto quando `marketcloud_gold.full_control_effective_governance_v1` dava erro.
+   - Antes: exception na view retornava `{}` e o gate especifico de Full Control sumia silenciosamente.
+   - Agora: se a view falhar, o worker consulta `marketcloud_control.full_control_pilots` e cria gates bloqueados para todos os pilotos `full_control + active` com `gate_reason=GOVERNANCE_UNAVAILABLE`.
+
+#### Correcao aplicada
+
+- Migration `102_full_control_governance_canonica_fail_closed.sql`.
+- A view `marketcloud_gold.full_control_effective_governance_v1` agora calcula o dia atual por:
+  - `marketcloud_gold.gold_hourly_signal_unified`;
+  - join em `marketcloud_gold.gold_campaign_identity` para resolver `campaign_id`.
+- Worker alterado em `workers/modeling-worker/marketcloud_ml_auto_apply_campaign_recommendations.py`:
+  - `load_full_control_gates()` passa a ser fail-closed para pilotos Full Control ativos;
+  - em falha de governanca, campanhas com piloto ativo nao aplicam recomendacao.
+
+#### Validacao executada
+
+- Migration 102 aplicada com sucesso.
+- `go test ./internal/query ./cmd/api` OK.
+- `python -m py_compile` validado dentro do container `modeling-worker` OK.
+- `docker compose build modeling-worker` OK.
+- `docker compose up -d modeling-worker` OK.
+- Endpoint `GET /api/v1/settings/full-control-monitoring` OK.
+
+Estado atual do piloto:
+
+- campanha: `Forma Silicone`;
+- `mode=full_control`;
+- `status=active`;
+- `can_control=true`;
+- `gate_reason=READY`;
+- `max_daily_budget_brl=10`;
+- `max_spend_without_order_brl=5`;
+- `spend_today=3.23`;
+- `orders_today=0`;
+- estoque efetivo: `99`.
+
+Comparacao atual do piloto:
+
+- fonte canonica: gasto `3.23`, pedidos `0`;
+- bronze AMS: gasto `3.23`, pedidos `0`.
+
+Hoje as duas fontes coincidem para esse piloto, mas a governanca passa a usar a fonte canonica para proteger tambem cenarios SB/SD/reconciliados.
+
+#### Escopo ainda consciente
+
+Estoque zero ainda bloqueia apenas campanhas que estao dentro de piloto Full Control. Campanhas em full-auto comum, sem piloto por produto, continuam usando os guardrails globais antigos. Se a regra desejada for "estoque zero bloqueia qualquer auto-apply", isso precisa virar guardrail base global em uma proxima migration/worker change.

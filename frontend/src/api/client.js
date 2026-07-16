@@ -148,6 +148,7 @@ export const api = {
   tenantHealth: (tid) => req('GET', '/settings/health', null, tid),
   fullControlProducts: (tid) => req('GET', '/settings/full-control-products', null, tid),
   fullControlGovernance: (tid) => req('GET', '/settings/full-control-governance', null, tid),
+  fullControlMonitoring: (tid) => req('GET', '/settings/full-control-monitoring', null, tid),
   setFullControlPilot: (tid, body) => req('PUT', '/settings/full-control-pilot', body, tid),
   goldPartnerCampaignMonitor: (tid) => req('GET', '/gold/partner-campaign-monitor', null, tid),
   goldCampaignPlans: (tid) => req('GET', '/gold/campaign-plans', null, tid),
