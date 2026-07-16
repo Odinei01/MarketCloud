@@ -3111,3 +3111,158 @@ Por isso o dono trouxe o CSV do console (relatório 17) completando 08-13 COM co
 
 Nota "wasting asset" (§ avaliação): mitigada por ora com este CSV. Mas a fonte
 sustentável é a conversão do AMS fluir (ainda 0) OU pulls periódicos do CSV.
+
+## 47. Auditoria operacional MarketCloud antes de novas mudancas (2026-07-16)
+
+Auditoria solicitada antes de novas implementacoes. Nenhuma mudanca de codigo ou banco foi aplicada durante esta checagem, exceto este registro no handoff.
+
+### 47.1 Runtime
+
+- `docker compose ps`: `api`, `connector-amazon`, `postgres`, `frontend`, `modeling-worker`, `query-orchestrator` e `redis` estavam `Up`; Postgres e Redis saudaveis.
+- `/health` da API (`:8090`) e do orchestrator (`:8092`) retornaram `ok`.
+- `go test ./... -count=1` passou.
+- `npm run build` no frontend passou.
+- Worktree: apenas temporarios/cache untracked (`.sv.tmp`, `__pycache__`); sem alteracao versionada pendente.
+
+### 47.2 Lake e AMS
+
+- `bronze_amazon_ads_hourly`: 10.251 linhas, 2026-05-31 a 2026-07-15, 245.179 impressoes, 2.967 cliques, R$ 3.591,64 gasto, 282 pedidos, R$ 11.193,08 vendas.
+- `bronze_ams_hourly`: 797 linhas, 2026-06-19 a 2026-07-15, 10.190 impressoes, 149 cliques, R$ 147,01 gasto, 22 pedidos, R$ 1.003,70 vendas.
+- `bronze_ams_hourly_target`: 1.289 linhas, 10.187 impressoes, 150 cliques, R$ 148,24 gasto, 22 pedidos, R$ 1.003,70 vendas.
+- `gold_hourly_signal_unified` fecha com a fonte reporting: 10.251 linhas, R$ 3.591,64 gasto, 282 pedidos, R$ 11.193,08 vendas.
+- `refresh_ams_to_hourly` nos logs da API segue com `rows_unresolved=0`.
+- Atencao: ainda existem metricas negativas no bronze AMS de transicao/delta (`bronze_ams_hourly`: 146 linhas com impressoes negativas; `bronze_ams_hourly_target`: 210). A camada canonica neutraliza o impacto, mas o bronze cru nao deve ser usado diretamente para decisao.
+- `ams_seen_events`: 4.420+ eventos vistos; dedup ativo.
+
+### 47.3 ML e auto-apply
+
+- `modeling-worker` rodando: `hourly_real_v2`, `hourly_target_real_v3`, `ml-auto-apply-campaign` e refresh de outcomes.
+- Ultimo `hourly_real_v2`: COMPLETED, 610 linhas de treino, 103 positivas, 610 predicoes, AUC ~0,962, ROAS MAE ~1,306, r2 ~0,371.
+- Ultimo `hourly_target_real_v3`: COMPLETED, 675 linhas de treino, 88 com clique, 22 com pedido, 675 predicoes.
+- `recommendation_hourly_outcomes`: 36 linhas medidas (`17 NEUTRAL`, `16 NO_DATA`, `3 WORSENED/MODEL_WRONG`). Ainda e pouco para confiar em automacao ampla sem guardrails.
+- `ml_full_auto_campaign_flags`: 16 campanhas ligadas; varias entradas estao so por `campaign_name` e sem `campaign_id`. Isso aumenta risco de governanca/ambiguidade no full-auto.
+- Logs do auto-apply: dry_run=false, mas a ultima rodada considerou 3 candidatos e aplicou 0 por estarem fora da allowlist.
+
+### 47.4 Gargalo critico de performance
+
+- Endpoints observados nos logs:
+  - `/api/v1/gold/action-summary` levou ~23s a ~48s.
+  - `/api/v1/gold/review-queue?only_new=true&limit=300` levou ~27s a ~56s.
+- Auditoria SQL confirmou que `gold_recommendation_priority_v2` e o gargalo: agregacoes simples sobre a view passaram de 2 minutos e precisaram ser canceladas com `pg_cancel_backend`.
+- Causa provavel: view composta sobre outras views, com `LATERAL` e subqueries correlacionadas (`gold_recommendation_unified_v2`, `gold_hourly_signal_amc`, `bronze_swarm_bid_schedule`, `bronze_amazon_ads_hourly`, `bronze_amc_target_daily`).
+- Proxima correcao recomendada: materializar o envelope operacional usado por cards/fila (`gold_recommendation_priority_v2` ou uma versao slim), com refresh controlado no orchestrator, em vez de recomputar tudo por request.
+
+### 47.5 AMC/Connector
+
+- `query_runs`: 199 `MODELING_COMPLETED` e 144 `FAILED`.
+- Falhas recentes incluem SQL invalido para o dialeto AMC (`Encountered ". date"`), funcoes nao suportadas (`DAYOFWEEK`, `||`) e objetos inexistentes (`amazon_retail_purchases`, outros objetos nao viewable).
+- `connector-amazon` tambem registrou muitos `csv parse error ... wrong number of fields` no ingest E007, com linhas ignoradas (`inserted=1740 skipped=1004` em um lote). Isso exige auditoria de parser/CSV para nao perder sinais AMC.
+
+### 47.6 Seguranca e higiene local
+
+- Arquivos sensiveis/artefatos locais encontrados no diretorio: `.env`, `Zanom_MktCloud_Amz_accessKeys.csv`, `api.exe`, `connector-amazon.exe`, `query-orchestrator.exe`.
+- `git ls-files` nao lista `.env`, `.csv`, `.exe`, `.pkl`, `.pem` ou `.key`; `.gitignore` cobre esses padroes. Mesmo assim, o CSV de access key no diretorio local deve ser removido/rotacionado fora do repo operacional.
+- `STREAM_DEBUG_RAW_DATASETS` esta mascarado no `.env`; nao foi aberto valor de segredo. Como regra, nao ligar `STREAM_DEBUG_RAW=true` amplo por causa do incidente anterior de log massivo.
+
+### 47.7 Veredito
+
+MarketCloud esta operacional e o lake canonico esta coerente para campanha x hora. O maior risco antes de novas features e performance/governanca:
+
+1. P0: materializar ou reescrever `gold_recommendation_priority_v2`/cards/fila, pois a view trava por minutos.
+2. P0: revisar full-auto: 16 campanhas ligadas e parte sem `campaign_id`; exigir resolucao inequivoca por ID.
+3. P1: sanear templates AMC invalidos e parser E007 para reduzir dados faltantes.
+4. P1: manter Gold/ML lendo a camada canonica, nunca o bronze AMS cru com negativos.
+5. P1: remover/rotacionar CSV local de access key e manter segredos fora do diretorio de trabalho.
+
+### 2026-07-16 - Diagnostico AMC data maxima
+
+- Pergunta investigada: painel/tabelas AMC aparentando data parada em 13/07.
+- Evidencia: o daily ingest AMC rodou em 2026-07-16 09:05 UTC e enfileirou 18 runs (MC_ZANOM_E001..E013, Q005..Q042). Todos os 18 terminaram como MODELING_COMPLETED ate 09:10 UTC.
+- Parametros confirmados em query_runs.parameters_json: period_start=2026-07-02, period_end=2026-07-15 para todos os runs de hoje.
+- Resultado no bronze AMC apos ingest: as principais tabelas ficaram com max_date=2026-07-14 (campaign_daily, hourly_performance, conversions_daily_total, 	arget_daily, search_term_daily, etc.). Portanto o job rodou, mas a resposta/ingest nao materializou linhas de 2026-07-15.
+- Contagem recente: ronze_amc_campaign_daily tem 18 linhas em 12/07, 16 em 13/07, 17 em 14/07 e 0 em 15/07; ronze_amc_hourly_performance tem 340/157/140 nas mesmas datas e 0 em 15/07.
+- Observacao critica: connector-amazon ainda mostra muitos ingest e007: csv parse error ... wrong number of fields com inserted=1786 skipped=1011; isso precisa ser corrigido separadamente porque pode descartar linhas AMC, embora o max_date geral parado em 14/07 sugira atraso/disponibilidade do dado AMC ou resultado sem linhas de 15/07.
+
+### 2026-07-16 - Auditoria de robustez e integridade do ML
+
+Escopo: avaliar se o ML horario esta robusto para operacao 360 (recomendar -> aplicar -> medir -> aprender), com foco em integridade de dados, governanca de auto-apply, tracking de outcomes e risco de overconfidence.
+
+#### Evidencias positivas
+
+- modeling-worker rodou em 2026-07-16 12:05-12:07 UTC.
+- hourly_real_v2: COMPLETED, 611 celulas campanha x hora, 103 positivas com pedido, 611 predicoes. Metricas atuais: AUC ~0,963, ROAS MAE ~1,371, R2 ~0,338; bate baseline por hora.
+- hourly_target_real_v3: COMPLETED, 707 celulas keyword/target x hora, 94 com clique, 23 com pedido, 707 predicoes. Conversao target AUC ~0,927; ROAS target R2 ~0,095, apenas 17 nonzero.
+- gold_hourly_signal_amc/gold_hourly_signal_unified: 10.330 celulas, 8.714 trustworthy, 880 AMS_STREAM e 9.450 REPORTING. A camada canonica continua protegendo conversao imatura.
+- Holdout existe: 192 celulas CONTROLE e 657 TRATAMENTO.
+- Full-auto flags foram saneadas em relacao a auditoria anterior: 15 campanhas ligadas e 0 sem campaign_id.
+
+#### Findings de risco
+
+1. P0 - Auto-apply nao esta efetivamente fechando o ciclo hoje.
+   - Ultima rodada: 3 candidatos ML para auto-apply, considered=0, pplied_profiles=0.
+   - Motivo observado: candidatos Abridor de Vinho e Localizador ficaram fora do full-auto/sem campaign_id resolvido pelo caminho do auto-apply.
+   - Impacto: o ML recomenda, mas nao aplica nas oportunidades atuais. O 360 automatico esta configurado, mas nao esta gerando alteracao nas ultimas rodadas.
+
+2. P0 - Ponte de identidade campanha nome -> campaign_id ainda e fragil.
+   - ronze_amazon_ads_hourly nao possui campaign_id; o ML de campanha aprende por campaign_name.
+   - ronze_ams_hourly possui campaign_id, mas nas linhas recentes consultadas campaign_name esta vazio (844/844 linhas dos ultimos 7 dias com nome em branco).
+   - hourly_target_real_v3 tambem gravou predicoes com campaign_name vazio (707/707 no agrupamento atual).
+   - Impacto: explicabilidade, allowlist full-auto e join entre ML/AMS/robo dependem de mapeamento externo. Sem mapa confiavel, o sistema bloqueia corretamente, mas deixa de operar.
+
+3. P0 - Outcomes ainda nao provam aprendizado operacional.
+   - ecommendation_hourly_outcomes: 36 linhas apenas; max ction_start_at=2026-07-13 21:00 UTC.
+   - Distribuicao: varios NO_DATA/NEUTRAL; 3 WORSENED/MODEL_WRONG; nenhum IMPROVED/MODEL_RIGHT.
+   - ecommendation_decisions: apenas 7 decisoes ML_AUTO_APPLY, ultima em 2026-07-14.
+   - Impacto: o painel pode mostrar modelo treinado, mas o loop aplicado->medido->aprendido ainda tem pouca evidencia e esta atrasado frente as rodadas recentes.
+
+4. P1 - Medidor de outcome usa ronze_ams_hourly, nao a camada canonica.
+   - efresh_recommendation_hourly_outcomes() mede baseline/eval em marketcloud_bronze.bronze_ams_hourly.
+   - Esse bronze ja teve historico de deltas/restatements, nomes vazios e negativos de transicao; a camada mais segura e gold_hourly_signal_unified/mature.
+   - Impacto: outcomes podem medir com fonte diferente da usada no treino e com menor confiabilidade de conversao.
+
+5. P1 - Holdout existe, mas o outcome atual nao usa controle/tratamento para causalidade.
+   - Auto-apply exclui CONTROLE, o que e bom.
+   - A funcao de outcome compara janela antes vs depois da mesma campanha/hora; nao compara tratamento contra controle.
+   - Impacto: variaçao natural de demanda pode ser atribuida ao modelo indevidamente.
+
+6. P1 - V3 target deve continuar em shadow/advisor.
+   - Embora esteja COMPLETED, so ha 23 positivos de pedido e 17 pontos ROAS nonzero.
+   - campaign_name esta vazio nas predicoes target; o proprio worker declara MODO SOMBRA / ADVISOR-ONLY.
+   - Impacto: ainda nao e seguro ligar V3 target diretamente ao robo.
+
+7. P2 - Model registry nao guarda janela/atualizacao de forma boa para auditoria.
+   - model_registry usa upsert na mesma chave, mas created_at fica antigo; nao ha historico por rodada nem artifact versionado.
+   - ml_hourly_run_status tem historico, mas nao preserva artefato/model hash.
+   - Impacto: dificil reproduzir exatamente qual modelo tomou qual decisao.
+
+#### Veredito
+
+O ML esta operacional e melhor do que estava: treina de hora em hora, usa camada canonica, bate baseline em metricas internas e tem governanca de allowlist/holdout. Mas ainda nao esta robusto para ampliar full-auto 360: falta identidade campanha->ID confiavel, o auto-apply esta aplicando zero nas ultimas rodadas, os outcomes sao poucos e medidos em fonte bronze AMS em vez da camada canonica. Recomendacao: manter full-auto restrito, corrigir identidade e outcome antes de aumentar escopo.
+
+### 2026-07-16 - Revalidacao da auditoria ML apos correcoes 091/092
+
+Validacao dos pontos contestados/corrigidos pelo auditoria anterior.
+
+1. P1-4 medidor keyword/pin: ACEITO como corrigido no grao certo.
+   - Migration  91_medidor_pin_filtra_lixo.sql recriou marketcloud_gold.measure_keyword_pin_outcomes() filtrando linhas negativas de ronze_ams_hourly_target antes de somar.
+   - Confirmado no banco: ainda existem 218 linhas com impressao negativa e 3 com outras metricas negativas no bronze target, mas a funcao agora exclui essas linhas.
+   - Execucao atual: measure_keyword_pin_outcomes(3,5,0.10) retornou medidos=0, sem_dado_ainda=55; ou seja, fix aplicado, mas ainda sem volume para medir pins.
+   - Observacao: isso corrige o medidor de pin/keyword. A funcao marketcloud_recommendations.refresh_recommendation_hourly_outcomes() continua lendo ronze_ams_hourly no grao campanha; esse e outro medidor.
+
+2. P0-2 identidade campanha: ACEITO como sentinela/fonte unica criada, mas ADOCAO AINDA PARCIAL.
+   - Migration  92_mapa_identidade_campanha.sql criou marketcloud_gold.gold_campaign_identity e gold_campaign_identity_alertas.
+   - Confirmado: mapa 37 linhas, 37 ids, 37 nomes.
+   - Sentinela confirmou 4 alertas: as 4 campanhas m19 autopilot com SEM_ID_NO_MAPA.
+   - Ressalva auditoria: workers/modeling-worker/marketcloud_ml_auto_apply_campaign_recommendations.py ainda monta campaign_ids a partir de marketcloud_bronze.bronze_ams_hourly, nao de gold_campaign_identity; internal/query/ml_full_auto.go tambem refaz mapa proprio. Portanto a fonte unica existe, mas ainda precisa ser adotada pelos consumidores criticos.
+
+3. P0-1 auto-apply zero: RECLASSIFICADO.
+   - Validacao aceita: zero aplicacoes na ultima rodada nao e bug funcional; foi guardrail de allowlist/full-auto atuando.
+   - Auditoria deve tratar como estado operacional: uto-apply ativo, mas sem candidatos liberados, nao como falha.
+   - Risco residual: se a identidade nao for adotada end-to-end, campanhas liberadas podem continuar sem casar por ID e ficar fora sem explicacao clara.
+
+4. P0-3/P1-5 outcomes/holdout: RECLASSIFICADO para acompanhamento, nao bug imediato.
+   - Confirmado: marketcloud_control.holdout_cells existe e marketcloud_gold.gold_holdout_leitura existe.
+   - Leitura atual ainda e cedo: CONTROLE 14 celulas/14 dias_observados, gasto R,36; TRATAMENTO 49 celulas/49 dias_observados, gasto R,85; ambos sem venda. Ainda nao ha massa para conclusao causal.
+   - A leitura por holdout existe, mas ecommendation_hourly_outcomes segue antes/depois por decisao; manter ambos: per-decision para auditoria operacional, holdout para causalidade de semanas.
+
+Veredito atualizado: as correcoes 091/092 reduzem risco real. P1-4 keyword/pin esta resolvido. P0-2 deixou de ser cego, mas ainda falta adotar gold_campaign_identity no auto-apply, settings/full-auto e demais joins criticos. P0-1 nao e bug: e trava de allowlist funcionando. Outcomes/holdout precisam de tempo, nao de relaxar regra.

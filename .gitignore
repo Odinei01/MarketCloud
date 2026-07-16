@@ -24,3 +24,9 @@ frontend/dist-codex/
 # ML model artifacts (regeneráveis)
 workers/ml-worker/models/
 *.pkl
+
+# temporarios de trabalho / caches
+__pycache__/
+*.pyc
+*.tmp
+.*.tmp
