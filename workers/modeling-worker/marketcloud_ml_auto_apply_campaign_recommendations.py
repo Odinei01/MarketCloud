@@ -114,6 +114,15 @@ def load_candidates(conn):
               -- so SOBE, e so quando o alvo do ML de fato pede mais que o atual.
               -- A faixa morta de 0.05 evita aplicar micro-ajuste sozinho.
               AND t.ml_multiplier > r.current_multiplier + 0.05
+              -- GRUPO DE CONTROLE: celula sorteada como CONTROLE nao e tocada.
+              -- Sem isso o holdout e ficcao: o robo mexeria no controle e nao
+              -- haveria contrafactual pra comparar com o tratamento.
+              AND NOT EXISTS (
+                  SELECT 1 FROM marketcloud_control.holdout_cells hc
+                  WHERE hc.campaign_name = r.campaign_name
+                    AND hc.event_hour = r.event_hour
+                    AND hc.grupo = 'CONTROLE'
+              )
             ORDER BY r.priority_score DESC NULLS LAST, r.computed_at DESC
             LIMIT %s
             """,
