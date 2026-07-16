@@ -2,7 +2,7 @@
 MarketCloud ML Worker - HOURLY REAL v2
 
 Treina no dado real horario da conta ZANOM, sem supressao:
-  marketcloud_bronze.bronze_amazon_ads_hourly
+  marketcloud_features.feature_full_control_campaign_hour_v1
 
 Diferente do V1, que aprendia sobre o AMC suprimido e recusava treinar por falta de
 sinal na classe minoritaria. Aqui ha sinal real: celulas com pedido.
@@ -14,7 +14,8 @@ Modelos:
 HONESTIDADE:
   - grao: campanha x hora agregado na janela.
   - features SEM vazamento do alvo: hora, faixas do dia, campanha (one-hot),
-    e sinais de demanda (ctr, cpc, impressoes/dia). Nao usa orders/sales/roas como X.
+    sinais de demanda, funil AMC, budget, stop-loss, produto e placement.
+    Nao usa orders/sales/roas como X.
   - reporta comparacao contra baseline simples por hora-do-dia.
   - ADVISOR-ONLY: grava predicoes, nao executa nada.
 """
@@ -51,31 +52,12 @@ def get_conn():
 
 
 def load(conn):
-    # CAMADA CANÔNICA (§44): features de tráfego de TODAS as células; alvo de
-    # conversão (orders/sales/roas) SÓ das células MADURAS (conversion_trustworthy).
-    # Evita aprender "hora fresca = sem pedido" quando é só conversão imatura.
+    # Features Full Control (§2026-07-16): agrega a camada canonica de sinal
+    # horario com budget, stop-loss, produto e placement traffic. Alvos
+    # (orders/sales/roas) continuam vindo apenas de celulas maduras.
     sql = """
-        SELECT LOWER(TRIM(campaign_name)) AS campaign_norm,
-               MAX(campaign_name) AS campaign_name,
-               event_hour,
-               COUNT(DISTINCT data_date)                                         AS days_observed,
-               SUM(impressions)::float                                           AS impressions,
-               SUM(clicks)::float                                                AS clicks,
-               SUM(spend)::float                                                 AS spend,
-               COALESCE(SUM(orders_7d) FILTER (WHERE conversion_trustworthy),0)::float AS orders,
-               COALESCE(SUM(sales_7d)  FILTER (WHERE conversion_trustworthy),0)::float AS sales,
-               COALESCE(SUM(spend)     FILTER (WHERE conversion_trustworthy),0)::float AS spend_mature,
-               COUNT(DISTINCT data_date) FILTER (WHERE conversion_trustworthy)   AS mature_days,
-               COALESCE(MAX(amc_assist_rate),0)      AS amc_assist_rate,
-               COALESCE(MAX(amc_first_touch_rate),0) AS amc_first_touch_rate,
-               COALESCE(MAX(amc_new_customer_rate),0) AS amc_new_customer_rate,
-               COALESCE(MAX(amc_dpv_count),0) AS amc_dpv_count,
-               COALESCE(MAX(amc_cart_adds),0) AS amc_cart_adds,
-               COALESCE(MAX(learn_roas_delta_avg),0) AS learn_roas_delta_avg,
-               COALESCE(MAX(learn_win_rate),0.5)     AS learn_win_rate
-        FROM marketcloud_gold.gold_hourly_signal_amc
-        WHERE UPPER(COALESCE(campaign_status,'ENABLED')) NOT IN ('ARCHIVED','PAUSED','DELETED')
-        GROUP BY LOWER(TRIM(campaign_name)), event_hour
+        SELECT *
+        FROM marketcloud_features.feature_full_control_campaign_hour_v1
     """
     with conn.cursor() as cur:
         cur.execute(sql)
@@ -86,7 +68,18 @@ def load(conn):
                     "orders", "sales", "spend_mature", "mature_days",
                     "amc_assist_rate", "amc_first_touch_rate", "amc_new_customer_rate",
                     "amc_dpv_count", "amc_cart_adds",
-                    "learn_roas_delta_avg", "learn_win_rate"]
+                    "learn_roas_delta_avg", "learn_win_rate",
+                    "current_budget_brl", "spend_to_budget_ratio",
+                    "top_of_search_bid_adjustment", "top_of_search_multiplier_delta",
+                    "bidding_legacy_for_sales", "sale_price_brl", "unit_cost_brl",
+                    "stock_available", "gross_margin_brl", "gross_margin_pct",
+                    "max_daily_budget_brl", "max_spend_without_order_brl", "min_roas",
+                    "spend_to_fc_daily_cap_ratio", "spend_to_stop_loss_ratio",
+                    "is_full_control_pilot", "is_active_pilot", "can_control_flag",
+                    "placement_spend_45d", "placement_clicks_45d", "placement_impressions_45d",
+                    "top_search_spend_45d", "product_page_spend_45d", "rest_search_spend_45d",
+                    "top_search_spend_share_45d", "product_page_spend_share_45d", "rest_search_spend_share_45d",
+                    "top_search_cpc_45d", "product_page_cpc_45d", "rest_search_cpc_45d"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
     df["ctr"] = np.where(df["impressions"] > 0, df["clicks"] / df["impressions"], 0.0)
@@ -108,7 +101,18 @@ def build_X(df):
                "ctr", "cpc", "impr_per_day", "days_observed",
                "amc_assist_rate", "amc_first_touch_rate", "amc_new_customer_rate",
                "amc_dpv_count", "amc_cart_adds",
-               "learn_roas_delta_avg", "learn_win_rate"]].copy()
+               "learn_roas_delta_avg", "learn_win_rate",
+               "current_budget_brl", "spend_to_budget_ratio",
+               "top_of_search_bid_adjustment", "top_of_search_multiplier_delta",
+               "bidding_legacy_for_sales",
+               "sale_price_brl", "unit_cost_brl", "stock_available",
+               "gross_margin_brl", "gross_margin_pct",
+               "max_daily_budget_brl", "max_spend_without_order_brl", "min_roas",
+               "spend_to_fc_daily_cap_ratio", "spend_to_stop_loss_ratio",
+               "is_full_control_pilot", "is_active_pilot", "can_control_flag",
+               "placement_spend_45d", "placement_clicks_45d", "placement_impressions_45d",
+               "top_search_spend_share_45d", "product_page_spend_share_45d", "rest_search_spend_share_45d",
+               "top_search_cpc_45d", "product_page_cpc_45d", "rest_search_cpc_45d"]].copy()
     camp = pd.get_dummies(df["campaign_norm"], prefix="c")
     X = pd.concat([base.reset_index(drop=True), camp.reset_index(drop=True)], axis=1)
     return X.astype(float), list(X.columns)

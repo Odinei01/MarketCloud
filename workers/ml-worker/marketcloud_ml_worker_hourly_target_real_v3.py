@@ -12,6 +12,8 @@ Modelos registrados:
 HONESTIDADE:
   - O dataset AMS target ainda pode ser pequeno e conter restatements/deltas.
   - Se nao houver volume minimo, registra INSUFFICIENT_DATA e nao inventa score.
+  - Usa tambem a faixa de BID recomendada pela Amazon (lower/median/upper) e
+    o BID atual/proposto do Robo como contexto de treino, nao como label.
   - ADVISOR-ONLY: grava predicoes, nao executa nada na Amazon.
 
 MODO SOMBRA (intencional, 2026-07-13):
@@ -56,28 +58,85 @@ def get_conn():
 
 def load(conn):
     sql = """
+        WITH base AS (
+            SELECT
+                campaign_id,
+                MAX(campaign_name) AS campaign_name,
+                COALESCE(ad_group_id, '') AS ad_group_id_norm,
+                NULLIF(MAX(ad_group_id), '') AS ad_group_id,
+                MAX(ad_group_name) AS ad_group_name,
+                target_entity_key,
+                MAX(keyword_id) AS keyword_id,
+                MAX(target_id) AS target_id,
+                MAX(keyword_text) AS keyword_text,
+                MAX(targeting) AS targeting,
+                COALESCE(NULLIF(MAX(match_type), ''), 'UNKNOWN') AS match_type,
+                event_hour,
+                COUNT(DISTINCT data_date)::int AS days_observed,
+                SUM(COALESCE(impressions, 0))::float AS impressions,
+                SUM(COALESCE(clicks, 0))::float AS clicks,
+                SUM(COALESCE(spend, 0))::float AS spend,
+                SUM(GREATEST(COALESCE(orders_14d, 0), COALESCE(orders_7d, 0), COALESCE(orders_1d, 0)))::float AS orders,
+                SUM(GREATEST(COALESCE(sales_14d, 0), COALESCE(sales_7d, 0), COALESCE(sales_1d, 0)))::float AS sales
+            FROM marketcloud_bronze.bronze_ams_hourly_target
+            WHERE NULLIF(TRIM(COALESCE(target_entity_key, '')), '') IS NOT NULL
+            GROUP BY campaign_id, COALESCE(ad_group_id, ''), target_entity_key, event_hour
+        )
         SELECT
-            campaign_id,
-            MAX(campaign_name) AS campaign_name,
-            COALESCE(ad_group_id, '') AS ad_group_id_norm,
-            NULLIF(MAX(ad_group_id), '') AS ad_group_id,
-            MAX(ad_group_name) AS ad_group_name,
-            target_entity_key,
-            MAX(keyword_id) AS keyword_id,
-            MAX(target_id) AS target_id,
-            MAX(keyword_text) AS keyword_text,
-            MAX(targeting) AS targeting,
-            COALESCE(NULLIF(MAX(match_type), ''), 'UNKNOWN') AS match_type,
-            event_hour,
-            COUNT(DISTINCT data_date)::int AS days_observed,
-            SUM(COALESCE(impressions, 0))::float AS impressions,
-            SUM(COALESCE(clicks, 0))::float AS clicks,
-            SUM(COALESCE(spend, 0))::float AS spend,
-            SUM(GREATEST(COALESCE(orders_14d, 0), COALESCE(orders_7d, 0), COALESCE(orders_1d, 0)))::float AS orders,
-            SUM(GREATEST(COALESCE(sales_14d, 0), COALESCE(sales_7d, 0), COALESCE(sales_1d, 0)))::float AS sales
-        FROM marketcloud_bronze.bronze_ams_hourly_target
-        WHERE NULLIF(TRIM(COALESCE(target_entity_key, '')), '') IS NOT NULL
-        GROUP BY campaign_id, COALESCE(ad_group_id, ''), target_entity_key, event_hour
+            b.*,
+            COALESCE(d.current_bid, 0)::float AS current_bid,
+            COALESCE(NULLIF(r.recommended_bid_lower, 0), NULLIF(d.amazon_recommended_bid_lower, 0), 0)::float AS amazon_rec_bid_lower,
+            COALESCE(NULLIF(r.recommended_bid_median, 0), NULLIF(d.amazon_recommended_bid_median, 0), 0)::float AS amazon_rec_bid_median,
+            COALESCE(NULLIF(r.recommended_bid_upper, 0), NULLIF(d.amazon_recommended_bid_upper, 0), 0)::float AS amazon_rec_bid_upper,
+            COALESCE(d.proposed_bid, 0)::float AS robot_proposed_bid,
+            COALESCE(d.bid_delta_percent, 0)::float AS robot_bid_delta_percent,
+            COALESCE(d.effective_min_bid, 0)::float AS effective_min_bid,
+            COALESCE(d.effective_max_bid, 0)::float AS effective_max_bid,
+            CASE
+                WHEN COALESCE(d.current_bid,0) > 0 THEN COALESCE(NULLIF(r.recommended_bid_median, 0), NULLIF(d.amazon_recommended_bid_median, 0), 0) / NULLIF(d.current_bid,0)
+                ELSE 0
+            END::float AS amazon_rec_median_to_current_ratio,
+            CASE
+                WHEN COALESCE(NULLIF(r.recommended_bid_median, 0), NULLIF(d.amazon_recommended_bid_median, 0), 0) > 0 THEN COALESCE(d.proposed_bid,0) / NULLIF(COALESCE(NULLIF(r.recommended_bid_median, 0), NULLIF(d.amazon_recommended_bid_median, 0), 0),0)
+                ELSE 0
+            END::float AS robot_proposed_to_amazon_median_ratio,
+            CASE WHEN COALESCE(NULLIF(r.recommended_bid_median, 0), NULLIF(d.amazon_recommended_bid_median, 0), 0) > 0 THEN 1 ELSE 0 END::float AS has_amazon_bid_recommendation
+        FROM base b
+        LEFT JOIN LATERAL (
+            SELECT r.*
+            FROM swarm_src.amazon_ads_bid_recommendations r
+            WHERE r.campaign_id = b.campaign_id
+              AND (COALESCE(r.ad_group_id,'') = b.ad_group_id_norm OR COALESCE(r.ad_group_id,'') = '')
+              AND (
+                    (NULLIF(b.keyword_id,'') IS NOT NULL AND r.keyword_id = b.keyword_id)
+                 OR (NULLIF(b.target_id,'') IS NOT NULL AND r.target_id = b.target_id)
+                 OR (NULLIF(b.target_entity_key,'') IS NOT NULL AND r.target_id = b.target_entity_key)
+                 OR (
+                        NULLIF(b.keyword_text,'') IS NOT NULL
+                    AND lower(trim(COALESCE(r.raw_payload_sanitized->>'keywordText', r.raw_payload_sanitized->>'keyword', ''))) = lower(trim(b.keyword_text))
+                 )
+                 OR (
+                        NULLIF(b.targeting,'') IS NOT NULL
+                    AND lower(trim(COALESCE(r.raw_payload_sanitized->>'keywordText', r.raw_payload_sanitized->>'keyword', ''))) = lower(trim(b.targeting))
+                 )
+              )
+            ORDER BY r.fetched_at DESC NULLS LAST
+            LIMIT 1
+        ) r ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT d.*
+            FROM swarm_src.amazon_ads_bid_decisions d
+            WHERE d.campaign_id = b.campaign_id
+              AND (COALESCE(d.ad_group_id,'') = b.ad_group_id_norm OR COALESCE(d.ad_group_id,'') = '')
+              AND (
+                    (NULLIF(b.keyword_id,'') IS NOT NULL AND d.keyword_id = b.keyword_id)
+                 OR (NULLIF(b.target_id,'') IS NOT NULL AND d.target_id = b.target_id)
+                 OR (NULLIF(b.keyword_text,'') IS NOT NULL AND lower(trim(d.target_text)) = lower(trim(b.keyword_text)))
+                 OR (NULLIF(b.targeting,'') IS NOT NULL AND lower(trim(d.target_text)) = lower(trim(b.targeting)))
+              )
+            ORDER BY d.updated_at DESC NULLS LAST, d.created_at DESC NULLS LAST
+            LIMIT 1
+        ) d ON TRUE
     """
     with conn.cursor() as cur:
         cur.execute(sql)
@@ -85,7 +144,14 @@ def load(conn):
     if df.empty:
         return df
 
-    for col in ["impressions", "clicks", "spend", "orders", "sales"]:
+    for col in [
+        "impressions", "clicks", "spend", "orders", "sales",
+        "current_bid", "amazon_rec_bid_lower", "amazon_rec_bid_median",
+        "amazon_rec_bid_upper", "robot_proposed_bid", "robot_bid_delta_percent",
+        "effective_min_bid", "effective_max_bid",
+        "amazon_rec_median_to_current_ratio", "robot_proposed_to_amazon_median_ratio",
+        "has_amazon_bid_recommendation",
+    ]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
     # AMS can send deltas/restatements. Keep the raw aggregate for audit, but use
@@ -112,7 +178,15 @@ def load(conn):
 
 
 def build_X(df, target):
-    cols = ["event_hour", "is_madrugada", "is_manha", "is_tarde", "is_noite", "impr_per_day", "days_observed"]
+    cols = [
+        "event_hour", "is_madrugada", "is_manha", "is_tarde", "is_noite",
+        "impr_per_day", "days_observed",
+        "current_bid", "amazon_rec_bid_lower", "amazon_rec_bid_median",
+        "amazon_rec_bid_upper", "robot_proposed_bid", "robot_bid_delta_percent",
+        "effective_min_bid", "effective_max_bid",
+        "amazon_rec_median_to_current_ratio", "robot_proposed_to_amazon_median_ratio",
+        "has_amazon_bid_recommendation",
+    ]
     # For conversion/ROAS after the hour closes, clicks/spend signals are allowed.
     # For click propensity, do not include click-derived features.
     if target != "has_click":

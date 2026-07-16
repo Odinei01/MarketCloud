@@ -4214,3 +4214,621 @@ Hoje as duas fontes coincidem para esse piloto, mas a governanca passa a usar a 
 #### Escopo ainda consciente
 
 Estoque zero ainda bloqueia apenas campanhas que estao dentro de piloto Full Control. Campanhas em full-auto comum, sem piloto por produto, continuam usando os guardrails globais antigos. Se a regra desejada for "estoque zero bloqueia qualquer auto-apply", isso precisa virar guardrail base global em uma proxima migration/worker change.
+
+---
+
+### 2026-07-16 - Requisito estrategico: variaveis do Robo Full Control
+
+Status: requisito registrado; fontes auditadas parcialmente.
+
+#### Variaveis que precisam entrar na estrategia
+
+O Full Control nao deve ser apenas "multiplicador horario de BID". A estrategia por campanha/produto deve considerar tambem:
+
+- Topo de pagina / Top of Search;
+- Pagina do produto / Product Page;
+- Meio/restante da pagina / Rest of Search;
+- Orcamento diario da campanha;
+- Stop loss por gasto sem pedido;
+- Estoque e margem do produto;
+- ROAS minimo e maturidade de conversao;
+- hora do dia e historico AMS/relatorio;
+- regra de fail-closed quando a governanca nao estiver confiavel.
+
+#### O que ja existe no lake hoje
+
+- `swarm_src.amazon_ads_campaigns_daily` ja traz:
+  - `budget_amount`;
+  - `budget_type`;
+  - `bidding_strategy`;
+  - `top_of_search_bid_adjustment`;
+  - status da campanha e sincronizacao de estrutura.
+- `marketcloud_bronze.bronze_amc_placement_creative_daily` e `marketcloud_silver.silver_placement_creative_daily` ja trazem performance por `placement_type`, mas hoje focada em trafego/custo:
+  - impressions;
+  - clicks;
+  - spend;
+  - CTR;
+  - CPC;
+  - viewability/video.
+- O Full Control ja tem:
+  - `max_daily_budget_brl`;
+  - `max_spend_without_order_brl`;
+  - custo/preco/estoque;
+  - gate canonicamente calculado por `gold_hourly_signal_unified`.
+
+#### Lacunas encontradas
+
+- A tabela diaria de estrutura do SWARM tem somente `top_of_search_bid_adjustment`; nao ha colunas separadas para `product_page_bid_adjustment` e `rest_of_search_bid_adjustment`.
+- A tabela AMC de placement atual nao carrega pedidos/vendas por placement; portanto, neste momento, placement e um sinal de trafego/CPC, nao ainda ROAS por placement.
+- O worker de auto-apply hoje executa somente atualizacao de agenda de BID horario via Robo/Cycle B. Ele ainda nao altera diretamente:
+  - budget da campanha;
+  - placement multiplier;
+  - bidding strategy;
+  - pausa/stop da campanha.
+
+#### Como isso deve entrar no Robo
+
+Camada 1 - Guardrails obrigatorios:
+
+- `max_daily_budget_brl`: se gasto do dia >= teto, bloquear novas subidas e acionar stop.
+- `max_spend_without_order_brl`: se gasto sem pedido >= teto, bloquear/cortar exposicao.
+- estoque <= 0: bloquear para pilotos Full Control.
+- governanca indisponivel: bloquear fail-closed.
+
+Camada 2 - Decisao de orcamento:
+
+- Se ROAS bom, estoque OK e campanha morre cedo por budget, sugerir/aumentar budget dentro do teto.
+- Se gasto sem pedido cresce, reduzir budget ou congelar subidas.
+- Se budget atual Amazon > teto definido no piloto, sinalizar risco e impedir escalada.
+
+Camada 3 - Decisao de placement:
+
+- Top of Search:
+  - aumentar se CTR/CVR/ROAS forem superiores e CPC estiver dentro da margem;
+  - reduzir se CPC alto e sem conversao madura.
+- Product Page:
+  - aumentar quando captura comparacao/defesa com bom custo;
+  - reduzir quando gera clique caro sem pedido.
+- Rest of Search/meio:
+  - usar como trafego barato para descoberta;
+  - reduzir se baixa intencao e nao gera pedido.
+
+Camada 4 - Execucao:
+
+- Curto prazo: exibir essas variaveis no painel do piloto e usar como evidencia de decisao.
+- Proximo passo tecnico: criar view `full_control_strategy_signal_v1` com budget, stop loss, top_of_search e placement traffic.
+- Depois: ampliar sync/ingest para trazer os ajustes de Product Page e Rest of Search, caso a API do Robo/SWARM ja capture esses campos.
+- Execucao direta de budget/placement so deve ser liberada depois de auditoria do endpoint do Robo que publica essas mudancas na Amazon.
+
+#### Interpretacao operacional para a campanha piloto
+
+Para `Forma Silicone`, a decisao do Robo deve passar a responder:
+
+- quanto posso gastar hoje sem quebrar margem?
+- se nao vendeu, em que gasto paro?
+- a campanha esta gastando em horario certo?
+- Top of Search esta comprando trafego bom ou caro?
+- Product Page esta defendendo/conquistando compra?
+- Rest/Meio esta barato o suficiente para descoberta?
+- existe estoque e margem para escalar?
+
+Enquanto Product Page/Rest nao estiverem na estrutura sincronizada, a automacao segura continua sendo:
+
+- BID horario automatizado;
+- stop loss por gasto sem pedido;
+- teto diario;
+- monitoramento de placement como evidencia, nao como execucao direta.
+
+---
+
+### 2026-07-16 - ML passa a aprender variaveis Full Control
+
+Status: implementado e validado localmente.
+
+#### Objetivo
+
+Fazer o ML deixar de aprender apenas "campanha x hora" com CTR/CPC/funil, e passar a receber as variaveis estrategicas do Full Control:
+
+- budget atual;
+- uso de budget;
+- Top of Search;
+- estoque;
+- preco/custo/margem;
+- teto diario;
+- stop loss;
+- status de piloto Full Control;
+- placement traffic/custo:
+  - Top of Search;
+  - Detail/Product Page;
+  - Other/Rest of Search.
+
+#### Implementacao
+
+- Criada migration `103_full_control_strategy_features.sql`.
+- Nova view:
+  - `marketcloud_features.feature_full_control_campaign_hour_v1`.
+- A view junta:
+  - `marketcloud_gold.gold_hourly_signal_amc`;
+  - `marketcloud_gold.gold_campaign_identity`;
+  - `swarm_src.amazon_ads_campaigns_daily`;
+  - `marketcloud_silver.silver_placement_creative_daily`;
+  - `marketcloud_gold.full_control_effective_governance_v1`.
+- O worker `workers/ml-worker/marketcloud_ml_worker_hourly_real_v2.py` passou a treinar por essa view.
+- Labels continuam honestas:
+  - `orders`, `sales`, `roas` sao alvo;
+  - nao entram como feature.
+
+#### Cobertura da feature view
+
+Validado no banco:
+
+- `611` celulas campanha x hora;
+- `33` campanhas;
+- `589` celulas com budget;
+- `395` celulas com Top of Search;
+- `509` celulas com placement;
+- `24` celulas do piloto Full Control.
+
+Exemplo `Forma Silicone`:
+
+- budget atual Amazon: `10`;
+- Top of Search adjustment: `150%`;
+- estoque: `99`;
+- margem bruta: aproximadamente `64,8%`;
+- max daily budget: `10`;
+- stop loss sem pedido: `5`;
+- Top Search spend share 45d: aproximadamente `70,5%`;
+- Product Page spend share 45d: aproximadamente `1,0%`;
+- Rest/Other spend share 45d: aproximadamente `28,5%`.
+
+#### Treino executado
+
+Rodado manualmente:
+
+```bash
+docker compose run --rm modeling-worker python /app/marketcloud_ml_worker_hourly_real_v2.py
+```
+
+Resultado:
+
+- `611` celulas campanha x hora;
+- `104` celulas com pedido;
+- modelo de conversao:
+  - `AUC=0.962`;
+  - baseline por hora `0.713`;
+  - `beats_baseline=true`;
+- modelo de ROAS:
+  - `MAE=1.362`;
+  - baseline `2.604`;
+  - `beats_baseline=true`;
+- `611` predicoes gravadas em `marketcloud_gold.hourly_ml_predictions_v2`.
+
+#### Confirmacao no model registry
+
+Os modelos `HourlyConversionRealV2` e `HourlyExpectedRoasRealV2` passaram a registrar features novas:
+
+- `top_of_search_bid_adjustment`;
+- `max_spend_without_order_brl`;
+- `stock_available`;
+- `product_page_spend_share_45d`;
+- `spend_to_budget_ratio`;
+- `placement_clicks_45d`;
+- `product_page_cpc_45d`.
+
+Top features apos o treino:
+
+- Conversao:
+  - `spend_to_budget_ratio`;
+  - `cpc`;
+  - `days_observed`;
+  - `ctr`;
+  - `placement_clicks_45d`;
+  - `placement_impressions_45d`;
+  - `impr_per_day`;
+  - `placement_spend_45d`.
+- ROAS:
+  - `days_observed`;
+  - `spend_to_budget_ratio`;
+  - `cpc`;
+  - `ctr`;
+  - `impr_per_day`;
+  - `event_hour`;
+  - `placement_impressions_45d`;
+  - `product_page_cpc_45d`.
+
+#### Auto-apply apos treino
+
+Rodado manualmente:
+
+```bash
+docker compose run --rm modeling-worker python /app/marketcloud_ml_auto_apply_campaign_recommendations.py
+```
+
+Resultado:
+
+- `3` candidatos ML encontrados;
+- todos foram ignorados por estarem fora da allowlist/full-auto:
+  - `Abridor de Vinho`;
+  - `Localizador`;
+- `considered=0`;
+- `applied_profiles=0`.
+
+Interpretacao: o ML ja aprendeu com as novas variaveis, mas nao havia recomendacao elegivel para a campanha piloto no momento do teste. O worker novo foi rebuildado e reiniciado.
+
+#### Limite consciente
+
+Product Page e Rest/Other entram agora como sinal de performance por placement, via AMC/silver. Ainda nao entram como ajuste estrutural separado porque o sync atual do SWARM so expõe `top_of_search_bid_adjustment`. Para executar placement diretamente, precisamos antes ampliar a coleta/publicacao desses campos no Robo/SWARM.
+
+---
+
+### 2026-07-16 - ML Target V3 preparado para o contexto de BID da Amazon (feature ainda inerte)
+
+Status: pipeline implementado e validado localmente. IMPORTANTE: a feature ainda NAO carrega sinal. A fonte de bid recommendation esta vazia (Amazon em 429; ver secao "Correcao da fonte amazon_recommended_bid_median"), entao `amazon_rec_bid_*` chegam TODAS zeradas ao modelo. As colunas existem no treino, mas nao movem as metricas — a AUC de conversao (0.9199) e identica a da rodada anterior a esta mudanca. "Aprende" so vale quando o cache encher; hoje o correto e "esta cabeado para aprender".
+
+#### Objetivo
+
+Incluir no treino keyword/target x hora o contexto de BID recomendado pela Amazon para aquela keyword/target, sem transformar a recomendacao da Amazon em verdade absoluta.
+
+#### Implementacao
+
+Arquivo alterado:
+
+- `workers/ml-worker/marketcloud_ml_worker_hourly_target_real_v3.py`.
+
+O load do modelo V3 agora faz `LEFT JOIN LATERAL` na tabela:
+
+- `swarm_src.amazon_ads_bid_decisions`.
+
+Novas features adicionadas:
+
+- `current_bid`;
+- `amazon_rec_bid_lower`;
+- `amazon_rec_bid_median`;
+- `amazon_rec_bid_upper`;
+- `robot_proposed_bid`;
+- `robot_bid_delta_percent`;
+- `effective_min_bid`;
+- `effective_max_bid`;
+- `amazon_rec_median_to_current_ratio`;
+- `robot_proposed_to_amazon_median_ratio`;
+- `has_amazon_bid_recommendation`.
+
+Essas variaveis entram como contexto do modelo, nao como label. O alvo continua sendo:
+
+- clique;
+- pedido;
+- ROAS.
+
+#### Validacao executada
+
+- `docker compose build modeling-worker` OK.
+- `python -m py_compile /app/marketcloud_ml_worker_hourly_target_real_v3.py` OK.
+- Treino manual executado:
+
+```bash
+docker compose run --rm modeling-worker python /app/marketcloud_ml_worker_hourly_target_real_v3.py
+```
+
+Resultado do treino:
+
+- `741` celulas target x hora;
+- `101` com clique;
+- `25` com pedido;
+- `129` targets;
+- `741` predicoes gravadas em `hourly_target_ml_predictions_v3`.
+
+Modelos:
+
+- `HourlyTargetClickRealV3`: `TRAINED`, AUC `0.843`, baseline `0.609`;
+- `HourlyTargetConversionRealV3`: `TRAINED`, AUC `0.919`, baseline `0.744`;
+- `HourlyTargetExpectedRoasRealV3`: `TRAINED`, MAE `0.615`, nonzero `19`.
+
+Confirmado no `model_registry`:
+
+- `has_amazon_median=true`;
+- `has_ratio=true`.
+
+Top features apos treino:
+
+- Click:
+  - `impr_per_day`;
+  - `days_observed`;
+  - `event_hour`;
+  - `robot_proposed_bid`;
+  - `current_bid`.
+- Conversao:
+  - `cpc`;
+  - `ctr`;
+  - `impr_per_day`;
+  - `event_hour`;
+  - match types.
+- ROAS:
+  - `cpc`;
+  - `impr_per_day`;
+  - `ctr`;
+  - `event_hour`;
+  - `current_bid`.
+
+#### Achado importante
+
+A origem hoje tem:
+
+- `424` linhas em `swarm_src.amazon_ads_bid_decisions`;
+- `0` linhas com `amazon_recommended_bid_median > 0`.
+
+Ou seja: o modelo ja tem as colunas e ja treina com o contexto de BID atual/proposto, mas a faixa de BID recomendada pela Amazon esta zerada na fonte. Proximo ajuste fora do MarketCloud: auditar o Robo/SWARM para garantir que ele esta buscando e persistindo `recommendedBid` da Amazon Ads API.
+
+#### Propositivo vs preditivo
+
+O ML deve ser propositivo, mas existem dois modos diferentes:
+
+1. Predicao supervisionada:
+   - aprende onde ja ha historico;
+   - bom para dizer "com sinais parecidos, isso costuma funcionar".
+
+2. Exploracao controlada:
+   - propoe testar uma alavanca pouco usada, como Top of Search maior;
+   - exige limite de risco, holdout e medicao 1h/3h/24h;
+   - sem isso, o modelo so estaria chutando fora da distribuicao observada.
+
+Regra para Top of Search/Product Page/Rest:
+
+- se ja houve variacao historica suficiente, o ML pode predizer;
+- se nunca usamos aquela faixa, o ML deve propor experimento pequeno, nao aplicar em escala;
+- o experimento precisa gravar:
+  - alavanca testada;
+  - valor anterior;
+  - valor proposto;
+  - janela;
+  - budget de risco;
+  - resultado 1h/3h/24h;
+  - `MODEL_RIGHT` ou `MODEL_WRONG`.
+
+Proximo passo recomendado:
+
+- criar uma `exploration_policy` para Full Control:
+  - maximo de incremento por rodada;
+  - limite de gasto por experimento;
+  - holdout por hora/campanha;
+  - duracao minima antes de nova alteracao;
+  - fallback automatico quando perder ROAS ou bater stop loss.
+
+### 2026-07-16 - Correcao da fonte `amazon_recommended_bid_median`
+
+Pedido: corrigir o fato de `amazon_recommended_bid_median` chegar em branco/zero no ML.
+
+Diagnostico:
+
+- O MarketCloud ja tinha o Target V3 preparado para receber:
+  - `amazon_rec_bid_lower`;
+  - `amazon_rec_bid_median`;
+  - `amazon_rec_bid_upper`;
+  - ratios contra bid atual/proposto.
+- A fonte SWARM estava vazia:
+  - `public.amazon_ads_bid_recommendations`: `0` linhas;
+  - `swarm_src.amazon_ads_bid_decisions`: decisoes existiam, mas `amazon_recommended_bid_median > 0 = 0`.
+- O robo de BID logava explicitamente:
+  - `AMAZON_ADS_BID_RECOMMENDATIONS_REQUESTED ... status=SOURCE_NOT_ENABLED`;
+  - ou seja, o motor calculava decisoes sem acionar a API de recomendacao.
+
+Correcoes aplicadas no SWARM (`mercado-data-app`):
+
+- `internal/services/amazon_ads_bid_automation.go`
+  - removeu o `SOURCE_NOT_ENABLED`;
+  - passou a chamar a coleta de recomendacoes antes de calcular decisoes;
+  - monta keywords elegiveis por campanha a partir de:
+    - `amazon_ads_targeting_inventory`;
+    - `amazon_ads_search_terms_daily`;
+  - limita a coleta incremental:
+    - default `AMAZON_ADS_BID_RECOMMENDATION_MAX_CAMPAIGNS=3`;
+    - default `AMAZON_ADS_BID_RECOMMENDATION_KEYWORDS_PER_CAMPAIGN=25`;
+  - se a Amazon devolver `429`, para no primeiro rate limit em vez de martelar todas as campanhas;
+  - pula campanha com cache fresco de recomendacao nas ultimas 12h.
+- `internal/services/amazon_ads_keyword_structure.go`
+  - corrigiu endpoint antigo v2:
+    - antes: `/v2/sp/keywords/bidRecommendations` -> Amazon retornou `404 Method Not Found`;
+    - agora: `/sp/targets/bid/recommendations`;
+  - payload v3:
+    - `campaignId`;
+    - `adGroupId`;
+    - `recommendationType=BIDS_FOR_EXISTING_AD_GROUP`;
+    - `targetingExpressions` com `KEYWORD_EXACT_MATCH`, `KEYWORD_PHRASE_MATCH`, `KEYWORD_BROAD_MATCH`;
+  - parser agora varre resposta aninhada para `lower/median/upper`, pois a resposta da Amazon pode vir em estruturas internas.
+- `internal/services/amazon_ads_connector.go`
+  - adicionou media type correto:
+    - `application/vnd.spthemebasedbidrecommendation.v3+json`.
+
+Validacao SWARM:
+
+- `go test ./internal/services -run TestDoesNotExist -count=0`: OK.
+- Backend rebuildado e recriado.
+- Run manual:
+  - endpoint v2 antigo: retornava `404 Method Not Found`;
+  - endpoint v3 corrigido: parou de retornar 404, mas a Amazon retornou `429 Too Many Requests`;
+  - novo comportamento confirmou o rate-limit e parou no primeiro 429:
+    - `AMAZON_ADS_BID_RECOMMENDATIONS_REQUESTED source=AMAZON_BID_RECOMMENDATIONS campaigns=24 max_campaigns=3`;
+    - `AMAZON_ADS_BID_RECOMMENDATION_SYNC_FAILED ... status=RATE_LIMITED`;
+    - `AMAZON_ADS_BID_RECOMMENDATIONS_RECEIVED ... count=0 status=RATE_LIMITED`.
+
+Correcoes aplicadas no MarketCloud:
+
+- Nova migration:
+  - `migrations/104_amazon_bid_recommendations_fdw.sql`;
+  - cria `swarm_src.amazon_ads_bid_recommendations` via FDW.
+- Migration aplicada:
+  - foreign table criada em `swarm_src`;
+  - contagem atual: `0` linhas, porque a Amazon ainda esta em `429`.
+- `workers/ml-worker/marketcloud_ml_worker_hourly_target_real_v3.py`
+  - passa a preferir o cache bruto `swarm_src.amazon_ads_bid_recommendations`;
+  - usa `swarm_src.amazon_ads_bid_decisions` apenas como fallback;
+  - nao inventa valor quando a Amazon nao retorna recomendacao.
+
+Validacao MarketCloud:
+
+- `docker compose run --rm modeling-worker python /app/marketcloud_ml_worker_hourly_target_real_v3.py`: OK.
+- Resultado:
+  - `745` celulas target x hora;
+  - `102` com clique;
+  - `25` com pedido;
+  - `129` targets;
+  - `745` predicoes gravadas em `marketcloud_gold.hourly_target_ml_predictions_v3`.
+- Modelos:
+  - `HourlyTargetClickRealV3`: `TRAINED`, AUC `0.8305`, baseline `0.6059`;
+  - `HourlyTargetConversionRealV3`: `TRAINED`, AUC `0.9199`, baseline `0.7440`;
+  - `HourlyTargetExpectedRoasRealV3`: `TRAINED`, MAE `0.598`, baseline `1.039`.
+- `feature_columns_json` confirma que as COLUNAS entraram no treino (nao que carreguem sinal):
+  - `amazon_rec_bid_lower`;
+  - `amazon_rec_bid_median`;
+  - `amazon_rec_bid_upper`;
+  - `amazon_rec_median_to_current_ratio`;
+  - `robot_proposed_to_amazon_median_ratio`;
+  - `has_amazon_bid_recommendation`.
+- ATENCAO: com o cache em `0` linhas, todas essas colunas estao ZERADAS. A prova de que sao inertes hoje: a AUC de conversao (`0.9199`) e identica a da rodada anterior a esta correcao — adicionar as colunas nao moveu nenhuma metrica. Elas so viram sinal quando a Amazon sair do `429` e o cache popular.
+
+Estado atual:
+
+- Codigo corrigido.
+- Endpoint correto.
+- Parser preparado E COBERTO POR TESTE: `internal/services/amazon_ads_bid_recommendation_parser_test.go` (mercado-data-app) valida extracao lower/median/upper e keyword em resposta plana, aninhada, com chaves alternativas, ausente (zero honesto) e formato desconhecido — sem depender da API (que esta em 429).
+- ML cabeado e rodando, mas a feature de bid recommendation esta INERTE (colunas zeradas) ate o cache popular.
+- Bloqueio remanescente: Amazon Ads API esta rate-limiting (`429`) o endpoint de bid recommendations, entao o cache ainda tem `0` linhas.
+- Criterio de "vivo": quando `swarm_src.amazon_ads_bid_recommendations` tiver linhas com `recommended_bid_median > 0` e uma nova rodada mostrar AUC/MAE DIFERENTES da baseline atual, ai sim a feature passou a informar o modelo.
+
+Proximo passo operacional:
+
+- Aguardar cooldown da Amazon Ads API e deixar a proxima rodada preencher gradualmente o cache.
+- Se o `429` persistir por varias rodadas:
+  - reduzir `AMAZON_ADS_BID_RECOMMENDATION_MAX_CAMPAIGNS` para `1`;
+  - reduzir `AMAZON_ADS_BID_RECOMMENDATION_KEYWORDS_PER_CAMPAIGN` para `10`;
+  - transformar essa coleta em job separado do run principal, com backoff maior.
+
+### 2026-07-16 - Avaliacao do aprendizado pos-acao
+
+Pedido: avaliar se o modelo esta aprendendo com o que foi aplicado e medido.
+
+Estado observado no SWARM (`amazon_ads_bid_learning_outcomes`):
+
+- Total de outcomes registrados: `29.487`;
+- Outcomes com `measured_date`: `25.416`;
+- Outcomes com `roas_delta` calculavel: `5.308`;
+- `avg(roas_delta)`: `-0,683`;
+- win-rate numerico (`roas_delta > 0`): `29,75%`.
+
+Leitura por campanha com delta de ROAS:
+
+- `Seladora`:
+  - `2.119` medidas com ROAS;
+  - delta medio `+0,270`;
+  - win-rate `47,6%`.
+- `Localizador`:
+  - `1.122` medidas com ROAS;
+  - delta medio `-1,116`;
+  - win-rate `36,6%`.
+- `Forma Silicone`:
+  - `47` medidas com ROAS;
+  - delta medio `+0,1766`;
+  - win-rate `100%`, mas amostra ainda pequena.
+- `Abridor de Vinho`:
+  - `193` medidas com ROAS;
+  - delta medio `-1,005`;
+  - win-rate `21,2%`.
+- `Hub USB`:
+  - `40` medidas com ROAS;
+  - delta medio `-14,094`;
+  - win-rate `0%`.
+- `Kit Kadukli Manga`:
+  - `22` medidas com ROAS;
+  - delta medio `-15,911`;
+  - win-rate `0%`.
+
+Achado critico:
+
+- O medidor calcula `roas_delta`, mas `outcome_label` nao esta refletindo WIN/LOSS:
+  - consulta por campanha mostrou `WIN=0` e `LOSS=0` mesmo com `roas_delta` positivo/negativo;
+  - ha muitos registros como `NEUTRAL` ou `PENDING_DATA`.
+- Portanto, o aprendizado numerico existe, mas a rotulagem operacional ainda esta fraca.
+- Isso afeta qualquer tela ou regra que use `outcome_label` em vez de `roas_delta`.
+
+Estado observado no MarketCloud:
+
+- Modelos campanha/hora:
+  - `HourlyConversionRealV2`: `TRAINED`, `611` linhas, AUC `0,962` vs baseline `0,713`, `104` positivos;
+  - `HourlyExpectedRoasRealV2`: `TRAINED`, MAE `1,367` vs baseline `2,604`.
+- Modelos keyword/target/hora:
+  - `HourlyTargetClickRealV3`: `TRAINED`, `745` linhas, AUC `0,834` vs baseline `0,606`, `102` positivos;
+  - `HourlyTargetConversionRealV3`: `TRAINED`, AUC `0,919` vs baseline `0,744`, `25` positivos;
+  - `HourlyTargetExpectedRoasRealV3`: `TRAINED`, MAE `0,597` vs baseline `1,039`, `19` nonzero.
+
+Consideracao:
+
+- O modelo esta matematicamente aprendendo sinal melhor que baseline.
+- O aprendizado pos-acao ainda nao deve ser considerado fechado para full-auto amplo porque:
+  - muitos outcomes nao tem ROAS calculavel;
+  - a classificacao `outcome_label` nao separa WIN/LOSS corretamente;
+  - algumas campanhas mostram delta medio negativo forte;
+  - keyword/target V3 ainda tem poucos positivos de conversao (`25`) e ROAS nonzero (`19`).
+
+Recomendacao:
+
+- Corrigir a rotulagem `outcome_label` para derivar de `roas_delta`, `orders_delta`, custo e regra minima de evidencia.
+- Separar claramente:
+  - `PENDING_DATA`: sem janela posterior;
+  - `NO_SIGNAL`: sem impressao/clique suficiente;
+  - `WIN`: ROAS/pedido melhorou com evidencia;
+  - `LOSS`: ROAS piorou ou gasto subiu sem pedido;
+  - `NEUTRAL`: variacao pequena/sem significancia.
+- Usar `roas_delta` numerico no treino, mas usar `outcome_label` corrigido na UI e nos guardrails.
+- Manter Full Control restrito a campanhas piloto ate acumular mais semanas de outcomes confiaveis.
+
+### 2026-07-16 - Auditoria do que foi implementado
+
+Pedido: ler o handoff e auditar o que foi feito antes de seguir.
+
+Achados principais:
+
+1. `amazon_recommended_bid_median` saiu do endpoint antigo e agora usa o endpoint correto de Sponsored Products v3 (`/sp/targets/bid/recommendations`). A direcao esta correta e ha teste de parser cobrindo respostas flat, nested e deep.
+2. Risco pendente: o SWARM ainda aceita fallback por `campaign_id` ao buscar a ultima recomendacao de bid. Se `target_id`/`keyword_id` nao casar, isso pode associar a recomendacao de uma keyword qualquer da campanha a outra entidade. Antes de usar esse valor em decisao automatica, remover o fallback por campanha ou marcar apenas como diagnostico.
+3. Risco pendente: o cache salva `target_id`, `keyword_id` e `raw_payload_sanitized`, mas nao persiste `keyword_text`/`match_type` normalizados. A query do MarketCloud tenta casar por `raw_payload_sanitized->>'keywordText'` ou `keyword`, mas o retorno v3 pode vir em estrutura nested (`targetingExpression`). Isso pode manter o V3 sem sinal mesmo com cache populado.
+4. A correcao do `outcome_label` foi implementada no classificador e tem teste unitario, mas a rotina de reconcile ignora outcomes ja nao-`PENDING_DATA`. Portanto, historico antigo rotulado como `NEUTRAL`/outro status nao sera reprocessado sem backfill/force reconcile.
+5. A migration `105_gold_bid_change_learning_dedup` corrige o fan-out campanha-dia no MarketCloud. A leitura deduplicada observada ficou em `13` campanhas, `80` pontos medidos e win-rate medio aproximado de `19,4%`. Isso substitui a leitura bruta anterior de milhares de outcomes para fins de aprendizado.
+6. O worker `hourly_real_v2` passou a usar `learn_roas_delta_avg` e `learn_win_rate`. Bom como prior operacional, mas ainda nao e time-aware: as metricas de validacao podem ficar otimistas se o agregado incluir outcomes posteriores ao periodo treinado.
+7. O status da coleta de recomendacoes pode voltar `OK` quando houve pelo menos uma linha salva, mesmo que parte da execucao tenha falhado depois ou parado em rate limit. Para operacao, expor `PARTIAL`/contadores por status.
+8. Arquivos relevantes ainda aparecem como modificados/untracked nos dois repos. Antes de considerar fechado, incluir migrations 103/104/105 e testes novos no commit/deploy.
+
+Validacao executada:
+
+- `go test ./internal/services -run 'TestBidRecommendationParser|TestBidLearningClassify' -count=1` passou.
+- Worker V3 executou com FDW e gerou predicoes sem erro SQL.
+- Migration 105 esta aplicada no banco e a view `marketcloud_gold.gold_bid_change_learning` existe com comentario atualizado.
+
+Parecer:
+
+- A implementacao avancou bem e os blocos certos existem: coleta de recomendacao Amazon, features no ML, outcomes pos-acao e dedupe do aprendizado.
+- Ainda nao considero seguro ampliar full-auto com recomendacao Amazon sem corrigir os tres pontos de integridade: casar recomendacao somente na entidade certa, persistir identidade normalizada da recomendacao e reprocessar/backfillear `outcome_label`.
+
+### 2026-07-16 - Checkpoint da tabela de sugestoes de BID da Amazon
+
+Pedido: confirmar se a sugestao de bids da Amazon ja populou as tabelas.
+
+Resultado no banco local usado pelo SWARM/Zanom:
+
+- Tabela origem `public.amazon_ads_bid_recommendations`: `0` linhas.
+- Linhas com `recommended_bid_median > 0`: `0`.
+- `first_fetched`/`last_fetched`: nulos.
+
+Resultado no MarketCloud via FDW:
+
+- Foreign table `swarm_src.amazon_ads_bid_recommendations`: `0` linhas.
+- Linhas com `recommended_bid_median > 0`: `0`.
+
+Efeito nas decisoes:
+
+- `swarm_src.amazon_ads_bid_decisions`: `448` decisoes observadas.
+- Decisoes com `amazon_recommended_bid_median > 0`: `0`.
+- Ultima decisao observada: `2026-07-16 19:41:09 UTC`.
+
+Conclusao:
+
+- A tabela ainda nao foi populada.
+- O ML/robô ainda nao esta recebendo sugestao real de BID da Amazon como feature preenchida.
+- Nao houve log recente `AMAZON_ADS_BID_RECOMMENDATIONS_*` no container `pricing_api` nas ultimas 24h, indicando que a rotina nao rodou nesse backend local ou rodou sem gravar neste banco.
