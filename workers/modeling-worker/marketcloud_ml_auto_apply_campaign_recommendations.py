@@ -81,10 +81,12 @@ def load_candidates(conn):
         cur.execute(
             """
             WITH campaign_ids AS (
-                SELECT lower(trim(campaign_name)) AS campaign_norm, max(campaign_id) AS campaign_id
-                FROM marketcloud_bronze.bronze_ams_hourly
-                WHERE campaign_id IS NOT NULL
-                GROUP BY lower(trim(campaign_name))
+                -- ID vem da FONTE UNICA gold_campaign_identity (migration 092),
+                -- nao mais de bronze_ams_hourly. A AMS bronze so tem SP e nome
+                -- vazio em varias linhas, entao um candidato podia ser ignorado
+                -- por nao resolver o id pelo caminho antigo mesmo estando ligado
+                -- (P1 da auditoria 16/07). O mapa canonico e 1:1 nome<->id.
+                SELECT campaign_norm, campaign_id FROM marketcloud_gold.gold_campaign_identity
             )
             -- O ALVO VEM DO ML (migration 073), nao do "atual + 0.3" da v1.
             -- A v1 sugere LEAST(1.0, mult_min + 0.3): empurra toda hora que o ML
