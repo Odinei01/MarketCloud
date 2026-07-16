@@ -45,12 +45,14 @@ def campaign_allowed(row, db_campaign_ids=None, db_campaign_names=None):
     has_allowlist = bool(FULL_AUTO_CAMPAIGN_IDS or FULL_AUTO_CAMPAIGN_NAMES or db_campaign_ids or db_campaign_names)
     if not has_allowlist:
         return not FULL_AUTO_REQUIRE_ALLOWLIST
-    return (
-        campaign_id in FULL_AUTO_CAMPAIGN_IDS
-        or campaign_name in FULL_AUTO_CAMPAIGN_NAMES
-        or campaign_id in db_campaign_ids
-        or campaign_name in db_campaign_names
-    )
+    # GOVERNANCA (P0 auditoria 16/07): full-auto casa SO por campaign_id.
+    # Casar por nome deixava qualquer campanha nova batizada com um nome da
+    # allowlist entrar em full-auto sozinha. Env por nome (_NAMES) so vale se
+    # nao tiver id nenhum resolvivel — caminho de escape, nao regra.
+    if not campaign_id:
+        # sem id na linha: so o fallback por nome via ENV, nunca via banco
+        return campaign_name in FULL_AUTO_CAMPAIGN_NAMES and not FULL_AUTO_CAMPAIGN_IDS and not db_campaign_ids
+    return campaign_id in FULL_AUTO_CAMPAIGN_IDS or campaign_id in db_campaign_ids
 
 
 def get_conn():
