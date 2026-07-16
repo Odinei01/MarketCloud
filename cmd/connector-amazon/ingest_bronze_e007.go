@@ -50,6 +50,12 @@ func (s *connectorServer) ingestE007(w http.ResponseWriter, r *http.Request) {
 	csvReader := csv.NewReader(resp.Body)
 	csvReader.LazyQuotes = true
 	csvReader.TrimLeadingSpace = true
+	// FieldsPerRecord = -1: aceita linha com contagem de campos diferente do
+	// cabecalho em vez de abortar com "wrong number of fields". A Amazon manda
+	// linhas assim quando um campo de texto tem virgula/quebra — antes elas
+	// viravam ParseError e eram jogadas fora em silencio (skipped=1004 num lote,
+	// achado da auditoria 16/07). col() ja e defensivo com indice fora do range.
+	csvReader.FieldsPerRecord = -1
 
 	headers, err := csvReader.Read()
 	if err != nil {
@@ -70,6 +76,8 @@ func (s *connectorServer) ingestE007(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inserted, skipped := 0, 0
+	// motivos separados: dado faltando em silencio e o pior modo de falha.
+	parseErrs, missingKeys, missingDate, upsertErrs := 0, 0, 0, 0
 
 	for {
 		row, err := csvReader.Read()
@@ -78,6 +86,7 @@ func (s *connectorServer) ingestE007(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			if _, ok := err.(*csv.ParseError); ok {
+				parseErrs++
 				log.Printf("ingest e007: csv parse error (linha ignorada): %v", err)
 				continue
 			}
@@ -91,12 +100,14 @@ func (s *connectorServer) ingestE007(w http.ResponseWriter, r *http.Request) {
 
 		if campaignID == "" || campaignName == "" || adProductType == "" {
 			skipped++
+			missingKeys++
 			continue
 		}
 
 		rawDate := col(row, "data_date")
 		if rawDate == "" {
 			skipped++
+			missingDate++
 			continue
 		}
 		dataDate := rawDate
@@ -207,16 +218,22 @@ func (s *connectorServer) ingestE007(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("ingest e007: upsert error campaign=%s placement=%s date=%s: %v", campaignID, placementType, dataDate, err)
 			skipped++
+			upsertErrs++
 			continue
 		}
 		inserted++
 	}
 
-	log.Printf("ingest e007: execution=%s inserted=%d skipped=%d", executionID, inserted, skipped)
+	log.Printf("ingest e007: execution=%s inserted=%d skipped=%d (parse=%d chaves=%d data=%d upsert=%d)",
+		executionID, inserted, skipped, parseErrs, missingKeys, missingDate, upsertErrs)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"execution_id": executionID,
-		"inserted":     inserted,
-		"skipped":      skipped,
-		"status":       "OK",
+		"execution_id":  executionID,
+		"inserted":      inserted,
+		"skipped":       skipped,
+		"parse_errors":  parseErrs,
+		"missing_keys":  missingKeys,
+		"missing_date":  missingDate,
+		"upsert_errors": upsertErrs,
+		"status":        "OK",
 	})
 }
