@@ -60,7 +60,7 @@ func (o *orchestrator) runSwarmSyncLoop(ctx context.Context) {
 }
 
 func (o *orchestrator) refreshSwarmAccountState(ctx context.Context) {
-	refreshCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	refreshCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	// ..._and_target: sync + refresh do alvo do ML materializado, juntos. Separar
