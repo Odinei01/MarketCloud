@@ -153,7 +153,13 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sql := `
-	  SELECT * FROM (
+	  SELECT *,
+	    -- status derivado dos numeros JA recontados contra o alvo do ML,
+	    -- nao o schedule_overlap_status cru da v1 (que comparava com a sugestao antiga).
+	    CASE WHEN rules_still_need_change > 0 AND rules_already_aligned > 0 THEN 'PARTIALLY_CORRECTED'
+	         WHEN rules_still_need_change > 0 THEN 'NEEDS_CHANGE'
+	         ELSE 'ALIGNED' END AS schedule_overlap_status
+	  FROM (
 		SELECT recommendation_id, campaign_name, event_hour,
 			-- ACAO e SUGERIDO vem do ALVO DO ML quando ele existe pra essa
 			-- campanha x hora (mesmo cerebro do cockpit e da tela de keyword).
@@ -170,10 +176,26 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 			mult_max::float8 AS mult_max, has_schedule,
 			COALESCE(t.ml_multiplier, gr.suggested_multiplier)::float8 AS suggested_multiplier,
 			(t.ml_multiplier IS NOT NULL) AS suggestion_from_ml,
-			overlap_rule_count, rules_still_need_change, rules_already_aligned,
+			overlap_rule_count,
+			-- "X de Y abaixo" recontado contra o ALVO DO ML, nao contra a
+			-- suggested_multiplier da v1. Se sobe (alvo > atual): regra abaixo do
+			-- alvo ainda precisa mudar. Se desce: regra acima do alvo. Sem alvo do
+			-- ML, mantem o que a v1 contou.
+			CASE WHEN t.ml_multiplier IS NULL THEN gr.rules_still_need_change
+			     ELSE (SELECT count(*) FROM jsonb_array_elements(gr.overlap_rule_details) e
+			           WHERE CASE WHEN t.ml_multiplier > gr.current_multiplier
+			                      THEN (e->>'multiplier')::float8 < t.ml_multiplier - 0.001
+			                      ELSE (e->>'multiplier')::float8 > t.ml_multiplier + 0.001 END)
+			END AS rules_still_need_change,
+			CASE WHEN t.ml_multiplier IS NULL THEN gr.rules_already_aligned
+			     ELSE (SELECT count(*) FROM jsonb_array_elements(gr.overlap_rule_details) e
+			           WHERE CASE WHEN t.ml_multiplier > gr.current_multiplier
+			                      THEN (e->>'multiplier')::float8 >= t.ml_multiplier - 0.001
+			                      ELSE (e->>'multiplier')::float8 <= t.ml_multiplier + 0.001 END)
+			END AS rules_already_aligned,
 			overlap_mult_min::float8 AS overlap_mult_min,
 			overlap_mult_max::float8 AS overlap_mult_max,
-			overlap_labels, overlap_rule_details, schedule_overlap_status,
+			overlap_labels, overlap_rule_details,
 			priority_score::float8 AS priority_score, label_caveat,
 			window_from, window_to,
 			ml_conversion_probability::float8 AS ml_conversion_probability,
@@ -192,6 +214,7 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 		FROM marketcloud_gold.gold_hourly_recommendations_v1 gr
 		LEFT JOIN marketcloud_gold.gold_hourly_ml_target_mv t
 		  ON t.campaign_name = gr.campaign_name AND t.event_hour = gr.event_hour
+	) q0
 	) q
 	WHERE ` + strings.Join(where, " AND ") + `
 	ORDER BY priority_score DESC
