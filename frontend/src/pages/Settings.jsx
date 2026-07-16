@@ -145,6 +145,22 @@ export default function Settings({ ctx }) {
   const savePilot = async (product, campaign) => {
     const key = draftKey(product, campaign)
     const draft = getPilotDraft(product, campaign)
+    await persistPilot(product, campaign, draft, key)
+  }
+
+  const startMonitoring = async (product, campaign) => {
+    const key = `monitor|${draftKey(product, campaign)}`
+    const draft = {
+      ...getPilotDraft(product, campaign),
+      mode: 'monitor_only',
+      status: 'active',
+      notes: 'Monitoria iniciada pelo Config Center.',
+    }
+    updatePilotDraft(product, campaign, draft)
+    await persistPilot(product, campaign, draft, key)
+  }
+
+  const persistPilot = async (product, campaign, draft, key) => {
     setSaving(key)
     setError('')
     const res = await api.setFullControlPilot(tenantID, {
@@ -407,7 +423,7 @@ export default function Settings({ ctx }) {
             <div className="panel-head">
               <div>
                 <h3>Campanhas derivadas</h3>
-                <p className="subtle">Full Control so deve ir para `active` quando preco, custo, estoque e tetos estiverem preenchidos.</p>
+                <p className="subtle">Clique em Iniciar monitoria para escolher a campanha. Isso nao aplica lance nem budget.</p>
               </div>
             </div>
             <div className="panel-body full-campaign-list">
@@ -427,6 +443,15 @@ export default function Settings({ ctx }) {
                         <span>Pedidos {fmt(campaign.orders_30d)}</span>
                         <span>ROAS {fmt(campaign.roas_30d, 2)}</span>
                       </div>
+                    </div>
+                    <div className="monitor-banner">
+                      <div>
+                        <strong>{draft.mode === 'monitor_only' && draft.status === 'active' ? 'Campanha em monitoria' : 'Escolher esta campanha para monitoria'}</strong>
+                        <span>Salva como Monitor only + Active. O robô observa por hora, mas não executa alteração.</span>
+                      </div>
+                      <button className="btn primary" disabled={saving === `monitor|${key}`} onClick={() => startMonitoring(selectedProduct, campaign)}>
+                        {saving === `monitor|${key}` ? 'Ativando...' : 'Iniciar monitoria'}
+                      </button>
                     </div>
                     <div className="pilot-form">
                       <label><span>Modo</span><select value={draft.mode} onChange={e => updatePilotDraft(selectedProduct, campaign, { mode: e.target.value })}>
@@ -529,12 +554,15 @@ export default function Settings({ ctx }) {
         .pilot-main span{display:block;color:var(--muted);font-size:12px;margin-top:3px}
         .pilot-stats{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
         .pilot-stats span{border:1px solid var(--line);border-radius:999px;padding:5px 8px;background:rgba(255,255,255,.035)}
+        .monitor-banner{display:flex;justify-content:space-between;gap:14px;align-items:center;border:1px solid rgba(44,224,139,.34);background:rgba(44,224,139,.08);border-radius:8px;padding:12px;margin-bottom:12px}
+        .monitor-banner strong{display:block}
+        .monitor-banner span{display:block;color:var(--muted);font-size:12px;margin-top:3px;line-height:1.35}
         .pilot-form{display:grid;grid-template-columns:repeat(4,minmax(110px,1fr));gap:10px}
         .pilot-form label{display:grid;gap:5px}
         .pilot-form label span{font-size:11px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.04em}
         .pilot-actions{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:12px}
         select{min-width:150px}
-        @media(max-width:1100px){.full-control-grid{grid-template-columns:1fr}.pilot-form{grid-template-columns:repeat(2,minmax(110px,1fr))}}
+        @media(max-width:1100px){.full-control-grid{grid-template-columns:1fr}.pilot-form{grid-template-columns:repeat(2,minmax(110px,1fr))}.monitor-banner{align-items:stretch;flex-direction:column}}
       `}</style>
     </div>
   )
