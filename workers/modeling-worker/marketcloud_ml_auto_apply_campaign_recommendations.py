@@ -97,6 +97,14 @@ def load_candidates(conn):
                    r.current_multiplier, r.confidence, r.priority_score, r.roas, r.orders,
                    r.ml_good_hour, r.ml_agrees, r.ml_conversion_probability, r.ml_expected_roas,
                    t.ml_multiplier AS suggested_multiplier,
+                   -- overlap_rule_details FALTAVA no SELECT: pending_profile_ids(row.get(...))
+                   -- vinha None e o worker achava que nao havia perfil pendente, entao
+                   -- NUNCA aplicava (bug do auto-apply, achado da auditoria 16/07).
+                   -- Filtra PENDING contra o ALVO DO ML, nao a sugestao da v1: so
+                   -- entra profile cujo multiplicador ainda esta abaixo do alvo do ML.
+                   (SELECT jsonb_agg(e) FROM jsonb_array_elements(r.overlap_rule_details) e
+                    WHERE e->>'status' = 'PENDING'
+                      AND (e->>'multiplier')::float8 < t.ml_multiplier - 0.001) AS overlap_rule_details,
                    c.campaign_id,
                    COALESCE(i.tenant_id, 'zanom') AS tenant_id,
                    COALESCE(i.amc_instance_id, 'amcoo5vzswt') AS amc_instance_id,
@@ -275,6 +283,15 @@ def main():
                 "send_telegram": True,
                 "source": "MARKETCLOUD_ML_AUTO_APPLY",
             }
+            # Dry-run NAO faz POST. Antes o flag so viajava no payload e o POST
+            # acontecia igual — dependia do robo respeitar. Um "dry-run" que
+            # chama a API real e uma armadilha: se o outro lado ignora a flag,
+            # aplica lance de verdade.
+            if AUTO_APPLY_DRY_RUN:
+                log.info("[DRY-RUN] aplicaria %s %s %02dh -> %s em %s profile(s)",
+                         row.get("campaign_name"), row.get("recommendation_id"),
+                         int(row["event_hour"]), float(row["suggested_multiplier"]), len(profile_ids))
+                continue
             response = post_apply(payload)
             updated_count = int(response.get("updated_count") or 0)
             log.info("%s %s %02dh updated=%s aligned=%s failed=%s telegram=%s",
