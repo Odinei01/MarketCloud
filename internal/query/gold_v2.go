@@ -153,13 +153,23 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sql := `
-		SELECT recommendation_id, campaign_name, event_hour, action_type, confidence,
+	  SELECT * FROM (
+		SELECT recommendation_id, campaign_name, event_hour,
+			-- ACAO e SUGERIDO vem do ALVO DO ML quando ele existe pra essa
+			-- campanha x hora (mesmo cerebro do cockpit e da tela de keyword).
+			-- Sem alvo do ML, cai no que a v1 calculava. Unifica as 3 telas.
+			CASE WHEN t.ml_multiplier IS NULL THEN gr.action_type
+			     WHEN t.ml_multiplier > gr.current_multiplier + 0.001 THEN 'BID_UP'
+			     WHEN t.ml_multiplier < gr.current_multiplier - 0.001 THEN 'BID_DOWN'
+			     ELSE 'KEEP_STRONG' END AS action_type,
+			confidence,
 			spend::float8 AS spend, orders::int AS orders, sales::float8 AS sales,
 			roas::float8 AS roas, cvr::float8 AS cvr, clicks::int AS clicks,
 			impressions::int AS impressions, days_observed::int AS days_observed,
 			current_multiplier::float8 AS current_multiplier,
 			mult_max::float8 AS mult_max, has_schedule,
-			suggested_multiplier::float8 AS suggested_multiplier,
+			COALESCE(t.ml_multiplier, gr.suggested_multiplier)::float8 AS suggested_multiplier,
+			(t.ml_multiplier IS NOT NULL) AS suggestion_from_ml,
 			overlap_rule_count, rules_still_need_change, rules_already_aligned,
 			overlap_mult_min::float8 AS overlap_mult_min,
 			overlap_mult_max::float8 AS overlap_mult_max,
@@ -173,16 +183,19 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 			             WHEN bool_or(u.conversion_trustworthy)  THEN 'MIXED'
 			             ELSE 'IMMATURE' END
 			 FROM marketcloud_gold.gold_hourly_signal_unified u
-			 WHERE LOWER(TRIM(u.campaign_name)) = LOWER(TRIM(gold_hourly_recommendations_v1.campaign_name))
-			   AND u.event_hour = gold_hourly_recommendations_v1.event_hour) AS conversion_maturity,
+			 WHERE LOWER(TRIM(u.campaign_name)) = LOWER(TRIM(gr.campaign_name))
+			   AND u.event_hour = gr.event_hour) AS conversion_maturity,
 			(SELECT CASE WHEN bool_or(u.traffic_source = 'AMS_STREAM') THEN 'AMS_STREAM' ELSE 'REPORTING' END
 			 FROM marketcloud_gold.gold_hourly_signal_unified u
-			 WHERE LOWER(TRIM(u.campaign_name)) = LOWER(TRIM(gold_hourly_recommendations_v1.campaign_name))
-			   AND u.event_hour = gold_hourly_recommendations_v1.event_hour) AS traffic_source
-		FROM marketcloud_gold.gold_hourly_recommendations_v1
-		WHERE ` + strings.Join(where, " AND ") + `
-		ORDER BY priority_score DESC
-		LIMIT ` + strconv.Itoa(limit)
+			 WHERE LOWER(TRIM(u.campaign_name)) = LOWER(TRIM(gr.campaign_name))
+			   AND u.event_hour = gr.event_hour) AS traffic_source
+		FROM marketcloud_gold.gold_hourly_recommendations_v1 gr
+		LEFT JOIN marketcloud_gold.gold_hourly_ml_target_mv t
+		  ON t.campaign_name = gr.campaign_name AND t.event_hour = gr.event_hour
+	) q
+	WHERE ` + strings.Join(where, " AND ") + `
+	ORDER BY priority_score DESC
+	LIMIT ` + strconv.Itoa(limit)
 
 	rows, err := h.db.Query(r.Context(), sql, args...)
 	if err != nil {
