@@ -72,12 +72,18 @@ func (h *Handler) GoldMLFullAutoCampaigns(w http.ResponseWriter, r *http.Request
 			c.max_priority_score,
 			c.last_recommendation_at,
 			COALESCE(f.enabled, FALSE) AS full_auto_enabled,
+			COALESCE(f.automation_mode, CASE WHEN COALESCE(f.enabled, FALSE) THEN 'full_auto' ELSE 'advisor' END) AS automation_mode,
+			COALESCE(g.can_auto_apply, FALSE) AS can_auto_apply,
+			g.tenant_mode,
 			f.notes,
 			f.updated_at AS flag_updated_at
 		FROM campaigns c
 		LEFT JOIN marketcloud_control.ml_full_auto_campaign_flags f
 		  ON f.tenant_id = $1
 		 AND lower(trim(f.campaign_name)) = lower(trim(c.campaign_name))
+		LEFT JOIN marketcloud_gold.gold_campaign_automation_governance g
+		  ON g.tenant_id = $1
+		 AND lower(trim(g.campaign_name)) = lower(trim(c.campaign_name))
 		WHERE c.campaign_name IS NOT NULL
 		ORDER BY COALESCE(f.enabled, FALSE) DESC, c.max_priority_score DESC NULLS LAST, c.campaign_name`, tenantID)
 	if err != nil {
@@ -95,8 +101,11 @@ func (h *Handler) GoldMLFullAutoCampaigns(w http.ResponseWriter, r *http.Request
 		var maxPriority any
 		var lastRecommendation any
 		var enabled bool
+		var automationMode string
+		var canAutoApply bool
+		var tenantMode *string
 		var flagUpdated any
-		if err := rows.Scan(&campaignID, &campaignName, &recommendationRows, &maxPriority, &lastRecommendation, &enabled, &notes, &flagUpdated); err != nil {
+		if err := rows.Scan(&campaignID, &campaignName, &recommendationRows, &maxPriority, &lastRecommendation, &enabled, &automationMode, &canAutoApply, &tenantMode, &notes, &flagUpdated); err != nil {
 			writeError(w, http.StatusInternalServerError, "ml_full_auto_scan_failed: "+err.Error())
 			return
 		}
@@ -107,6 +116,9 @@ func (h *Handler) GoldMLFullAutoCampaigns(w http.ResponseWriter, r *http.Request
 			"max_priority_score":     maxPriority,
 			"last_recommendation_at": lastRecommendation,
 			"full_auto_enabled":      enabled,
+			"automation_mode":        automationMode,
+			"can_auto_apply":         canAutoApply,
+			"tenant_mode":            valueOrEmpty(tenantMode),
 			"notes":                  notes,
 			"flag_updated_at":        flagUpdated,
 		})
@@ -115,14 +127,15 @@ func (h *Handler) GoldMLFullAutoCampaigns(w http.ResponseWriter, r *http.Request
 }
 
 // PUT /api/v1/gold/ml-full-auto-campaigns
-// Body: { campaign_id?, campaign_name, enabled, notes? }
+// Body: { campaign_id?, campaign_name, enabled?, automation_mode?, notes? }
 func (h *Handler) GoldSetMLFullAutoCampaign(w http.ResponseWriter, r *http.Request) {
 	tenantID := middleware.TenantIDFromCtx(r.Context()).String()
 	var body struct {
-		CampaignID   string `json:"campaign_id"`
-		CampaignName string `json:"campaign_name"`
-		Enabled      bool   `json:"enabled"`
-		Notes        string `json:"notes"`
+		CampaignID     string `json:"campaign_id"`
+		CampaignName   string `json:"campaign_name"`
+		Enabled        bool   `json:"enabled"`
+		AutomationMode string `json:"automation_mode"`
+		Notes          string `json:"notes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json")
@@ -134,24 +147,39 @@ func (h *Handler) GoldSetMLFullAutoCampaign(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "campaign_name_required")
 		return
 	}
+	body.AutomationMode = strings.TrimSpace(body.AutomationMode)
+	if body.AutomationMode == "" {
+		if body.Enabled {
+			body.AutomationMode = "full_auto"
+		} else {
+			body.AutomationMode = "advisor"
+		}
+	}
+	if !validAutomationMode(body.AutomationMode) {
+		writeError(w, http.StatusBadRequest, "invalid_automation_mode")
+		return
+	}
+	body.Enabled = body.AutomationMode == "full_auto"
 	_, err := h.db.Exec(r.Context(), `
 		INSERT INTO marketcloud_control.ml_full_auto_campaign_flags (
-			tenant_id, campaign_id, campaign_name, enabled, notes, updated_at
-		) VALUES ($1, NULLIF($2,''), $3, $4, NULLIF($5,''), NOW())
+			tenant_id, campaign_id, campaign_name, enabled, automation_mode, notes, updated_at
+		) VALUES ($1, NULLIF($2,''), $3, $4, $5, NULLIF($6,''), NOW())
 		ON CONFLICT (tenant_id, campaign_name) DO UPDATE SET
 			campaign_id = COALESCE(NULLIF(EXCLUDED.campaign_id,''), marketcloud_control.ml_full_auto_campaign_flags.campaign_id),
 			enabled = EXCLUDED.enabled,
+			automation_mode = EXCLUDED.automation_mode,
 			notes = EXCLUDED.notes,
 			updated_at = NOW()`,
-		tenantID, body.CampaignID, body.CampaignName, body.Enabled, body.Notes)
+		tenantID, body.CampaignID, body.CampaignName, body.Enabled, body.AutomationMode, body.Notes)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ml_full_auto_save_failed: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":        "ok",
-		"campaign_id":   body.CampaignID,
-		"campaign_name": body.CampaignName,
-		"enabled":       body.Enabled,
+		"status":          "ok",
+		"campaign_id":     body.CampaignID,
+		"campaign_name":   body.CampaignName,
+		"enabled":         body.Enabled,
+		"automation_mode": body.AutomationMode,
 	})
 }

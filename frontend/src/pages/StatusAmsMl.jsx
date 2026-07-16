@@ -72,13 +72,47 @@ function verdictText(verdict) {
   if (verdict === 'MODEL_WRONG') return 'modelo errou'
   return 'inconclusivo'
 }
+
+function auditClass(result) {
+  if (result === 'WINNING') return 'ok'
+  if (result === 'LOSING') return 'bad'
+  return 'warn'
+}
+
+function auditText(result) {
+  if (result === 'WINNING') return 'ganhando'
+  if (result === 'LOSING') return 'perdendo'
+  if (result === 'NEUTRAL') return 'neutro'
+  return 'aguardando AMS'
+}
+
+function auditModelText(result) {
+  if (result === 'MODEL_RIGHT') return 'modelo acertou'
+  if (result === 'MODEL_WRONG') return 'modelo errou'
+  return 'sem conclusao'
+}
+
+function windowCell(row, suffix) {
+  const label = row[`outcome_label_${suffix}`]
+  const before = row[`baseline_roas_${suffix}`]
+  const after = row[`eval_roas_${suffix}`]
+  const delta = row[`delta_roas_${suffix}`]
+  if (!label) return <span className="muted">pendente</span>
+  return (
+    <div className="window-cell">
+      <span className={`pill ${outcomeClass(label)}`}>{outcomeText(label)}</span>
+      <small>{fmt(before, 2)} {'->'} {fmt(after, 2)} <b className={Number(delta || 0) >= 0 ? 'delta-pos' : 'delta-neg'}>{fmt(delta, 2)}</b></small>
+    </div>
+  )
+}
+
 function latestRun(runs, kind) {
   return runs.find(r => r.run_kind === kind)
 }
 
 export default function StatusAmsMl({ ctx }) {
   const { tenantID } = ctx
-  const [data, setData] = useState({ totals: {}, models: [], ml_runs: [], ams_hours: [], learning_outcomes: [] })
+  const [data, setData] = useState({ totals: {}, models: [], ml_runs: [], ams_hours: [], learning_outcomes: [], audit_360: [], audit_360_summary: {} })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [updatedAt, setUpdatedAt] = useState(null)
@@ -87,7 +121,7 @@ export default function StatusAmsMl({ ctx }) {
     setError('')
     const res = await api.goldMlAmsStatus(tenantID)
     if (res.ok) {
-      setData(res.data || { totals: {}, models: [], ml_runs: [], ams_hours: [], learning_outcomes: [] })
+      setData(res.data || { totals: {}, models: [], ml_runs: [], ams_hours: [], learning_outcomes: [], audit_360: [], audit_360_summary: {} })
       setUpdatedAt(new Date())
     } else {
       setError(res.data?.error || `Falha ao carregar (${res.status})`)
@@ -106,6 +140,8 @@ export default function StatusAmsMl({ ctx }) {
   const hours = data.ams_hours || []
   const models = data.models || []
   const learning = data.learning_outcomes || []
+  const audit360 = data.audit_360 || []
+  const auditSummary = data.audit_360_summary || {}
 
   const latest = useMemo(() => ({
     campaign: latestRun(runs, 'hourly_real_v2'),
@@ -172,6 +208,58 @@ export default function StatusAmsMl({ ctx }) {
         <div className="kpi"><div className="kpi-v">{fmt(totals.ams_orders_7d)}</div><div className="kpi-l">Pedidos AMS 7d</div></div>
         <div className="kpi"><div className="kpi-v">{money(totals.ams_sales_7d)}</div><div className="kpi-l">Vendas AMS 7d</div></div>
       </div>
+
+      <section className="section-band">
+        <div className="section-head">
+          <div>
+            <h3>360 Full-auto</h3>
+            <p>Uma linha por alteracao feita pelo ML: proposta, bid aplicado e resultado AMS depois de 1h, 3h e 24h.</p>
+          </div>
+          <span>{fmt(auditSummary.total)} alteracoes</span>
+        </div>
+        <div className="audit-score">
+          <div><span>Pendentes</span><b>{fmt(auditSummary.pending)}</b></div>
+          <div><span>Ganhando</span><b className="good">{fmt(auditSummary.winning)}</b></div>
+          <div><span>Perdendo</span><b className="bad-text">{fmt(auditSummary.losing)}</b></div>
+          <div><span>Modelo acertou</span><b>{fmt(auditSummary.model_right)}</b></div>
+          <div><span>Modelo errou</span><b>{fmt(auditSummary.model_wrong)}</b></div>
+        </div>
+        <div className="table-wrap audit-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Campanha</th>
+                <th>Hora</th>
+                <th>Modelo sugeriu</th>
+                <th>Robo aplicou</th>
+                <th>Quando</th>
+                <th>1h</th>
+                <th>3h</th>
+                <th>24h</th>
+                <th>Status</th>
+                <th>Leitura</th>
+              </tr>
+            </thead>
+            <tbody>
+              {audit360.map(row => (
+                <tr key={row.recommendation_id}>
+                  <td><b>{row.campaign_name || '-'}</b><span className="row-sub">{row.recommendation_id}</span></td>
+                  <td className="num">{row.event_hour !== null && row.event_hour !== undefined ? `${String(row.event_hour).padStart(2, '0')}h` : '-'}</td>
+                  <td>{row.recommended_action || '-'} <span className="muted">{row.recommended_bid_multiplier ? `${fmt(Number(row.recommended_bid_multiplier) * 100)}%` : ''}</span></td>
+                  <td>{row.decided_action || '-'} <span className="muted">{row.decided_bid_multiplier ? `${fmt(Number(row.decided_bid_multiplier) * 100)}%` : ''}</span></td>
+                  <td>{dt(row.executed_at)}</td>
+                  <td>{windowCell(row, '1h')}</td>
+                  <td>{windowCell(row, '3h')}</td>
+                  <td>{windowCell(row, '24h')}</td>
+                  <td><span className={`pill ${auditClass(row.audit_result)}`}>{auditText(row.audit_result)}</span></td>
+                  <td>{auditModelText(row.model_result)}</td>
+                </tr>
+              ))}
+              {!audit360.length && <tr><td colSpan="10" className="empty-cell">Ainda nao ha alteracoes full-auto registradas.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section className="section-band">
         <div className="section-head">
@@ -365,17 +453,30 @@ export default function StatusAmsMl({ ctx }) {
         .status-page .section-head h3{margin:0;color:inherit;font-size:13px;text-transform:uppercase;letter-spacing:.08em}
         .status-page .section-head p{margin:4px 0 0;color:var(--muted,#8796ad);font-size:12px;line-height:1.35}
         .status-page .table-wrap{border:1px solid rgba(148,163,184,.16);border-radius:8px;overflow:auto;background:rgba(255,255,255,.025);max-height:380px}
+        .status-page .audit-table{max-height:440px}
         .status-page table{width:100%;min-width:1080px;border-collapse:collapse;font-size:12px}
+        .status-page .audit-table table{min-width:1260px}
         .status-page th{position:sticky;top:0;background:#101626;color:#9fb8dc;text-align:left;padding:10px 12px;text-transform:uppercase;letter-spacing:.08em;font-size:11px}
         .status-page td{padding:10px 12px;border-top:1px solid rgba(148,163,184,.10);vertical-align:middle}
         .status-page .num{text-align:right;font-variant-numeric:tabular-nums}
         .status-page .strong{font-weight:800;color:#fff}
         .status-page .muted{color:var(--muted,#8796ad)}
+        .status-page .row-sub{display:block;margin-top:4px;color:var(--muted,#8796ad);font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .status-page .note-cell{min-width:260px;color:#b7c7de}
         .status-page .pill{display:inline-flex;align-items:center;min-height:22px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:850;letter-spacing:.02em}
         .status-page .pill.ok{background:rgba(38,222,129,.14);color:#26de81}
         .status-page .pill.warn{background:rgba(255,159,67,.15);color:#ffb86b}
         .status-page .pill.bad{background:rgba(255,84,112,.15);color:#ff5470}
+        .status-page .delta-pos{color:#26de81}
+        .status-page .delta-neg{color:#ff5470}
+        .status-page .good{color:#26de81}
+        .status-page .bad-text{color:#ff5470}
+        .status-page .audit-score{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:10px}
+        .status-page .audit-score div{border:1px solid rgba(148,163,184,.16);border-radius:8px;background:rgba(255,255,255,.025);padding:10px 12px}
+        .status-page .audit-score span{display:block;color:#9fb8dc;text-transform:uppercase;letter-spacing:.08em;font-size:10px;font-weight:850}
+        .status-page .audit-score b{display:block;margin-top:6px;font-size:20px;line-height:1;color:#fff}
+        .status-page .window-cell{display:grid;gap:5px;min-width:118px}
+        .status-page .window-cell small{color:#b7c7de;font-size:11px;white-space:nowrap}
         .status-page .model-list{display:grid;gap:8px}
         .status-page .model-row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;border:1px solid rgba(148,163,184,.14);border-radius:8px;background:rgba(255,255,255,.025)}
         .status-page .model-row b{display:block;font-size:12px;color:#fff}
@@ -386,8 +487,8 @@ export default function StatusAmsMl({ ctx }) {
         .status-page .timeline span{display:block;color:var(--muted,#8796ad);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
         .status-page .timeline b{display:block;margin-top:5px;font-size:13px;color:#fff}
         .status-page .empty,.status-page .empty-cell{color:var(--muted,#8796ad);text-align:center;padding:28px 12px}
-        @media (max-width: 1100px){.status-page .ops-grid,.status-page .kpi-row{grid-template-columns:repeat(2,minmax(0,1fr))}.status-page .two-col{grid-template-columns:1fr}}
-        @media (max-width: 720px){.status-page .page-head{align-items:flex-start;flex-direction:column}.status-page .ops-grid,.status-page .kpi-row{grid-template-columns:1fr}.status-page .head-actions{width:100%;justify-content:space-between}}
+        @media (max-width: 1100px){.status-page .ops-grid,.status-page .kpi-row{grid-template-columns:repeat(2,minmax(0,1fr))}.status-page .audit-score{grid-template-columns:repeat(3,minmax(0,1fr))}.status-page .two-col{grid-template-columns:1fr}}
+        @media (max-width: 720px){.status-page .page-head{align-items:flex-start;flex-direction:column}.status-page .ops-grid,.status-page .kpi-row,.status-page .audit-score{grid-template-columns:1fr}.status-page .head-actions{width:100%;justify-content:space-between}}
       `}</style>
     </div>
   )

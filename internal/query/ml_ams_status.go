@@ -4,12 +4,14 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/zanom/marketcloud/internal/middleware"
 )
 
 // GET /api/v1/gold/ml-ams-status
 // Status operacional: o que o AMS entregou por hora e o que os workers ML rodaram.
 func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	tenantID := middleware.TenantIDFromCtx(ctx).String()
 
 	modelRows, err := h.db.Query(ctx, `
 		SELECT model_name, model_version, model_type, target_name, status,
@@ -215,11 +217,71 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var auditSummary map[string]any
+	err = h.db.QueryRow(ctx, `
+		SELECT jsonb_build_object(
+			'total', COUNT(*),
+			'pending', COUNT(*) FILTER (WHERE audit_result = 'PENDING_MEASUREMENT'),
+			'winning', COUNT(*) FILTER (WHERE audit_result = 'WINNING'),
+			'losing', COUNT(*) FILTER (WHERE audit_result = 'LOSING'),
+			'neutral', COUNT(*) FILTER (WHERE audit_result = 'NEUTRAL'),
+			'model_right', COUNT(*) FILTER (WHERE model_result = 'MODEL_RIGHT'),
+			'model_wrong', COUNT(*) FILTER (WHERE model_result = 'MODEL_WRONG'),
+			'last_executed_at', MAX(executed_at),
+			'last_measured_at', MAX(last_measured_at)
+		)::jsonb
+		FROM marketcloud_recommendations.v_auto_apply_audit_360_v1
+		WHERE tenant_id = $1`, tenantID).Scan(&auditSummary)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "audit_360_summary_failed: "+err.Error())
+		return
+	}
+
+	auditRows, err := h.db.Query(ctx, `
+		SELECT recommendation_id, campaign_id, campaign_name, ad_group_name, event_hour,
+		       recommended_action, recommended_bid_multiplier::float8 AS recommended_bid_multiplier,
+		       decided_action, decided_bid_multiplier::float8 AS decided_bid_multiplier,
+		       decided_by, decision_notes, executed_at,
+		       priority_score::float8 AS priority_score,
+		       priority_bucket, final_risk_level,
+		       audit_result, model_result, measured_windows,
+		       action_start_at_1h, eval_window_end_1h,
+		       baseline_roas_1h::float8 AS baseline_roas_1h,
+		       eval_roas_1h::float8 AS eval_roas_1h,
+		       delta_roas_1h::float8 AS delta_roas_1h,
+		       outcome_label_1h, model_verdict_1h,
+		       action_start_at_3h, eval_window_end_3h,
+		       baseline_roas_3h::float8 AS baseline_roas_3h,
+		       eval_roas_3h::float8 AS eval_roas_3h,
+		       delta_roas_3h::float8 AS delta_roas_3h,
+		       outcome_label_3h, model_verdict_3h,
+		       action_start_at_24h, eval_window_end_24h,
+		       baseline_roas_24h::float8 AS baseline_roas_24h,
+		       eval_roas_24h::float8 AS eval_roas_24h,
+		       delta_roas_24h::float8 AS delta_roas_24h,
+		       outcome_label_24h, model_verdict_24h,
+		       last_measured_at
+		FROM marketcloud_recommendations.v_auto_apply_audit_360_v1
+		WHERE tenant_id = $1
+		ORDER BY executed_at DESC NULLS LAST, recommendation_id
+		LIMIT 40`, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "audit_360_failed: "+err.Error())
+		return
+	}
+	audit360, err := pgx.CollectRows(auditRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "audit_360_scan_failed: "+err.Error())
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"totals":            totals,
 		"models":            models,
 		"ml_runs":           runs,
 		"ams_hours":         ams,
 		"learning_outcomes": learning,
+		"audit_360_summary": auditSummary,
+		"audit_360":         audit360,
 	})
 }

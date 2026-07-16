@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+﻿import { useState, useEffect, useCallback } from 'react'
 import { api, getToken, setToken } from './api/client.js'
 import Login from './pages/Login.jsx'
 import Queries from './pages/Queries.jsx'
@@ -80,7 +80,7 @@ export default function App() {
 
         <nav className="nav" style={{ marginTop: 24 }}>
           <button className={page === 'robo-hoje' ? 'active' : ''} onClick={() => setPage('robo-hoje')}>
-            <span>🤖 Meu Robô Hoje</span><span className="dot" />
+            <span>RB Meu Robo Hoje</span><span className="dot" />
           </button>
           <button className={page === 'cockpit' ? 'active' : ''} onClick={() => setPage('cockpit')}>
             <span>CP Cockpit</span><span className="dot" />
@@ -104,7 +104,7 @@ export default function App() {
             <span>AM AMC Queries</span><span className="dot" />
           </button>
           <button className={page === 'settings' ? 'active' : ''} onClick={() => setPage('settings')}>
-            <span>CF Configuracoes</span><span className="dot" />
+            <span>CF Config Center</span><span className="dot" />
           </button>
         </nav>
 
@@ -129,4 +129,5 @@ export default function App() {
     </div>
   )
 }
+
 

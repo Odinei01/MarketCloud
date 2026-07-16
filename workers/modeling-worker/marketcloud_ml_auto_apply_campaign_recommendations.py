@@ -32,6 +32,14 @@ FULL_AUTO_CAMPAIGN_NAMES = {
 }
 FULL_AUTO_REQUIRE_ALLOWLIST = os.environ.get("ML_FULL_AUTO_REQUIRE_ALLOWLIST", "true").lower() != "false"
 
+DEFAULT_TENANT_SETTINGS = {
+    "operational_mode": "full_auto",
+    "min_roas": 0.0,
+    "ml_aggressiveness": 1.0,
+    "risk_budget_brl": 0.0,
+    "protected_hours": set(),
+}
+
 
 def norm_campaign_name(value):
     return " ".join(str(value or "").strip().lower().split())
@@ -94,7 +102,7 @@ def load_candidates(conn):
             -- aplicacao (calculado sobre o multiplicador atual). O alvo do ML e
             -- absoluto e por hora: aplicou, alinhou, acabou.
             SELECT r.recommendation_id, r.campaign_name, r.event_hour, r.action_type,
-                   r.current_multiplier, r.confidence, r.priority_score, r.roas, r.orders,
+                   r.current_multiplier, r.confidence, r.priority_score, r.spend, r.roas, r.orders,
                    r.ml_good_hour, r.ml_agrees, r.ml_conversion_probability, r.ml_expected_roas,
                    t.ml_multiplier AS suggested_multiplier,
                    -- overlap_rule_details FALTAVA no SELECT: pending_profile_ids(row.get(...))
@@ -106,16 +114,19 @@ def load_candidates(conn):
                     WHERE e->>'status' = 'PENDING'
                       AND (e->>'multiplier')::float8 < t.ml_multiplier - 0.001) AS overlap_rule_details,
                    c.campaign_id,
-                   COALESCE(i.tenant_id, 'zanom') AS tenant_id,
+                   COALESCE(gov.tenant_id::text, i.tenant_id, 'zanom') AS tenant_id,
                    COALESCE(i.amc_instance_id, 'amcoo5vzswt') AS amc_instance_id,
                    COALESCE(i.ads_profile_id, '3084626225435227') AS ads_profile_id
             FROM marketcloud_gold.gold_hourly_recommendations_v1 r
             JOIN marketcloud_gold.gold_hourly_ml_target_multiplier t
               ON t.campaign_name = r.campaign_name AND t.event_hour = r.event_hour
             LEFT JOIN campaign_ids c ON c.campaign_norm = lower(trim(r.campaign_name))
+            LEFT JOIN marketcloud_gold.gold_campaign_automation_governance gov
+              ON gov.campaign_id = c.campaign_id
             LEFT JOIN LATERAL (
-                SELECT tenant_id, amc_instance_id, ads_profile_id
-                FROM marketcloud_control.amc_instances
+                SELECT COALESCE(t.id::text, i.tenant_id) AS tenant_id, i.amc_instance_id, i.ads_profile_id
+                FROM marketcloud_control.amc_instances i
+                LEFT JOIN tenants t ON t.slug = i.tenant_id
                 LIMIT 1
             ) i ON TRUE
             WHERE r.action_type = 'BID_UP'
@@ -151,8 +162,8 @@ def load_db_allowlist(conn):
             cur.execute(
                 """
                 SELECT campaign_id, campaign_name
-                FROM marketcloud_control.ml_full_auto_campaign_flags
-                WHERE enabled IS TRUE
+                FROM marketcloud_gold.gold_campaign_automation_governance
+                WHERE can_auto_apply IS TRUE
                 """
             )
             for row in cur.fetchall():
@@ -166,6 +177,113 @@ def load_db_allowlist(conn):
             log.warning("full-auto DB allowlist indisponivel: %s", exc)
             conn.rollback()
     return ids, names
+
+
+def load_tenant_settings(conn, tenant_id):
+    settings = dict(DEFAULT_TENANT_SETTINGS)
+    with conn.cursor() as cur:
+        try:
+            cur.execute(
+                """
+                SELECT operational_mode, min_roas, ml_aggressiveness,
+                       risk_budget_brl, protected_hours
+                FROM marketcloud_control.tenant_settings
+                WHERE tenant_id = %s
+                """,
+                (tenant_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                settings["operational_mode"] = row.get("operational_mode") or settings["operational_mode"]
+                settings["min_roas"] = float(row.get("min_roas") or 0)
+                settings["ml_aggressiveness"] = float(row.get("ml_aggressiveness") if row.get("ml_aggressiveness") is not None else 1.0)
+                settings["risk_budget_brl"] = float(row.get("risk_budget_brl") or 0)
+                settings["protected_hours"] = {int(x) for x in (row.get("protected_hours") or [])}
+        except Exception as exc:
+            log.warning("tenant_settings indisponivel; usando fallback permissivo: %s", exc)
+            conn.rollback()
+    return settings
+
+
+def load_today_risk_spend(conn, tenant_id):
+    with conn.cursor() as cur:
+        try:
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(COALESCE((gold_evidence_json->>'spend')::numeric,0)),0)::float8
+                FROM marketcloud_recommendations.recommendation_decisions
+                WHERE tenant_id = %s
+                  AND decided_by = 'ML_AUTO_APPLY'
+                  AND execution_status = 'EXECUTED'
+                  AND decided_at >= date_trunc('day', now())
+                """,
+                (tenant_id,),
+            )
+            row = cur.fetchone()
+            return float((row or {}).get("coalesce") or 0)
+        except Exception as exc:
+            log.warning("risk budget historico indisponivel; usando 0: %s", exc)
+            conn.rollback()
+            return 0.0
+
+
+def load_full_control_gates(conn):
+    gates = {}
+    with conn.cursor() as cur:
+        try:
+            cur.execute(
+                """
+                SELECT campaign_id, can_control, gate_reason,
+                       spend_today, orders_today, max_daily_budget_brl,
+                       max_spend_without_order_brl, stock_available
+                FROM marketcloud_gold.full_control_effective_governance_v1
+                WHERE mode = 'full_control'
+                  AND status = 'active'
+                """
+            )
+            for row in cur.fetchall():
+                campaign_id = str(row.get("campaign_id") or "").strip()
+                if campaign_id:
+                    gates[campaign_id] = dict(row)
+        except Exception as exc:
+            log.warning("full_control_governance indisponivel; sem gate adicional: %s", exc)
+            conn.rollback()
+    return gates
+
+
+def guardrail_block_reason(row, settings, risk_used):
+    hour = int(row.get("event_hour") or 0)
+    if settings.get("operational_mode") != "full_auto":
+        return f"tenant_mode={settings.get('operational_mode')}"
+    if hour in settings.get("protected_hours", set()):
+        return f"hora protegida {hour:02d}h"
+    expected_roas = float(row.get("ml_expected_roas") or row.get("roas") or 0)
+    min_roas = float(settings.get("min_roas") or 0)
+    if expected_roas < min_roas:
+        return f"ml_expected_roas {expected_roas:.2f} < min_roas {min_roas:.2f}"
+    current = float(row.get("current_multiplier") or 0)
+    suggested = float(row.get("suggested_multiplier") or 0)
+    max_delta = float(settings.get("ml_aggressiveness") if settings.get("ml_aggressiveness") is not None else 1.0)
+    if suggested - current > max_delta + 0.0001:
+        return f"delta {suggested-current:.2f} > agressividade {max_delta:.2f}"
+    budget = float(settings.get("risk_budget_brl") or 0)
+    spend = float(row.get("spend") or 0)
+    if budget > 0 and risk_used + spend > budget:
+        return f"orcamento risco excedido {risk_used+spend:.2f} > {budget:.2f}"
+    return ""
+
+
+def full_control_block_reason(row, gates):
+    campaign_id = str(row.get("campaign_id") or "").strip()
+    if not campaign_id or campaign_id not in gates:
+        return ""
+    gate = gates[campaign_id]
+    if gate.get("can_control"):
+        return ""
+    reason = gate.get("gate_reason") or "FULL_CONTROL_BLOCKED"
+    spend_today = float(gate.get("spend_today") or 0)
+    orders_today = float(gate.get("orders_today") or 0)
+    return f"full_control {reason} spend_today={spend_today:.2f} orders_today={orders_today:.0f}"
 
 
 def post_apply(payload):
@@ -230,7 +348,7 @@ def record_decision(conn, row, response):
                 f"{row.get('campaign_name','')}:{row.get('event_hour')}", row.get("campaign_id") or "", row.get("campaign_name"),
                 int(row["event_hour"]), row["action_type"], float(row["suggested_multiplier"]),
                 float(row.get("priority_score") or 0), row.get("confidence"), row.get("confidence"), float(row.get("ml_conversion_probability") or 0),
-                json.dumps({"source": "gold_hourly_ml_target_multiplier(prior=ML)+gold_hourly_recommendations_v1(gatilho)", "roas": float(row.get("roas") or 0), "orders": int(row.get("orders") or 0)}),
+                json.dumps({"source": "gold_hourly_ml_target_multiplier(prior=ML)+gold_hourly_recommendations_v1(gatilho)", "spend": float(row.get("spend") or 0), "roas": float(row.get("roas") or 0), "orders": int(row.get("orders") or 0)}),
                 json.dumps({"ml_good_hour": row.get("ml_good_hour"), "ml_agrees": row.get("ml_agrees"), "ml_conversion_probability": float(row.get("ml_conversion_probability") or 0), "ml_expected_roas": float(row.get("ml_expected_roas") or 0)}),
                 json.dumps({"bid_robot_response": response, "current_multiplier": float(row.get("current_multiplier") or 0), "suggested_multiplier": float(row.get("suggested_multiplier") or 0)}),
                 row["action_type"], float(row["suggested_multiplier"]), "Aplicado automaticamente pelo ML apos concordancia do modelo com a recomendacao.",
@@ -263,10 +381,26 @@ def main():
             AUTO_APPLY_DRY_RUN,
         )
         candidates = load_candidates(conn)
+        full_control_gates = load_full_control_gates(conn)
+        log.info("full control gates active=%s", len(full_control_gates))
         log.info("%s candidatos ML para auto-apply", len(candidates))
+        settings_cache = {}
+        risk_cache = {}
         for row in candidates:
             if not campaign_allowed(row, db_campaign_ids, db_campaign_names):
                 log.info("skip %s campanha fora do full-auto: %s", row.get("recommendation_id"), row.get("campaign_name"))
+                continue
+            tenant_id = str(row.get("tenant_id") or "").strip()
+            if tenant_id not in settings_cache:
+                settings_cache[tenant_id] = load_tenant_settings(conn, tenant_id)
+                risk_cache[tenant_id] = load_today_risk_spend(conn, tenant_id)
+            block_reason = guardrail_block_reason(row, settings_cache[tenant_id], risk_cache[tenant_id])
+            if block_reason:
+                log.info("skip %s guardrail: %s", row.get("recommendation_id"), block_reason)
+                continue
+            fc_block_reason = full_control_block_reason(row, full_control_gates)
+            if fc_block_reason:
+                log.info("skip %s %s", row.get("recommendation_id"), fc_block_reason)
                 continue
             profile_ids = pending_profile_ids(row.get("overlap_rule_details"))
             if not profile_ids:
@@ -299,6 +433,7 @@ def main():
                      updated_count, response.get("already_aligned_count"), response.get("failed_count"), response.get("telegram_status"))
             record_decision(conn, row, response)
             applied += updated_count
+            risk_cache[tenant_id] = risk_cache.get(tenant_id, 0.0) + float(row.get("spend") or 0)
     log.info("auto apply concluido considered=%s applied_profiles=%s at=%s", considered, applied, datetime.now(timezone.utc).isoformat())
 
 

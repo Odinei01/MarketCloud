@@ -40,8 +40,8 @@ func main() {
 	oauthH := amazon.NewOAuthHandler(db, cfg, auditLogger)
 	streamH := stream.NewHandler(db, cfg)
 
-	// Amazon Marketing Stream — consumidor SQS (hora-a-hora). Dormente até
-	// STREAM_CONSUMER_ENABLED=true + filas configuradas. Não bloqueia o boot.
+	// Amazon Marketing Stream â€” consumidor SQS (hora-a-hora). Dormente atÃ©
+	// STREAM_CONSUMER_ENABLED=true + filas configuradas. NÃ£o bloqueia o boot.
 	stream.NewConsumer(db, cfg).Start(context.Background())
 
 	auth := middleware.Auth(cfg.JWTSecret)
@@ -151,7 +151,17 @@ func main() {
 		r.Post("/review-queue/{id}/decision", queryH.GoldDecide)
 	})
 
-	// --- Amazon Marketing Stream: gerência de subscriptions (Fase 2) ---
+	// --- Config Center / seller health ---
+	r.Route("/api/v1/settings", func(r chi.Router) {
+		r.Use(auth, tenantIso)
+		r.Get("/tenant", queryH.TenantSettings)
+		r.With(managerUp).Put("/tenant", queryH.SetTenantSettings)
+		r.Get("/health", queryH.TenantHealth)
+		r.Get("/full-control-products", queryH.FullControlProducts)
+		r.Get("/full-control-governance", queryH.FullControlGovernance)
+		r.With(managerUp).Put("/full-control-pilot", queryH.SetFullControlPilot)
+	})
+	// --- Amazon Marketing Stream: gerÃªncia de subscriptions (Fase 2) ---
 	r.Route("/api/v1/stream/subscriptions", func(r chi.Router) {
 		r.Use(auth, tenantIso)
 		r.With(managerUp).Post("/", streamH.CreateSubscription)
