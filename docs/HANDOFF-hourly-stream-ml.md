@@ -5260,3 +5260,48 @@ Validacao executada:
   - `invalid=0`;
   - `duplicate=0`;
   - auditoria preserva `REVIEW` e `BLOCKED` para investigacao.
+
+### 2026-07-17 - Auditoria arquivo-por-arquivo da pilha paralela (antes de commitar)
+
+Pedido: auditar arquivo por arquivo a pilha nao-commitada de uma sessao paralela
+(review solicitations, monitor, SaaS control plane, bid-rec job, product quality)
+antes de commitar. Foco: seguranca (segredos), acoes outward-facing e correcao.
+
+Seguranca: sem chaves AWS/API/privadas. Frontend limpo (sem eval/innerHTML/token
+em localStorage). Um unico achado -> corrigido (ver abaixo).
+
+Verdito por arquivo:
+
+- `amazon_review_solicitations.go` (445): OK. Usa a API oficial Solicitations —
+  GET `/solicitations/v1/orders/{id}` (checa acoes elegiveis; Amazon nega se ja
+  solicitado ou fora da janela 5-30d apos entrega) ANTES do POST
+  `productReviewAndSellerFeedback`. Dedup natural, sem spam. Rate-limit 1200ms, cap 50.
+- `amazon_review_solicitations_worker.go`: OUTWARD-FACING. Envia pedido de avaliacao
+  a cliente real, 1x/dia (10:35 BRT default), limit 25. **default = TRUE** (env vazio
+  -> "true"). Flagado como risco (deploy auto-mensageia sem opt-in). **APROVADO pelo
+  dono** — o default-ON e intencional.
+- `amazon_review_monitor_worker.go` + `amazon_product_quality.go` (+327): read-only.
+  Ingerem reviews recebidas (INSERT em amazon_product_quality_reviews / monitor_events),
+  nao mensageiam cliente. default-ON ok.
+- `amazon_ads_bid_recommendations_job.go` (246): OK. Coleta com rate-limit (429 -> para),
+  cap de campanhas, endpoint-triggered (nao auto-timer).
+- `amazon_ads_saas_control_plane.go` (559): ponte que escreve `full_control_pilots` no
+  MarketCloud (cross-DB). Fecha conexao (`defer db.Close()`, sem leak). ACHADO: DSN dev
+  hardcoded no fonte (`mcadmin:mcsecret@host.docker.internal:5433`). CORRIGIDO.
+- `amazon_routes.go`/`amazon_ops_status.go`/`amazon_api_audit.go`: endpoints +
+  observabilidade dos workers novos. Benigno.
+- migration `106_product_quality_ml_features.sql`: foreign tables (quality
+  snapshot/reviews/returns) + `feature_product_quality_v1`. Aditivo, read-only.
+- `ml-worker v2/v3` (+113): integra features de quality no treino. SKIM (nao auditado
+  linha a linha) — coerente com a 106.
+
+O que a auditoria mandou corrigir (feito):
+
+- REMOVER a credencial dev hardcoded de `openAmazonSaaSMarketCloudDB`: agora a DSN vem
+  SO de `MARKETCLOUD_DATABASE_URL`; ausente -> erro `marketcloud_database_url_not_set`
+  (feature desligada, sem cair em credencial fixa). A env foi movida pro
+  `docker-compose.yml` do mercado-data-app (fallback so na interpolacao, nao no fonte).
+  Efeito so no proximo rebuild do `pricing_api`; o compose ja provê a env.
+
+Commits: mercado-data-app `fa49232` (pilha + fix DSN + compose), marketcloud `b2323a1`
+(106 + ml-worker + handoff SaaS + nota de superacao). Ver [[keyword-pin-and-ml-learning-loop]].
