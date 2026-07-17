@@ -104,7 +104,11 @@ def load_candidates(conn):
             SELECT r.recommendation_id, r.campaign_name, r.event_hour, r.action_type,
                    r.current_multiplier, r.confidence, r.priority_score, r.spend, r.roas, r.orders,
                    r.ml_good_hour, r.ml_agrees, r.ml_conversion_probability, r.ml_expected_roas,
-                   t.ml_multiplier AS suggested_multiplier,
+                   -- Suavizacao simetrica por evidencia: a subida do lance e
+                   -- ponderada pelos cliques da hora. w=min(1,cliques/10); sem
+                   -- evidencia (w->0) o alvo fica no ATUAL (nao sobe). Protege o
+                   -- auto-apply de subir lance em hora de ~0 clique.
+                   GREATEST(0.30, LEAST(1.00, round((r.current_multiplier + (t.ml_multiplier - r.current_multiplier) * LEAST(1.0, GREATEST(0, COALESCE(t.cliques_observados,0))::numeric / 10.0)) / 0.05) * 0.05)) AS suggested_multiplier,
                    -- overlap_rule_details FALTAVA no SELECT: pending_profile_ids(row.get(...))
                    -- vinha None e o worker achava que nao havia perfil pendente, entao
                    -- NUNCA aplicava (bug do auto-apply, achado da auditoria 16/07).
@@ -112,7 +116,7 @@ def load_candidates(conn):
                    -- entra profile cujo multiplicador ainda esta abaixo do alvo do ML.
                    (SELECT jsonb_agg(e) FROM jsonb_array_elements(r.overlap_rule_details) e
                     WHERE e->>'status' = 'PENDING'
-                      AND (e->>'multiplier')::float8 < t.ml_multiplier - 0.001) AS overlap_rule_details,
+                      AND (e->>'multiplier')::float8 < GREATEST(0.30, LEAST(1.00, round((r.current_multiplier + (t.ml_multiplier - r.current_multiplier) * LEAST(1.0, GREATEST(0, COALESCE(t.cliques_observados,0))::numeric / 10.0)) / 0.05) * 0.05)) - 0.001) AS overlap_rule_details,
                    c.campaign_id,
                    COALESCE(gov.tenant_id::text, i.tenant_id, 'zanom') AS tenant_id,
                    COALESCE(i.amc_instance_id, 'amcoo5vzswt') AS amc_instance_id,
@@ -134,9 +138,11 @@ def load_candidates(conn):
               AND r.rules_still_need_change > 0
               AND r.ml_good_hour IS TRUE
               AND r.ml_agrees IS TRUE
-              -- so SOBE, e so quando o alvo do ML de fato pede mais que o atual.
-              -- A faixa morta de 0.05 evita aplicar micro-ajuste sozinho.
-              AND t.ml_multiplier > r.current_multiplier + 0.05
+              -- so SOBE, e so quando o alvo SUAVIZADO de fato pede mais que o
+              -- atual. A faixa morta de 0.05 evita micro-ajuste; a suavizacao
+              -- por evidencia faz hora rala (poucos cliques) NAO passar: o alvo
+              -- suavizado ~ atual, entao nao supera atual+0.05.
+              AND GREATEST(0.30, LEAST(1.00, round((r.current_multiplier + (t.ml_multiplier - r.current_multiplier) * LEAST(1.0, GREATEST(0, COALESCE(t.cliques_observados,0))::numeric / 10.0)) / 0.05) * 0.05)) > r.current_multiplier + 0.05
               -- GRUPO DE CONTROLE: celula sorteada como CONTROLE nao e tocada.
               -- Sem isso o holdout e ficcao: o robo mexeria no controle e nao
               -- haveria contrafactual pra comparar com o tratamento.
@@ -164,6 +170,12 @@ def load_db_allowlist(conn):
                 SELECT campaign_id, campaign_name
                 FROM marketcloud_gold.gold_campaign_automation_governance
                 WHERE can_auto_apply IS TRUE
+                UNION
+                SELECT campaign_id, campaign_name
+                FROM marketcloud_gold.full_control_effective_governance_v1
+                WHERE mode = 'full_control'
+                  AND status = 'active'
+                  AND COALESCE(campaign_id,'') <> ''
                 """
             )
             for row in cur.fetchall():

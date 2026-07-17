@@ -4832,3 +4832,420 @@ Conclusao:
 - A tabela ainda nao foi populada.
 - O ML/robô ainda nao esta recebendo sugestao real de BID da Amazon como feature preenchida.
 - Nao houve log recente `AMAZON_ADS_BID_RECOMMENDATIONS_*` no container `pricing_api` nas ultimas 24h, indicando que a rotina nao rodou nesse backend local ou rodou sem gravar neste banco.
+
+### 2026-07-16 - Rechamada da API de sugestao de BID Amazon
+
+Pedido: chamar novamente a API.
+
+O que foi feito:
+
+- Chamado endpoint local `GET /api/amazon/ads/campaigns/122134581461928/keywords?days=15&page=1&page_size=50` para a campanha `Seladora`.
+- Primeiro erro real da Amazon: `422`, informando que BR/Marketplace `526970` nao suporta mais o media type `application/vnd.spthemebasedbidrecommendation.v3+json` e exige `application/vnd.spthemebasedbidrecommendation.v5+json`.
+- Corrigido `amazonAdsMediaTypeForPath(/sp/targets/bid/recommendations)` para `application/vnd.spthemebasedbidrecommendation.v5+json`.
+- Apos v5, a Amazon respondeu payload valido. O parser antigo gravou o wrapper inteiro como 1 linha; corrigido para explodir `bidRecommendationsForTargetingExpressions` em linhas por keyword/target.
+- Corrigido enriquecimento da tela para casar o cache tambem por `keyword_text + match_type`, alem de `target_id`/`keyword_id`.
+- Backend `pricing_api` foi rebuildado/recriado apos as correcoes.
+
+Resultado validado:
+
+- `public.amazon_ads_bid_recommendations`: `5` linhas, todas com `recommended_bid_median > 0`.
+- `swarm_src.amazon_ads_bid_recommendations` no MarketCloud via FDW: `5` linhas visiveis.
+- Campanha `Seladora`: cobertura da tela para Amazon bid subiu para `83,33%` (`5/6` linhas OK).
+- Exemplos recebidos:
+  - `seladora a vacuo para alimentos`: low `0,60`, median `0,80`, high `1,00`;
+  - `seladora a vacuo`: low `0,77`, median `1,03`, high `1,29`;
+  - `seladora vacuo 110v`: low `0,45`, median `0,60`, high `0,75`.
+
+Pendencia:
+
+- A sexta linha (`asin="B0H2SRPWF9"`, target de produto) nao recebeu bid porque a Amazon entrou em `HTTP_429`/rate limit durante a chamada. O cache parcial esta correto; nova coleta deve respeitar cooldown/backoff antes de tentar completar targets restantes.
+
+### 2026-07-16 - Treino V3 com sugestoes Amazon ja coletadas
+
+Pedido: treinar o ML com as recomendacoes Amazon que ja foram coletadas, sem aguardar completar todas.
+
+O que foi feito:
+
+- Rebuild/recreate do `marketcloud_modeling_worker` para garantir que o script V3 mais recente estava dentro do container.
+- Primeira rodada manual do `hourly_target_real_v3` treinou, mas auditoria do join mostrou `0` matches com recomendacao Amazon. Causa: o worker buscava `keywordText`/`keyword`, enquanto o payload v5 da Amazon guarda a chave em `targetingExpression.value`.
+- Corrigido o SQL do worker para tambem casar `raw_payload_sanitized #>> '{targetingExpression,value}'`.
+- Rebuild/recreate do `marketcloud_modeling_worker` novamente.
+- Validacao pre-treino: dataset com `758` celulas; `39` celulas com `recommended_bid_median > 0`, cobrindo `3` keywords distintas.
+- Rodado manualmente: `python -u /app/marketcloud_ml_worker_hourly_target_real_v3.py`.
+
+Resultado da rodada final:
+
+- `hourly_target_real_v3`: `COMPLETED`.
+- Training rows: `758`.
+- Positive click rows: `107`.
+- Positive order rows: `25`.
+- Predictions written: `758`.
+- Modelos:
+  - `HourlyTargetClickRealV3`: AUC `0,8409` vs baseline `0,6123`.
+  - `HourlyTargetConversionRealV3`: AUC `0,9305` vs baseline `0,7422`.
+  - `HourlyTargetExpectedRoasRealV3`: MAE `0,596`, nonzero `19`.
+- `marketcloud_gold.hourly_target_ml_predictions_v3`: `758` predicoes, `computed_at=2026-07-16 21:44:02 UTC`.
+
+Leitura:
+
+- As sugestoes Amazon ja entraram como features internas do V3 (`amazon_rec_bid_*`, `amazon_rec_median_to_current_ratio`, `robot_proposed_to_amazon_median_ratio`, `has_amazon_bid_recommendation`) para as celulas que casaram.
+- Ainda e amostra pequena: `39` celulas / `3` keywords. Bom para comecar aprendizado, mas nao suficiente para conclusao estatistica ampla.
+
+### 2026-07-16 - Coletor em ondas para sugestoes de BID Amazon
+
+Pedido: implementar coleta das demais sugestoes de BID Amazon sem fazer keyword a keyword.
+
+O que foi implementado no SWARM/Zanom:
+
+- Novo endpoint operacional: `GET /api/amazon/ads/bid-recommendations/status`.
+- Novo endpoint operacional: `POST /api/amazon/ads/bid-recommendations/collect`.
+- Novo build marker: `swarm-amazon-ads-bid-recommendation-collector-v1`.
+- A coleta usa a abordagem correta:
+  - campanha por campanha;
+  - ad group por ad group;
+  - lote de `targetingExpressions` por chamada;
+  - cache em `amazon_ads_bid_recommendations`;
+  - para no primeiro `RATE_LIMITED`/`HTTP_429`;
+  - devolve `status_counts`, campanhas tentadas, linhas candidatas, linhas salvas e `safe_error`.
+- A rota de status mostra total de linhas, campanhas cobertas e proximos candidatos sem cache.
+
+Rodadas executadas:
+
+1. `POST /api/amazon/ads/bid-recommendations/collect` com `max_campaigns=2`.
+   - `Localizador`: `20` candidatas, `16` linhas salvas.
+   - `Abridor de Vinho`: `2` candidatas, `2` linhas salvas.
+   - Resultado: `18` novas sugestoes, status `OK`.
+2. Segunda onda com `max_campaigns=2`.
+   - Parou em `Forma Silicone` por `HTTP_429`.
+   - Resultado: `0` novas linhas, status `RATE_LIMITED`, `stopped_by_limit=true`.
+
+Estado apos coleta:
+
+- SWARM `amazon_ads_bid_recommendations`: `23` linhas com `recommended_bid_median > 0`.
+- MarketCloud FDW `swarm_src.amazon_ads_bid_recommendations`: `23` linhas visiveis, `3` campanhas.
+- Campanhas cobertas ate agora:
+  - `Seladora`: `5`;
+  - `Localizador`: `16`;
+  - `Abridor de Vinho`: `2`.
+- Proximas candidatas no status: `Forma Silicone`, `Kit Kadukli Manga`, campanha autopilot phrase, `Suporte de Celular`, `Fone`, etc.
+
+Treino ML apos nova coleta:
+
+- Rodado manualmente `hourly_target_real_v3` apos as 23 sugestoes.
+- Resultado final:
+  - `COMPLETED`;
+  - `760` linhas de treino;
+  - `107` com clique;
+  - `25` com pedido;
+  - `760` predicoes gravadas.
+- Sinal Amazon no dataset:
+  - `217` celulas com recomendacao Amazon;
+  - `18` keywords distintas;
+  - `3` campanhas.
+
+Pendencia operacional:
+
+- Nao rodar loop agressivo; aguardar cooldown apos `HTTP_429` e continuar em ondas pequenas.
+- Proximo passo recomendado: agendar esse coletor em baixa frequencia com backoff persistente, ou chamar manualmente ate cobrir as campanhas prioritarias.
+
+### 2026-07-16 - Tentativa adicional de coleta Amazon Bid Recommendations
+
+Pedido: "Pega mais".
+
+Acao:
+
+- Consultado `GET /api/amazon/ads/bid-recommendations/status`.
+- Proxima candidata era `Forma Silicone` (`campaign_id=140196475614872`, `3` keywords candidatas).
+- Executado `POST /api/amazon/ads/bid-recommendations/collect` com `max_campaigns=1`.
+
+Resultado:
+
+- A Amazon retornou novamente `HTTP_429 Too Many Requests`.
+- O coletor parou corretamente com:
+  - `status=RATE_LIMITED`;
+  - `saved_rows=0`;
+  - `stopped_by_limit=true`.
+- Total permanece:
+  - `23` linhas em `amazon_ads_bid_recommendations`;
+  - `23` com `recommended_bid_median > 0`;
+  - `3` campanhas cobertas.
+
+Leitura:
+
+- O endpoint esta funcional, mas a Amazon ainda esta limitando a coleta.
+- Nao insistir em loop curto; cada tentativa aumenta o cooldown (`120s`, `180s`, `240s` observados).
+
+### 2026-07-16 - Roadmap SaaS vendavel do ZanoM
+
+Pedido: seguir a transformacao do ZanoM em um SaaS vendavel.
+
+Direcao de produto:
+
+- Sair de uma automacao custom da conta ZanoM e transformar em uma plataforma multi-seller, repetivel, auditavel e segura.
+- O nucleo vendavel e: conectar Amazon Ads + SP-API + AMS/AMC, mapear produto/custo/estoque/campanhas, aplicar governanca de bid/budget/stop-loss e aprender com o resultado horario.
+
+Pilares obrigatorios para SaaS:
+
+1. Multi-tenant real:
+   - tenant/store/profile isolados em todas as tabelas;
+   - credenciais por seller;
+   - nenhuma regra hardcoded para ZanoM;
+   - onboarding por wizard.
+2. Conectores:
+   - Amazon Ads OAuth;
+   - SP-API OAuth;
+   - AMS SQS por conta/tenant;
+   - opcional AMC para sellers maiores.
+3. Cadastro economico do produto:
+   - custo atual;
+   - estoque atual;
+   - margem alvo;
+   - preco;
+   - teto de gasto diario;
+   - stop-loss;
+   - campanhas derivadas por ASIN/SKU.
+4. Controle do robo:
+   - modos `Observador`, `Sugere`, `Aplica com aprovacao`, `Full Control`;
+   - allowlist por produto/campanha;
+   - guardrails globais;
+   - trilha de auditoria de toda alteracao.
+5. ML explicavel:
+   - proposta do modelo;
+   - sugestao Amazon;
+   - acao aplicada;
+   - resultado 1h/3h/24h;
+   - ganhou/perdeu ROAS;
+   - modelo concordou/errou.
+6. Operacao comercial:
+   - planos por volume de ads/campanhas;
+   - painel de saude por seller;
+   - suporte a rate limit;
+   - notificacoes Telegram/Email/WhatsApp;
+   - relatorios exportaveis.
+
+Proximo passo recomendado:
+
+- Construir o modulo `Seller Onboarding + Product Control Plane`.
+- A primeira tela SaaS deve permitir:
+  - cadastrar/conectar seller;
+  - escolher produto/SKU;
+  - ver custo/estoque/preco/margem;
+  - associar campanhas Amazon;
+  - escolher modo do robo;
+  - definir budget, topo de busca, pagina de produto, resto da busca e stop-loss;
+  - ligar piloto Full Control.
+
+Decisao de arquitetura:
+
+- Antes de vender para outro seller, remover dependencias ZanoM hardcoded e criar uma entidade clara `tenant/store/profile`.
+- O piloto ZanoM continua sendo o ambiente de prova, mas a implementacao nova deve nascer multi-tenant.
+
+## 2026-07-17 - Modal explicavel na tela Keywords x hora
+
+Pedido: o dono apontou que a recomendacao do ML estava previsivel demais na UI
+("subir BID aumenta gasto") e pediu mais detalhes: expectativa de ganho,
+por que a recomendacao existe e quais sinais o ML realmente usa.
+
+Implementado em `marketcloud`:
+
+- Backend `internal/query/gold_v2.go`:
+  - `GET /api/v1/gold/keyword-hourly-real` agora tambem retorna:
+    - `current_multiplier_scope`;
+    - `ml_target_roas`;
+    - `ml_roas_ancora`;
+    - `ml_roas_observado`;
+    - `ml_gasto_observado`.
+- Frontend `frontend/src/pages/KeywordHorarios.jsx`:
+  - coluna `ML` ganhou botao `Detalhes`;
+  - modal por keyword/hora mostra:
+    - bid efetivo atual vs sugerido;
+    - ROAS esperado/alvo;
+    - gasto estimado se o trafego responder ao multiplicador;
+    - venda estimada usando o ROAS alvo;
+    - ROAS observado, gasto observado, dias, impressoes, cliques, pedidos;
+    - fonte do sinal (`CAMPAIGN_HOUR_INHERITED` ou target observado);
+    - escopo atual da agenda (`ENTITY`, `AD_GROUP`, `CAMPAIGN`, `GLOBAL`);
+    - probabilidade de conversao da campanha;
+    - P(click), P(conversao) e ROAS esperado do target quando o V3 tiver volume.
+
+Leitura importante:
+
+- O ML ja tinha parte dessas informacoes; a tela escondia quase tudo.
+- A expectativa de ganho exibida e estimativa operacional, nao promessa:
+  - usa o multiplicador sugerido para estimar gasto;
+  - usa `ml_target_roas`/ROAS previsto para estimar venda;
+  - quando o target V3 nao tem conversao suficiente, o modal deixa claro que a
+    recomendacao depende mais da campanha/hora e usa o target como sinal de clique.
+
+Validacao:
+
+- `go test ./internal/query ./cmd/api` passou.
+- `npm run build` em `frontend` passou sem warning.
+- `docker compose up -d --build api frontend` reconstruiu e subiu `marketcloud_api`;
+  o frontend roda em dev com volume montado e recebeu HMR em `KeywordHorarios.jsx`.
+- Banco confirmou os campos novos na view `gold_keyword_hourly_recommendations_v3`;
+  exemplo atual no topo da fila: `ml_target_roas=9.58`, `ml_roas_ancora=5.01`,
+  `ml_roas_observado=10.79`, `ml_gasto_observado=21.28`, escopo `ENTITY`.
+
+### 2026-07-17 - Ajuste de conflito campanha x target no modal ML
+
+Problema observado pelo dono:
+
+- Exemplo `tag rastreador android - 13h` mostrava ROAS real perto de `7,9`,
+  mas `ROAS previsto keyword/target=3,04`.
+- Isso parecia erro porque a tela tambem mostrava um alvo de campanha/hora em torno
+  de `7,4` e a recomendacao continuava como `Subir`.
+
+Diagnostico:
+
+- Nao era erro de calculo do ROAS real.
+- A linha tinha `source_grain=CAMPAIGN_HOUR_INHERITED`:
+  - a campanha/hora sustentava subir;
+  - o modelo especifico da keyword/target previa ROAS bem menor.
+- A UI estava misturando os dois graos e passava a sensacao de concordancia total.
+
+Correcao aplicada:
+
+- `frontend/src/pages/KeywordHorarios.jsx`:
+  - quando `target_ml_expected_roas < 75%` do alvo campanha/hora, a tabela mostra
+    `Target alerta ROAS X`;
+  - o modal troca `Leitura do modelo` por `Leitura com conflito`;
+  - `ROAS esperado` virou `ROAS alvo campanha`;
+  - `Venda estimada` vira faixa quando ha target e campanha:
+    - piso = ROAS previsto keyword/target;
+    - teto = ROAS alvo campanha/hora;
+  - o rodape explica que a oportunidade deve ser tratada como teste controlado,
+    holdout ou aguardando mais evidencia no grao do target.
+
+Validacao:
+
+- Query de banco confirmou o caso:
+  - `roas=7.88`;
+  - `ml_expected_roas=7.2068`;
+  - `ml_target_roas=7.3755`;
+  - `target_ml_expected_roas=3.0364`;
+  - `target_ml_click_probability=0.9268`;
+  - `target_ml_conversion_probability=0.5806`;
+  - `source_grain=CAMPAIGN_HOUR_INHERITED`.
+- `npm run build` em `frontend` passou.
+
+### 2026-07-17 - Veto definitivo para BID_UP herdado com target ruim
+
+Problema observado pelo dono:
+
+- Caso `smart tag - 13h`:
+  - campanha/hora sustentava `BID_UP`;
+  - target/keyword mostrava `P(click)=6%`, `P(conversao)=0%`,
+    `ROAS previsto keyword/target=0`;
+  - isso nao deve virar recomendacao.
+
+Decisao:
+
+- Alerta visual nao basta. A linha deve sair da view de recomendacao.
+- O veto vale para recomendacao herdada de campanha que aumenta exposicao
+  (`source_grain='CAMPAIGN_HOUR_INHERITED'` e `BID_UP`).
+- Se o target esta ruim e a recomendacao e reduzir/cortar, ela continua valida.
+
+Implementado:
+
+- Nova migration `migrations/107_keyword_target_veto_bid_up.sql`.
+- A view `marketcloud_gold.gold_keyword_hourly_recommendations_v3` agora bloqueia
+  `BID_UP` herdado quando existe ML target e qualquer condicao abaixo ocorre:
+  - `target_ml_expected_roas <= 0.01`;
+  - `target_ml_conversion_probability <= 0.01`;
+  - `target_ml_click_probability < 0.15`;
+  - `target_ml_expected_roas < 60%` do `ml_target_roas` da campanha/hora.
+
+Validacao no banco:
+
+- Antes do veto: `18` linhas `BID_UP` herdadas com target ruim.
+- Apos aplicar a migration: `bad_bid_up_after = 0`.
+- `smart tag - 13h` retornou `0` linhas na view.
+- Distribuicao final no momento da validacao:
+  - `BID_UP`: `35`;
+  - `BID_DOWN`: `31`;
+  - `CUT_HOUR`: `5`.
+
+Efeito operacional:
+
+- A tela `Keywords x hora` nao mostra mais esses casos.
+- O botao `Aplicar` tambem nao recebe esses casos, porque consome a mesma view.
+
+### 2026-07-17 - Parecer de auditoria das propostas Keywords x hora
+
+Pedido: auditar todas as propostas e dizer se fazem sentido, com foco em deixar
+dado e modelo em estado confiavel.
+
+Achados principais:
+
+- A view acionavel ainda continha linhas marcadas como `BID_UP_VETOED` e
+  `BID_UP_SEM_DADO`. Isso era incoerente: se existe veto ou falta de evidencia,
+  nao pode aparecer como proposta aplicavel.
+- Havia duplicatas visuais no `Kit Kadukli Manga`:
+  - mesma campanha;
+  - mesmo ad group;
+  - mesma keyword;
+  - mesma hora;
+  - mesmo multiplicador;
+  - recommendation IDs diferentes.
+- Todas as propostas ainda vinham como `CAMPAIGN_HOUR_INHERITED`; nenhuma linha
+  acionavel era `TARGET_HOUR_OBSERVED`. Isso significa que o grao keyword/target
+  ainda e majoritariamente validador/gate, nao origem primaria da sugestao.
+
+Correcoes aplicadas:
+
+- `migrations/109_keyword_recommendation_actionable_gate.sql`:
+  - separa candidatos/auditoria de fila acionavel.
+- `migrations/110_keyword_recommendation_audit_view.sql`:
+  - cria parecer programatico `gold_keyword_hourly_recommendation_audit_v1`
+    com `APPROVED`, `REVIEW`, `BLOCKED` e motivo.
+- `migrations/111_keyword_recommendation_dedup_gate.sql`:
+  - deduplica a fila acionavel.
+- `migrations/112_keyword_recommendation_audit_duplicates.sql`:
+  - marca duplicatas na auditoria.
+- `migrations/113_keyword_recommendation_only_approved_actionable.sql`:
+  - a tela/endpoint passam a receber somente `audit_decision='APPROVED'`.
+- A migration intermediaria que criava recursao (`108_keyword_recommendation_audit_gate.sql`) foi removida.
+
+Resultado final validado:
+
+- Candidatos auditados: `89`.
+- `APPROVED`: `48`.
+- `REVIEW`: `22`.
+- `BLOCKED`: `19`.
+- Fila acionavel atual: `48` propostas, todas aprovadas.
+- Distribuicao acionavel:
+  - `BID_UP`: `15`;
+  - `BID_DOWN`: `30`;
+  - `CUT_HOUR`: `3`.
+- Fila acionavel:
+  - `invalid_action=0`;
+  - `duplicate=0`.
+
+Parecer:
+
+- As `48` propostas acionaveis fazem sentido segundo os guardrails atuais.
+- As `19` bloqueadas nao devem ser aplicadas:
+  - `18` por `TARGET_SEM_EVIDENCIA`;
+  - `1` por `TARGET_ROAS_BELOW_60PCT_ALVO`.
+- As `22` em `REVIEW` nao sao lixo, mas nao estao maduras para aplicacao automatica:
+  - `19` sao `BID_UP` de baixa confianca sem ML target;
+  - `3` sao reducoes/cortes onde o target parece forte e precisa revisao humana.
+
+Conclusao tecnica:
+
+- A fila que a tela mostra agora esta em estado mais seguro: somente propostas
+  aprovadas pelo parecer programatico.
+- O modelo ainda nao esta "perfeito" porque a origem primaria segue herdada da
+  campanha/hora. Para evoluir de verdade, o proximo passo e aumentar o uso de
+  `TARGET_HOUR_OBSERVED` e transformar o V3 target de gate/validador em gerador
+  primario de proposta quando houver volume suficiente.
+
+Validacao executada:
+
+- `go test ./internal/query ./cmd/api` passou.
+- Queries de banco confirmaram:
+  - `gold_keyword_hourly_recommendations_v3`: `48` linhas, todas `APPROVED`;
+  - `invalid=0`;
+  - `duplicate=0`;
+  - auditoria preserva `REVIEW` e `BLOCKED` para investigacao.

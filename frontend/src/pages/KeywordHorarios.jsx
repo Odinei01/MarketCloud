@@ -26,12 +26,25 @@ function money(n) {
   return `R$ ${fmt(n, 2)}`
 }
 
+function pct(n, digits = 0) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return '-'
+  return `${fmt(Number(n) * 100, digits)}%`
+}
+
+function num(n) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return null
+  return Number(n)
+}
+
 export default function KeywordHorarios({ ctx }) {
   const { tenantID } = ctx
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [filter, setFilter] = useState({ action: '', confidence: 'HIGH', source: 'CAMPAIGN_HOUR_INHERITED' })
+  // confidence '' (todas) por padrao: no grao keyword x hora quase nada chega a
+  // HIGH (dado esparso), entao 'HIGH' escondia praticamente toda recomendacao
+  // real (BID_DOWN/BID_UP MEDIUM/LOW). O usuario filtra pra cima se quiser.
+  const [filter, setFilter] = useState({ action: '', confidence: '', source: 'CAMPAIGN_HOUR_INHERITED' })
 
   // O finally e o que importa aqui: sem ele, qualquer excecao deixava a tela em
   // "Carregando..." pra sempre, sem dizer o motivo — foi assim que uma query
@@ -60,6 +73,7 @@ export default function KeywordHorarios({ ctx }) {
   const [applyResult, setApplyResult] = useState({})
   const [selected, setSelected] = useState(() => new Set())
   const [progress, setProgress] = useState(null) // {done, total} enquanto aplica
+  const [detailItem, setDetailItem] = useState(null)
 
   // So acao de lance da pra aplicar; KEEP_STRONG nao muda nada.
   const isApplicable = (item) => ['BID_UP', 'BID_DOWN', 'CUT_HOUR'].includes(item.campaign_action_type)
@@ -157,6 +171,39 @@ export default function KeywordHorarios({ ctx }) {
   const downCount = items.filter(x => x.campaign_action_type === 'CUT_HOUR' || x.campaign_action_type === 'BID_DOWN').length
   const targetCount = items.filter(x => x.source_grain === 'TARGET_HOUR_OBSERVED').length
   const targetMlCount = items.filter(x => x.target_ml_click_probability !== null && x.target_ml_click_probability !== undefined).length
+  const detail = detailItem ? (() => {
+    const currentMult = num(detailItem.current_hour_multiplier)
+    const suggestedMult = num(detailItem.suggested_hour_multiplier)
+    const multRatio = currentMult && suggestedMult ? suggestedMult / currentMult : null
+    const spend = num(detailItem.spend) || 0
+    const sales = num(detailItem.sales) || 0
+    const campaignRoasTarget = num(detailItem.ml_target_roas) ?? num(detailItem.ml_expected_roas)
+    const targetRoas = num(detailItem.target_ml_expected_roas)
+    const anchorRoas = num(detailItem.ml_roas_ancora)
+    const targetDisagrees = targetRoas !== null && campaignRoasTarget !== null && targetRoas < campaignRoasTarget * 0.75
+    const projectedSpend = multRatio ? spend * multRatio : null
+    const projectedSalesCampaign = projectedSpend !== null && campaignRoasTarget !== null ? projectedSpend * campaignRoasTarget : null
+    const projectedSalesTarget = projectedSpend !== null && targetRoas !== null ? projectedSpend * targetRoas : null
+    const projectedSales = projectedSalesTarget !== null && targetDisagrees ? projectedSalesTarget : projectedSalesCampaign
+    const salesRange = projectedSalesCampaign !== null && projectedSalesTarget !== null
+      ? [Math.min(projectedSalesCampaign, projectedSalesTarget), Math.max(projectedSalesCampaign, projectedSalesTarget)]
+      : null
+    return {
+      multRatio,
+      campaignRoasTarget,
+      targetRoas,
+      anchorRoas,
+      targetDisagrees,
+      projectedSpend,
+      projectedSales,
+      projectedSalesCampaign,
+      projectedSalesTarget,
+      salesRange,
+      deltaSpend: projectedSpend !== null ? projectedSpend - spend : null,
+      deltaSales: projectedSales !== null ? projectedSales - sales : null,
+      deltaRoasVsCurrent: campaignRoasTarget !== null && num(detailItem.roas) !== null ? campaignRoasTarget - Number(detailItem.roas) : null,
+    }
+  })() : null
 
   return (
     <div className="page keyword-hour-page">
@@ -300,6 +347,10 @@ export default function KeywordHorarios({ ctx }) {
                           <span>P(click) {fmt(Number(item.target_ml_click_probability) * 100, 0)}%</span>
                         </div>
                       )}
+                      {item.target_ml_expected_roas !== null && item.target_ml_expected_roas !== undefined && item.ml_target_roas !== null && Number(item.target_ml_expected_roas) < Number(item.ml_target_roas) * 0.75 && (
+                        <div className="target-warning">Target alerta ROAS {fmt(item.target_ml_expected_roas, 1)}</div>
+                      )}
+                      <button className="detail-btn" type="button" onClick={() => setDetailItem(item)}>Detalhes</button>
                     </td>
                     <td className="num">{fmt(item.priority_score, 0)}</td>
                     <td className="sel-col">
@@ -319,6 +370,90 @@ export default function KeywordHorarios({ ctx }) {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {detailItem && (
+        <div className="modal-backdrop" onMouseDown={() => setDetailItem(null)}>
+          <div className="ml-detail-modal" role="dialog" aria-modal="true" onMouseDown={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <div>
+                <h3>{detailItem.keyword_text} - {String(detailItem.event_hour).padStart(2, '0')}h</h3>
+                <p>{detailItem.campaign_name} / {detailItem.ad_group_name || detailItem.ad_group_id || 'grupo nao identificado'}</p>
+              </div>
+              <button className="close-btn" type="button" onClick={() => setDetailItem(null)}>Fechar</button>
+            </div>
+
+            <div className="modal-callout">
+              <strong>{detail?.targetDisagrees ? 'Leitura com conflito' : 'Leitura do modelo'}</strong>
+              <span>
+                {detail?.targetDisagrees
+                  ? `A campanha/hora sustenta o alvo ${fmt(detailItem.suggested_hour_multiplier, 2)}x, mas o modelo da keyword/target esta abaixo da campanha. Trate como teste controlado, nao como ganho garantido.`
+                  : `O alvo sugerido e ${fmt(detailItem.suggested_hour_multiplier, 2)}x. A leitura atual combina o ROAS real da hora, o ROAS previsto pelo ML e a ancora da propria campanha. A projecao abaixo e uma estimativa, nao uma promessa.`}
+              </span>
+            </div>
+
+            <div className="detail-grid">
+              <div className="detail-card">
+                <span>Bid efetivo</span>
+                <strong>{money(detailItem.current_effective_bid)} para {money(detailItem.suggested_effective_bid)}</strong>
+                <small>{fmt(detailItem.current_hour_multiplier, 2)}x para {fmt(detailItem.suggested_hour_multiplier, 2)}x / {fmt(detailItem.effective_bid_delta_percent, 0)}%</small>
+              </div>
+              <div className="detail-card">
+                <span>ROAS alvo campanha</span>
+                <strong>{fmt(detail?.campaignRoasTarget, 1)}</strong>
+                <small>Atual {fmt(detailItem.roas, 1)} / ancora campanha {fmt(detailItem.ml_roas_ancora, 1)}</small>
+              </div>
+              <div className="detail-card">
+                <span>Gasto estimado</span>
+                <strong>{money(detail?.projectedSpend)}</strong>
+                <small>Delta {money(detail?.deltaSpend)} se trafego responder ao multiplicador</small>
+              </div>
+              <div className="detail-card">
+                <span>{detail?.salesRange ? 'Venda estimada faixa' : 'Venda estimada'}</span>
+                <strong>{detail?.salesRange ? `${money(detail.salesRange[0])} a ${money(detail.salesRange[1])}` : money(detail?.projectedSales)}</strong>
+                <small>{detail?.targetDisagrees ? 'piso target / teto campanha' : `Delta ${money(detail?.deltaSales)} usando ROAS alvo`}</small>
+              </div>
+            </div>
+
+            <div className="detail-columns">
+              <section>
+                <h4>O que sustenta a recomendacao</h4>
+                <dl>
+                  <div><dt>ROAS observado na hora</dt><dd>{fmt(detailItem.ml_roas_observado ?? detailItem.roas, 2)}</dd></div>
+                  <div><dt>Gasto observado pelo modelo</dt><dd>{money(detailItem.ml_gasto_observado ?? detailItem.spend)}</dd></div>
+                  <div><dt>Dias observados</dt><dd>{fmt(detailItem.days_observed)}</dd></div>
+                  <div><dt>Impressões / cliques / pedidos</dt><dd>{fmt(detailItem.impressions)} / {fmt(detailItem.clicks)} / {fmt(detailItem.orders)}</dd></div>
+                  <div><dt>Fonte do sinal</dt><dd>{detailItem.source_grain || '-'}</dd></div>
+                  <div><dt>Escopo atual da agenda</dt><dd>{detailItem.current_multiplier_scope || '-'}</dd></div>
+                </dl>
+              </section>
+
+              <section>
+                <h4>Predicao ML</h4>
+                <dl>
+                  <div><dt>Campanha concorda?</dt><dd>{detailItem.ml_agrees === true ? 'Sim' : detailItem.ml_agrees === false ? 'Nao' : '-'}</dd></div>
+                  <div><dt>P(conversao) campanha</dt><dd>{pct(detailItem.ml_conversion_probability)}</dd></div>
+                  <div><dt>ROAS previsto campanha</dt><dd>{fmt(detailItem.ml_expected_roas, 2)}</dd></div>
+                  <div><dt>P(click) keyword/target</dt><dd>{pct(detailItem.target_ml_click_probability)}</dd></div>
+                  <div><dt>P(conversao) keyword/target</dt><dd>{pct(detailItem.target_ml_conversion_probability)}</dd></div>
+                  <div><dt>ROAS previsto keyword/target</dt><dd className={detail?.targetDisagrees ? 'warn-value' : ''}>{fmt(detailItem.target_ml_expected_roas, 2)}</dd></div>
+                </dl>
+              </section>
+            </div>
+
+            {detail?.targetDisagrees ? (
+              <div className="modal-note warning-note">
+                Interpretacao: a campanha/hora esta boa, mas esta keyword/target nao confirma a mesma eficiencia.
+                O sistema deve tratar isso como oportunidade com risco, priorizando teste pequeno/holdout ou aguardando mais evidencia no grao do target.
+              </div>
+            ) : (
+              <div className="modal-note">
+                Quando a probabilidade/ROAS do target vier zerada, significa que o V3 ainda tem pouco dado de conversao nesse grao.
+                Nesse caso a recomendacao usa mais a campanha/hora e o target entra como sinal de clique.
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -622,6 +757,174 @@ export default function KeywordHorarios({ ctx }) {
           line-height:1.2;
           white-space:nowrap;
         }
+        .keyword-hour-page .target-warning{
+          margin-top:3px;
+          color:#ffb86b;
+          font-size:10.5px;
+          line-height:1.2;
+          font-weight:800;
+          white-space:nowrap;
+        }
+        .keyword-hour-page .detail-btn{
+          margin-top:6px;
+          height:22px;
+          padding:0 8px;
+          border:1px solid rgba(84,160,255,.45);
+          border-radius:6px;
+          background:rgba(84,160,255,.10);
+          color:#a8c7ff;
+          font-size:10.5px;
+          font-weight:750;
+          cursor:pointer;
+        }
+        .keyword-hour-page .detail-btn:hover{background:rgba(84,160,255,.18)}
+        .keyword-hour-page .modal-backdrop{
+          position:fixed;
+          inset:0;
+          z-index:50;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          padding:28px;
+          background:rgba(2,8,23,.72);
+          backdrop-filter:blur(6px);
+        }
+        .keyword-hour-page .ml-detail-modal{
+          width:min(920px,calc(100vw - 36px));
+          max-height:calc(100vh - 56px);
+          overflow:auto;
+          background:#111827;
+          border:1px solid rgba(148,163,184,.22);
+          border-radius:10px;
+          box-shadow:0 24px 70px rgba(0,0,0,.45);
+          color:#e5eefb;
+        }
+        .keyword-hour-page .modal-head{
+          display:flex;
+          justify-content:space-between;
+          gap:16px;
+          align-items:flex-start;
+          padding:18px 20px;
+          border-bottom:1px solid rgba(148,163,184,.15);
+        }
+        .keyword-hour-page .modal-head h3{
+          margin:0;
+          font-size:21px;
+          letter-spacing:0;
+        }
+        .keyword-hour-page .modal-head p{
+          margin:5px 0 0;
+          color:#9fb0ca;
+          font-size:13px;
+        }
+        .keyword-hour-page .close-btn{
+          height:34px;
+          padding:0 12px;
+          border:1px solid rgba(148,163,184,.28);
+          border-radius:8px;
+          background:rgba(255,255,255,.04);
+          color:#dbe6f7;
+          font-weight:750;
+          cursor:pointer;
+        }
+        .keyword-hour-page .modal-callout{
+          margin:16px 20px 0;
+          padding:13px 14px;
+          border:1px solid rgba(255,159,67,.35);
+          border-radius:8px;
+          background:rgba(255,159,67,.08);
+          display:grid;
+          gap:5px;
+        }
+        .keyword-hour-page .modal-callout strong{color:#ffd08a}
+        .keyword-hour-page .modal-callout span{color:#f6d9aa;font-size:13px;line-height:1.4}
+        .keyword-hour-page .detail-grid{
+          display:grid;
+          grid-template-columns:repeat(4,minmax(0,1fr));
+          gap:10px;
+          padding:16px 20px 0;
+        }
+        .keyword-hour-page .detail-card{
+          min-height:88px;
+          padding:12px;
+          border:1px solid rgba(148,163,184,.16);
+          border-radius:8px;
+          background:rgba(255,255,255,.035);
+        }
+        .keyword-hour-page .detail-card span{
+          display:block;
+          color:#9fb0ca;
+          font-size:11px;
+          font-weight:750;
+          text-transform:uppercase;
+          letter-spacing:.04em;
+        }
+        .keyword-hour-page .detail-card strong{
+          display:block;
+          margin-top:8px;
+          font-size:20px;
+          line-height:1.1;
+        }
+        .keyword-hour-page .detail-card small{
+          display:block;
+          margin-top:8px;
+          color:#9fb0ca;
+          font-size:11.5px;
+          line-height:1.3;
+        }
+        .keyword-hour-page .detail-columns{
+          display:grid;
+          grid-template-columns:1fr 1fr;
+          gap:14px;
+          padding:16px 20px 0;
+        }
+        .keyword-hour-page .detail-columns section{
+          border:1px solid rgba(148,163,184,.16);
+          border-radius:8px;
+          background:rgba(255,255,255,.025);
+          padding:14px;
+        }
+        .keyword-hour-page .detail-columns h4{
+          margin:0 0 11px;
+          font-size:14px;
+        }
+        .keyword-hour-page .detail-columns dl{
+          margin:0;
+          display:grid;
+          gap:8px;
+        }
+        .keyword-hour-page .detail-columns dl div{
+          display:flex;
+          justify-content:space-between;
+          gap:16px;
+          border-bottom:1px solid rgba(148,163,184,.08);
+          padding-bottom:7px;
+        }
+        .keyword-hour-page .detail-columns dt{
+          color:#9fb0ca;
+          font-size:12px;
+        }
+        .keyword-hour-page .detail-columns dd{
+          margin:0;
+          text-align:right;
+          font-size:12px;
+          font-weight:800;
+          font-variant-numeric:tabular-nums;
+        }
+        .keyword-hour-page .detail-columns dd.warn-value{color:#ffb86b}
+        .keyword-hour-page .modal-note{
+          margin:16px 20px 20px;
+          color:#9fb0ca;
+          font-size:12.5px;
+          line-height:1.45;
+        }
+        .keyword-hour-page .warning-note{
+          color:#ffd7a1;
+          border:1px solid rgba(255,184,107,.28);
+          border-radius:8px;
+          padding:12px 14px;
+          background:rgba(255,184,107,.07);
+        }
         .keyword-hour-page .empty{
           min-height:220px;
           display:grid;
@@ -635,6 +938,8 @@ export default function KeywordHorarios({ ctx }) {
           .keyword-hour-page .filters{grid-template-columns:1fr}
           .keyword-hour-page .count-badge{justify-self:start}
           .keyword-hour-page .queue{max-height:none}
+          .keyword-hour-page .detail-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+          .keyword-hour-page .detail-columns{grid-template-columns:1fr}
         }
       `}</style>
     </div>

@@ -312,7 +312,13 @@ func (h *Handler) GoldKeywordHourlyReal(w http.ResponseWriter, r *http.Request) 
 			target_clicks::float8 AS target_clicks,
 			target_spend::float8 AS target_spend,
 			target_orders::float8 AS target_orders,
-			target_sales::float8 AS target_sales
+			target_sales::float8 AS target_sales,
+			current_multiplier_scope,
+			ml_target_roas::float8 AS ml_target_roas,
+			ml_roas_ancora::float8 AS ml_roas_ancora,
+			ml_roas_observado::float8 AS ml_roas_observado,
+			ml_gasto_observado::float8 AS ml_gasto_observado,
+			vetoed, veto_reason
 		FROM marketcloud_gold.gold_keyword_hourly_recommendations_v3
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY priority_score DESC, ABS(effective_bid_delta) DESC
