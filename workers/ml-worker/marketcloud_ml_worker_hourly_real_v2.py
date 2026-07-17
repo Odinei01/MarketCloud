@@ -200,10 +200,13 @@ def record_run_status(conn, started_at, status, rows, positive_orders, predictio
                  positive_order_rows, predictions_written, metrics_json,
                  started_at, finished_at)
             VALUES ('hourly_real_v2', 'v2', 'campaign_hour', %s, %s, %s, %s, %s, %s, NOW())
+            RETURNING id
             """,
             (status, rows, positive_orders, predictions_written, json.dumps(metrics), started_at),
         )
+        run_id = cur.fetchone()["id"]
         conn.commit()
+        return run_id
 
 
 def confidence_for(cp, er, min_roas):
@@ -553,11 +556,20 @@ def main():
         run_status = "COMPLETED"
         if cls_metrics.get("positives", 0) < 10 or reg_metrics.get("n", 0) == 0:
             run_status = "PARTIAL"
-        record_run_status(conn, started_at, run_status, n, pos, len(rows), {
+        run_id = record_run_status(conn, started_at, run_status, n, pos, len(rows), {
             "conversion": cls_metrics,
             "expected_roas": reg_metrics,
             "full_control_360_actions_written": actions_written,
         })
+        # P1-6: carimba predicoes/recs desta rodada com o run_id, ligando cada
+        # uma ao modelo que a gerou (as tabelas sao truncadas por rodada, entao
+        # tudo que esta la e desta rodada).
+        if run_id:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE marketcloud_gold.hourly_ml_predictions_v2 SET run_id=%s WHERE run_id IS NULL", (run_id,))
+                cur.execute("UPDATE marketcloud_gold.ml_full_control_action_recommendations_v1 SET run_id=%s WHERE run_id IS NULL", (run_id,))
+            conn.commit()
+            log.info(f"predicoes/recs carimbadas com run_id={run_id}")
     except Exception:
         log.exception("erro no ML hourly-real v2")
         conn.rollback()

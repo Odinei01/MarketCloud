@@ -5917,3 +5917,28 @@ Limites que ficam (DADO, nao codigo — explicitos, nao ocultos):
   `model_registry` guarda metrica por rodada, mas as predicoes nao versionam.
 - 360 so exercitou o lado defensivo; o lado de alta so sera validado quando existir
   piloto de ROAS bom.
+
+### 2026-07-17 - P1-6 FECHADO: linhagem predicao -> rodada -> modelo
+
+Pedido do dono: "finalizar 100% o ML, opte pelo mais completo". Na minha visao o que
+o modelo precisa alem de amadurecer com dado era fechar a rastreabilidade (P1-6).
+
+Feito (migration 118 + workers v2/v3):
+- o historico de rodada JA existia (append em `ml_hourly_run_status`, 400+ rodadas com
+  `metrics_json` incl. `roc_auc_cross_campaign`); faltava ligar predicao -> rodada.
+- adicionado `run_id` em `hourly_ml_predictions_v2`, `ml_full_control_action_recommendations_v1`
+  e `hourly_target_ml_predictions_v3`; os workers estampam ao fim da rodada.
+- views `v_ml_prediction_lineage_v1` (v2) e `v_ml_target_prediction_lineage_v1` (v3)
+  ligam cada predicao viva as metricas do modelo que a gerou.
+- validado: 611 pred v2 + 78 recs 360 (run 686) e 830 pred target v3 (run 689), 0 sem run_id.
+- agora responde "essa predicao veio da rodada X, AUC op 0.963 / cross-campanha 0.961".
+
+Estado do ML (minha visao honesta de "100%"):
+- pipeline completo: features -> treino (2 modelos + target v3) -> predicao versionada ->
+  360 advisor classificado -> ledger -> outcome canonico -> linhagem auditavel.
+- outcome loop FECHA pro que executa (KEYWORD_HOUR 27/27, CAMPAIGN_HOUR 9/9, 61 outcomes);
+  360 fica advisor (0 EXECUTED) ate existir executor seguro de budget/placement.
+- o que RESTA nao e codigo, e: (a) DADO amadurecer (105 positivos/3 pilotos), (b)
+  persistir o BINARIO do modelo p/ replay bit-exato (fatia menor, so p/ auditoria
+  retroativa), (c) executor real de budget/placement no Robo/Ads (feature grande, fora
+  do ML). Nada disso e bug oculto — tudo explicito.

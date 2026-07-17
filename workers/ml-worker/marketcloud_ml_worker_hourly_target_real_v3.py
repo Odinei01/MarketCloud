@@ -281,10 +281,13 @@ def record_run_status(conn, started_at, status, rows, positive_clicks, positive_
                  positive_click_rows, positive_order_rows, predictions_written,
                  metrics_json, started_at, finished_at)
             VALUES ('hourly_target_real_v3', 'v3', 'keyword_target_hour', %s, %s, %s, %s, %s, %s, %s, NOW())
+            RETURNING id
             """,
             (status, rows, positive_clicks, positive_orders, predictions_written, json.dumps(metrics), started_at),
         )
+        run_id = cur.fetchone()["id"]
         conn.commit()
+        return run_id
 
 
 def fit_classifier(conn, df, model_name, target_col, feature_target):
@@ -419,12 +422,18 @@ def main():
         conv_trained = not np.isnan(conv_proba).all()
         roas_trained = not np.isnan(roas_pred).all()
         run_status = "COMPLETED" if click_trained and conv_trained and roas_trained else ("PARTIAL" if click_trained else "INSUFFICIENT_DATA")
-        record_run_status(conn, started_at, run_status, len(df), int(df["has_click"].sum()), int(df["has_order"].sum()), predictions_written, {
+        run_id = record_run_status(conn, started_at, run_status, len(df), int(df["has_click"].sum()), int(df["has_order"].sum()), predictions_written, {
             "click_model_trained": bool(click_trained),
             "conversion_model_trained": bool(conv_trained),
             "roas_model_trained": bool(roas_trained),
             "targets": int(df["target_entity_key"].nunique()),
         })
+        # P1-6: carimba as predicoes target desta rodada com o run_id.
+        if run_id:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE marketcloud_gold.hourly_target_ml_predictions_v3 SET run_id=%s WHERE run_id IS NULL", (run_id,))
+            conn.commit()
+            log.info("predicoes target carimbadas com run_id=%s", run_id)
     except Exception:
         log.exception("erro no ML target-real v3")
         conn.rollback()
