@@ -5173,6 +5173,17 @@ Efeito operacional:
 
 ### 2026-07-17 - Parecer de auditoria das propostas Keywords x hora
 
+> ⚠️ SUPERADO pela migration 114 (2026-07-17, commit marketcloud 8bef8af). As
+> migrations 109-113 citadas abaixo FORAM REMOVIDAS: eram incoerentes (candidates_v1
+> orfa/nao-reprodutivel, colisao de dois 109, v3 desconectado do audit). A 114
+> consolida tudo reprodutivel: candidates_v1 -> audit_v1 -> v3 (so APPROVED).
+> Numeros atualizados apos a 114 (suavizacao por evidencia + fix do bug de auditoria
+> REDUCE_BUT_TARGET_LOOKS_STRONG que exigia evidencia real): APPROVED=37, REVIEW=20,
+> BLOCKED=16 (nao mais 48/22/19 — a suavizacao derrubou candidatos abaixo da
+> materialidade e 3 cortes legitimos voltaram de REVIEW p/ APPROVED). Ver
+> [[keyword-pin-and-ml-learning-loop]]. O insight estrutural abaixo (crescer
+> TARGET_HOUR_OBSERVED, target virar gerador primario) segue valido.
+
 Pedido: auditar todas as propostas e dizer se fazem sentido, com foco em deixar
 dado e modelo em estado confiavel.
 

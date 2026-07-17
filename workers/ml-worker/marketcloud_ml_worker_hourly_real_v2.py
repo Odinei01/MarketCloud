@@ -56,8 +56,47 @@ def load(conn):
     # horario com budget, stop-loss, produto e placement traffic. Alvos
     # (orders/sales/roas) continuam vindo apenas de celulas maduras.
     sql = """
-        SELECT *
-        FROM marketcloud_features.feature_full_control_campaign_hour_v1
+        WITH base AS (
+            SELECT *
+            FROM marketcloud_features.feature_full_control_campaign_hour_v1
+        ), pilot AS (
+            SELECT DISTINCT ON (campaign_id)
+                campaign_id,
+                product_asin,
+                seller_sku
+            FROM marketcloud_gold.full_control_effective_governance_v1
+            WHERE COALESCE(campaign_id,'') <> ''
+            ORDER BY campaign_id,
+                CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
+                updated_at DESC
+        )
+        SELECT
+            b.*,
+            COALESCE(q.quality_orders_30d,0) AS quality_orders_30d,
+            COALESCE(q.quality_units_sold_30d,0) AS quality_units_sold_30d,
+            COALESCE(q.refund_total_30d,0) AS refund_total_30d,
+            COALESCE(q.return_quantity_30d,0) AS return_quantity_30d,
+            COALESCE(q.return_events_30d,0) AS return_events_30d,
+            COALESCE(q.return_units_30d,0) AS return_units_30d,
+            COALESCE(q.return_refund_amount_30d,0) AS return_refund_amount_30d,
+            COALESCE(q.return_rate_30d,0) AS return_rate_30d,
+            COALESCE(q.net_profit_after_quality_30d,0) AS net_profit_after_quality_30d,
+            COALESCE(q.net_margin_after_quality_ratio_30d,0) AS net_margin_after_quality_ratio_30d,
+            COALESCE(q.rating_latest,0) AS product_rating_latest,
+            COALESCE(q.reviews_total_latest,0) AS product_reviews_total_latest,
+            COALESCE(q.review_source_confidence,0) AS review_source_confidence,
+            COALESCE(q.low_rating_flag,0) AS low_rating_flag,
+            COALESCE(q.high_return_flag,0) AS high_return_flag,
+            COALESCE(q.refund_flag,0) AS refund_flag
+        FROM base b
+        LEFT JOIN pilot p ON p.campaign_id = b.campaign_id
+        LEFT JOIN marketcloud_features.feature_product_quality_v1 q
+          ON q.product_asin = COALESCE(NULLIF(p.product_asin,''), 'NO_ASIN')
+         AND (
+              COALESCE(q.seller_sku,'') = COALESCE(p.seller_sku,'')
+              OR COALESCE(q.seller_sku,'') = ''
+              OR COALESCE(p.seller_sku,'') = ''
+         )
     """
     with conn.cursor() as cur:
         cur.execute(sql)
@@ -79,7 +118,13 @@ def load(conn):
                     "placement_spend_45d", "placement_clicks_45d", "placement_impressions_45d",
                     "top_search_spend_45d", "product_page_spend_45d", "rest_search_spend_45d",
                     "top_search_spend_share_45d", "product_page_spend_share_45d", "rest_search_spend_share_45d",
-                    "top_search_cpc_45d", "product_page_cpc_45d", "rest_search_cpc_45d"]
+                    "top_search_cpc_45d", "product_page_cpc_45d", "rest_search_cpc_45d",
+                    "quality_orders_30d", "quality_units_sold_30d", "refund_total_30d",
+                    "return_quantity_30d", "return_events_30d", "return_units_30d",
+                    "return_refund_amount_30d", "return_rate_30d",
+                    "net_profit_after_quality_30d", "net_margin_after_quality_ratio_30d",
+                    "product_rating_latest", "product_reviews_total_latest",
+                    "review_source_confidence", "low_rating_flag", "high_return_flag", "refund_flag"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
     df["ctr"] = np.where(df["impressions"] > 0, df["clicks"] / df["impressions"], 0.0)
@@ -112,7 +157,13 @@ def build_X(df):
                "is_full_control_pilot", "is_active_pilot", "can_control_flag",
                "placement_spend_45d", "placement_clicks_45d", "placement_impressions_45d",
                "top_search_spend_share_45d", "product_page_spend_share_45d", "rest_search_spend_share_45d",
-               "top_search_cpc_45d", "product_page_cpc_45d", "rest_search_cpc_45d"]].copy()
+               "top_search_cpc_45d", "product_page_cpc_45d", "rest_search_cpc_45d",
+               "quality_orders_30d", "quality_units_sold_30d", "refund_total_30d",
+               "return_quantity_30d", "return_events_30d", "return_units_30d",
+               "return_refund_amount_30d", "return_rate_30d",
+               "net_profit_after_quality_30d", "net_margin_after_quality_ratio_30d",
+               "product_rating_latest", "product_reviews_total_latest",
+               "review_source_confidence", "low_rating_flag", "high_return_flag", "refund_flag"]].copy()
     camp = pd.get_dummies(df["campaign_norm"], prefix="c")
     X = pd.concat([base.reset_index(drop=True), camp.reset_index(drop=True)], axis=1)
     return X.astype(float), list(X.columns)

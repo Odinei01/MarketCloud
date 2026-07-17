@@ -81,6 +81,16 @@ def load(conn):
             FROM marketcloud_bronze.bronze_ams_hourly_target
             WHERE NULLIF(TRIM(COALESCE(target_entity_key, '')), '') IS NOT NULL
             GROUP BY campaign_id, COALESCE(ad_group_id, ''), target_entity_key, event_hour
+        ), pilot AS (
+            SELECT DISTINCT ON (campaign_id)
+                campaign_id,
+                product_asin,
+                seller_sku
+            FROM marketcloud_gold.full_control_effective_governance_v1
+            WHERE COALESCE(campaign_id,'') <> ''
+            ORDER BY campaign_id,
+                CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
+                updated_at DESC
         )
         SELECT
             b.*,
@@ -101,6 +111,22 @@ def load(conn):
                 ELSE 0
             END::float AS robot_proposed_to_amazon_median_ratio,
             CASE WHEN COALESCE(NULLIF(r.recommended_bid_median, 0), NULLIF(d.amazon_recommended_bid_median, 0), 0) > 0 THEN 1 ELSE 0 END::float AS has_amazon_bid_recommendation
+            , COALESCE(q.quality_orders_30d,0)::float AS quality_orders_30d
+            , COALESCE(q.quality_units_sold_30d,0)::float AS quality_units_sold_30d
+            , COALESCE(q.refund_total_30d,0)::float AS refund_total_30d
+            , COALESCE(q.return_quantity_30d,0)::float AS return_quantity_30d
+            , COALESCE(q.return_events_30d,0)::float AS return_events_30d
+            , COALESCE(q.return_units_30d,0)::float AS return_units_30d
+            , COALESCE(q.return_refund_amount_30d,0)::float AS return_refund_amount_30d
+            , COALESCE(q.return_rate_30d,0)::float AS return_rate_30d
+            , COALESCE(q.net_profit_after_quality_30d,0)::float AS net_profit_after_quality_30d
+            , COALESCE(q.net_margin_after_quality_ratio_30d,0)::float AS net_margin_after_quality_ratio_30d
+            , COALESCE(q.rating_latest,0)::float AS product_rating_latest
+            , COALESCE(q.reviews_total_latest,0)::float AS product_reviews_total_latest
+            , COALESCE(q.review_source_confidence,0)::float AS review_source_confidence
+            , COALESCE(q.low_rating_flag,0)::float AS low_rating_flag
+            , COALESCE(q.high_return_flag,0)::float AS high_return_flag
+            , COALESCE(q.refund_flag,0)::float AS refund_flag
         FROM base b
         LEFT JOIN LATERAL (
             SELECT r.*
@@ -113,11 +139,21 @@ def load(conn):
                  OR (NULLIF(b.target_entity_key,'') IS NOT NULL AND r.target_id = b.target_entity_key)
                  OR (
                         NULLIF(b.keyword_text,'') IS NOT NULL
-                    AND lower(trim(COALESCE(r.raw_payload_sanitized->>'keywordText', r.raw_payload_sanitized->>'keyword', ''))) = lower(trim(b.keyword_text))
+                    AND lower(trim(COALESCE(
+                        r.raw_payload_sanitized->>'keywordText',
+                        r.raw_payload_sanitized->>'keyword',
+                        r.raw_payload_sanitized #>> '{targetingExpression,value}',
+                        ''
+                    ))) = lower(trim(b.keyword_text))
                  )
                  OR (
                         NULLIF(b.targeting,'') IS NOT NULL
-                    AND lower(trim(COALESCE(r.raw_payload_sanitized->>'keywordText', r.raw_payload_sanitized->>'keyword', ''))) = lower(trim(b.targeting))
+                    AND lower(trim(COALESCE(
+                        r.raw_payload_sanitized->>'keywordText',
+                        r.raw_payload_sanitized->>'keyword',
+                        r.raw_payload_sanitized #>> '{targetingExpression,value}',
+                        ''
+                    ))) = lower(trim(b.targeting))
                  )
               )
             ORDER BY r.fetched_at DESC NULLS LAST
@@ -137,6 +173,14 @@ def load(conn):
             ORDER BY d.updated_at DESC NULLS LAST, d.created_at DESC NULLS LAST
             LIMIT 1
         ) d ON TRUE
+        LEFT JOIN pilot p ON p.campaign_id = b.campaign_id
+        LEFT JOIN marketcloud_features.feature_product_quality_v1 q
+          ON q.product_asin = COALESCE(NULLIF(p.product_asin,''), 'NO_ASIN')
+         AND (
+              COALESCE(q.seller_sku,'') = COALESCE(p.seller_sku,'')
+              OR COALESCE(q.seller_sku,'') = ''
+              OR COALESCE(p.seller_sku,'') = ''
+         )
     """
     with conn.cursor() as cur:
         cur.execute(sql)
@@ -151,6 +195,12 @@ def load(conn):
         "effective_min_bid", "effective_max_bid",
         "amazon_rec_median_to_current_ratio", "robot_proposed_to_amazon_median_ratio",
         "has_amazon_bid_recommendation",
+        "quality_orders_30d", "quality_units_sold_30d", "refund_total_30d",
+        "return_quantity_30d", "return_events_30d", "return_units_30d",
+        "return_refund_amount_30d", "return_rate_30d",
+        "net_profit_after_quality_30d", "net_margin_after_quality_ratio_30d",
+        "product_rating_latest", "product_reviews_total_latest",
+        "review_source_confidence", "low_rating_flag", "high_return_flag", "refund_flag",
     ]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
@@ -186,6 +236,12 @@ def build_X(df, target):
         "effective_min_bid", "effective_max_bid",
         "amazon_rec_median_to_current_ratio", "robot_proposed_to_amazon_median_ratio",
         "has_amazon_bid_recommendation",
+        "quality_orders_30d", "quality_units_sold_30d", "refund_total_30d",
+        "return_quantity_30d", "return_events_30d", "return_units_30d",
+        "return_refund_amount_30d", "return_rate_30d",
+        "net_profit_after_quality_30d", "net_margin_after_quality_ratio_30d",
+        "product_rating_latest", "product_reviews_total_latest",
+        "review_source_confidence", "low_rating_flag", "high_return_flag", "refund_flag",
     ]
     # For conversion/ROAS after the hour closes, clicks/spend signals are allowed.
     # For click propensity, do not include click-derived features.
