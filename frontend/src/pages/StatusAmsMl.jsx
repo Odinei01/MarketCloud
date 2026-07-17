@@ -73,6 +73,27 @@ function verdictText(verdict) {
   return 'inconclusivo'
 }
 
+// Veredito sintetico do aprendizado: conclui pelo operador, honesto sobre
+// tamanho de amostra. Impede ler "7 pioraram x 2 melhoraram" fora de contexto.
+function learningVerdict(s) {
+  const conclusive = Number(s.conclusive || 0)
+  const net = Number(s.net_delta_sales || 0)
+  if (s.sample === 'PEQUENA' || s.verdict === 'INCONCLUSIVO') {
+    return {
+      cls: 'warn',
+      title: 'Amostra ainda pequena — nao conclua',
+      body: `So ${conclusive} medicoes conclusivas em 24h (${fmt(s.neutral)} neutras). Poucas mudancas fecharam janela; espere volume antes de mexer no robo.`,
+    }
+  }
+  if (s.verdict === 'POSITIVO') {
+    return { cls: 'ok', title: 'Efeito liquido POSITIVO', body: `${fmt(s.improved)} melhoraram x ${fmt(s.worsened)} pioraram em 24h; venda liquida ${money(net)}.` }
+  }
+  if (s.verdict === 'NEGATIVO') {
+    return { cls: 'bad', title: 'Efeito liquido NEGATIVO — revisar', body: `${fmt(s.worsened)} pioraram x ${fmt(s.improved)} melhoraram em 24h; venda liquida ${money(net)}. Verifique holdout antes de culpar o robo.` }
+  }
+  return { cls: 'warn', title: 'Efeito liquido neutro', body: `${fmt(s.improved)} melhoraram x ${fmt(s.worsened)} pioraram; venda liquida ${money(net)}.` }
+}
+
 function auditClass(result) {
   if (result === 'WINNING') return 'ok'
   if (result === 'LOSING') return 'bad'
@@ -159,6 +180,7 @@ export default function StatusAmsMl({ ctx }) {
   const auditSummary = data.audit_360_summary || {}
   const fc360Summary = data.full_control_360_summary || {}
   const fullControl360 = data.full_control_360 || []
+  const learningSummary = data.learning_summary || {}
 
   const latest = useMemo(() => ({
     campaign: latestRun(runs, 'hourly_real_v2'),
@@ -347,6 +369,15 @@ export default function StatusAmsMl({ ctx }) {
           </div>
           <span>{learning.length ? `${learning.length} medicoes` : 'sem medicoes'}</span>
         </div>
+        {learningSummary.verdict && (() => {
+          const v = learningVerdict(learningSummary)
+          return (
+            <div className={`verdict-banner ${v.cls}`}>
+              <b>{v.title}</b>
+              <span>{v.body}</span>
+            </div>
+          )
+        })()}
         <div className="table-wrap learning-table">
           <table>
             <thead>
@@ -357,6 +388,7 @@ export default function StatusAmsMl({ ctx }) {
                 <th>Acao aplicada</th>
                 <th>Aplicado em</th>
                 <th>Janela</th>
+                <th>Volume (gasto/pedidos)</th>
                 <th>ROAS antes</th>
                 <th>ROAS depois</th>
                 <th>Delta</th>
@@ -365,7 +397,11 @@ export default function StatusAmsMl({ ctx }) {
               </tr>
             </thead>
             <tbody>
-              {learning.map((row, idx) => (
+              {learning.map((row, idx) => {
+                // Volume por tras do ROAS: separa sinal de ruido. Poucos cliques/
+                // gasto -> a "melhora/piora" de ROAS pode ser so barulho.
+                const lowVol = Number(row.eval_spend || 0) < 5 && Number(row.eval_orders || 0) < 1
+                return (
                 <tr key={`${row.recommendation_id}-${row.outcome_window}-${idx}`}>
                   <td><b>{row.campaign_name || '-'}</b><span className="row-sub">{row.ad_group_name || '-'}</span></td>
                   <td className="num">{row.event_hour !== null && row.event_hour !== undefined ? `${String(row.event_hour).padStart(2, '0')}h` : '-'}</td>
@@ -373,14 +409,15 @@ export default function StatusAmsMl({ ctx }) {
                   <td>{row.decided_action || row.recommended_action || '-'} <span className="muted">{row.decided_bid_multiplier ? `${fmt(Number(row.decided_bid_multiplier) * 100)}%` : ''}</span></td>
                   <td>{dt(row.executed_at)}</td>
                   <td><span className="pill warn">{row.outcome_window}</span></td>
+                  <td className="num">{money(row.eval_spend)} / {fmt(row.eval_orders)}{lowVol && <span className="pill bad" title="Volume baixo: ROAS pode ser ruido">ruido</span>}</td>
                   <td className="num">{fmt(row.baseline_roas, 2)}</td>
                   <td className="num">{fmt(row.eval_roas, 2)}</td>
                   <td className={`num ${Number(row.delta_roas || 0) >= 0 ? 'delta-pos' : 'delta-neg'}`}>{fmt(row.delta_roas, 2)}</td>
-                  <td><span className={`pill ${outcomeClass(row.outcome_label)}`}>{outcomeText(row.outcome_label)}</span></td>
+                  <td><span className={`pill ${lowVol ? 'warn' : outcomeClass(row.outcome_label)}`}>{lowVol ? 'inconclusivo' : outcomeText(row.outcome_label)}</span></td>
                   <td>{verdictText(row.model_verdict)}</td>
                 </tr>
-              ))}
-              {!learning.length && <tr><td colSpan="11" className="empty-cell">Ainda nao ha acoes executadas com janela AMS fechada para medir.</td></tr>}
+              )})}
+              {!learning.length && <tr><td colSpan="12" className="empty-cell">Ainda nao ha acoes executadas com janela AMS fechada para medir.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -553,6 +590,15 @@ export default function StatusAmsMl({ ctx }) {
         .status-page .audit-score div{border:1px solid rgba(148,163,184,.16);border-radius:8px;background:rgba(255,255,255,.025);padding:10px 12px}
         .status-page .audit-score span{display:block;color:#9fb8dc;text-transform:uppercase;letter-spacing:.08em;font-size:10px;font-weight:850}
         .status-page .audit-score b{display:block;margin-top:6px;font-size:20px;line-height:1;color:#fff}
+        .status-page .verdict-banner{border-radius:8px;padding:11px 14px;margin-bottom:10px;border:1px solid}
+        .status-page .verdict-banner b{display:block;font-size:14px;margin-bottom:3px}
+        .status-page .verdict-banner span{font-size:12px;line-height:1.4;color:#cbd5e5}
+        .status-page .verdict-banner.ok{border-color:rgba(38,222,129,.35);background:rgba(38,222,129,.08)}
+        .status-page .verdict-banner.ok b{color:#26de81}
+        .status-page .verdict-banner.warn{border-color:rgba(255,159,67,.35);background:rgba(255,159,67,.08)}
+        .status-page .verdict-banner.warn b{color:#ffb86b}
+        .status-page .verdict-banner.bad{border-color:rgba(255,84,112,.35);background:rgba(255,84,112,.08)}
+        .status-page .verdict-banner.bad b{color:#ff5470}
         .status-page .window-cell{display:grid;gap:5px;min-width:118px}
         .status-page .window-cell small{color:#b7c7de;font-size:11px;white-space:nowrap}
         .status-page .model-list{display:grid;gap:8px}

@@ -217,6 +217,43 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Veredito sintetico do aprendizado: conclui pelo operador de forma honesta.
+	// Usa SO a janela 24h (senao 1h/3h/24h contam em triplo). Marca amostra
+	// pequena para nao virar decisao de dinheiro em cima de ruido.
+	var ls struct {
+		Measured, Improved, Worsened, Neutral, NoData int
+		NetDeltaSales, NetDeltaSpend                  float64
+	}
+	_ = h.db.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE outcome_window='24h'),
+			count(*) FILTER (WHERE outcome_window='24h' AND outcome_label='IMPROVED'),
+			count(*) FILTER (WHERE outcome_window='24h' AND outcome_label='WORSENED'),
+			count(*) FILTER (WHERE outcome_window='24h' AND outcome_label='NEUTRAL'),
+			count(*) FILTER (WHERE outcome_window='24h' AND outcome_label='NO_DATA'),
+			COALESCE(sum(delta_sales) FILTER (WHERE outcome_window='24h'),0),
+			COALESCE(sum(delta_spend) FILTER (WHERE outcome_window='24h'),0)
+		FROM marketcloud_recommendations.recommendation_hourly_outcomes`).
+		Scan(&ls.Measured, &ls.Improved, &ls.Worsened, &ls.Neutral, &ls.NoData, &ls.NetDeltaSales, &ls.NetDeltaSpend)
+
+	conclusive := ls.Improved + ls.Worsened
+	sample := "OK"
+	verdict := "NEUTRO"
+	if conclusive < 20 {
+		sample = "PEQUENA"
+		verdict = "INCONCLUSIVO"
+	} else if ls.Improved > ls.Worsened && ls.NetDeltaSales >= 0 {
+		verdict = "POSITIVO"
+	} else if ls.Worsened > ls.Improved && ls.NetDeltaSales < 0 {
+		verdict = "NEGATIVO"
+	}
+	learningSummary := map[string]any{
+		"measured": ls.Measured, "improved": ls.Improved, "worsened": ls.Worsened,
+		"neutral": ls.Neutral, "no_data": ls.NoData, "conclusive": conclusive,
+		"net_delta_sales": ls.NetDeltaSales, "net_delta_spend": ls.NetDeltaSpend,
+		"sample": sample, "verdict": verdict,
+	}
+
 	var auditSummary map[string]any
 	err = h.db.QueryRow(ctx, `
 		SELECT jsonb_build_object(
@@ -335,6 +372,7 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		"ml_runs":                  runs,
 		"ams_hours":                ams,
 		"learning_outcomes":        learning,
+		"learning_summary":         learningSummary,
 		"audit_360_summary":        auditSummary,
 		"audit_360":                audit360,
 		"full_control_360_summary": fc360Summary,
