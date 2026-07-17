@@ -275,13 +275,69 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var fc360Summary map[string]any
+	err = h.db.QueryRow(ctx, `
+		SELECT jsonb_build_object(
+			'total', COUNT(*),
+			'aplicar', COUNT(*) FILTER (WHERE operator_decision IN ('APLICAR','APLICAR_SEGURANCA')),
+			'testar', COUNT(*) FILTER (WHERE operator_decision = 'TESTAR_CONTROLADO'),
+			'aguardar', COUNT(*) FILTER (WHERE operator_decision = 'AGUARDAR_DADOS'),
+			'bloquear', COUNT(*) FILTER (WHERE operator_decision = 'BLOQUEAR'),
+			'pending_execution', COUNT(*) FILTER (WHERE audit_result = 'PENDING_EXECUTION'),
+			'pending_measurement', COUNT(*) FILTER (WHERE audit_result = 'PENDING_MEASUREMENT'),
+			'winning', COUNT(*) FILTER (WHERE audit_result = 'WINNING'),
+			'losing', COUNT(*) FILTER (WHERE audit_result = 'LOSING'),
+			'last_computed_at', MAX(computed_at),
+			'last_measured_at', MAX(last_measured_at)
+		)::jsonb
+		FROM marketcloud_recommendations.v_ml_full_control_360_audit_v1`).Scan(&fc360Summary)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "full_control_360_summary_failed: "+err.Error())
+		return
+	}
+
+	fc360Rows, err := h.db.Query(ctx, `
+		SELECT recommendation_id, campaign_id, campaign_name, event_hour,
+		       action_type, action_scope,
+		       current_value::float8 AS current_value,
+		       recommended_value::float8 AS recommended_value,
+		       expected_roas::float8 AS expected_roas,
+		       conversion_probability::float8 AS conversion_probability,
+		       confidence, priority_score::float8 AS priority_score,
+		       guardrail_status, reason, evidence_json,
+		       expected_delta_spend::float8 AS expected_delta_spend,
+		       expected_delta_sales::float8 AS expected_delta_sales,
+		       expected_delta_roas::float8 AS expected_delta_roas,
+		       decision_class, execution_strategy, min_roas_used::float8 AS min_roas_used,
+		       data_sufficiency, operator_note, operator_decision, operator_reason,
+		       decision, execution_status, executed_at, decided_at,
+		       measured_windows,
+		       outcome_label_1h, delta_roas_1h::float8 AS delta_roas_1h,
+		       outcome_label_3h, delta_roas_3h::float8 AS delta_roas_3h,
+		       outcome_label_24h, delta_roas_24h::float8 AS delta_roas_24h,
+		       audit_result, last_measured_at, computed_at
+		FROM marketcloud_recommendations.v_ml_full_control_360_audit_v1
+		ORDER BY priority_score DESC NULLS LAST, computed_at DESC
+		LIMIT 50`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "full_control_360_actions_failed: "+err.Error())
+		return
+	}
+	fc360, err := pgx.CollectRows(fc360Rows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "full_control_360_actions_scan_failed: "+err.Error())
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"totals":            totals,
-		"models":            models,
-		"ml_runs":           runs,
-		"ams_hours":         ams,
-		"learning_outcomes": learning,
-		"audit_360_summary": auditSummary,
-		"audit_360":         audit360,
+		"totals":                   totals,
+		"models":                   models,
+		"ml_runs":                  runs,
+		"ams_hours":                ams,
+		"learning_outcomes":        learning,
+		"audit_360_summary":        auditSummary,
+		"audit_360":                audit360,
+		"full_control_360_summary": fc360Summary,
+		"full_control_360":         fc360,
 	})
 }

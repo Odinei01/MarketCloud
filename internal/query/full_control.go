@@ -24,6 +24,10 @@ type fullControlPilotRequest struct {
 	MaxSpendWithoutOrderBRL float64 `json:"max_spend_without_order_brl"`
 	MinROAS                 float64 `json:"min_roas"`
 	MaxACOS                 float64 `json:"max_acos"`
+	MaxTopOfSearchPct       float64 `json:"max_top_of_search_pct"`
+	MaxProductPagePct       float64 `json:"max_product_page_pct"`
+	MaxRestOfSearchPct      float64 `json:"max_rest_of_search_pct"`
+	StrategyConfig          any     `json:"strategy_config"`
 	Notes                   string  `json:"notes"`
 }
 
@@ -101,16 +105,26 @@ func (h *Handler) SetFullControlPilot(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.SalePriceBRL < 0 || body.UnitCostBRL < 0 || body.StockAvailable < 0 ||
 		body.MaxDailyBudgetBRL < 0 || body.MaxSpendWithoutOrderBRL < 0 ||
-		body.MinROAS < 0 || body.MaxACOS < 0 {
+		body.MinROAS < 0 || body.MaxACOS < 0 ||
+		body.MaxTopOfSearchPct < 0 || body.MaxProductPagePct < 0 || body.MaxRestOfSearchPct < 0 {
 		writeError(w, http.StatusBadRequest, "invalid_full_control_economic_value")
+		return
+	}
+	if body.MaxTopOfSearchPct > 900 || body.MaxProductPagePct > 900 || body.MaxRestOfSearchPct > 900 {
+		writeError(w, http.StatusBadRequest, "invalid_full_control_placement_limit")
 		return
 	}
 	if body.MinROAS == 0 {
 		body.MinROAS = 4
 	}
+	strategyJSON, err := json.Marshal(body.StrategyConfig)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_strategy_config")
+		return
+	}
 
 	var saved map[string]any
-	err := h.db.QueryRow(r.Context(), `
+	err = h.db.QueryRow(r.Context(), `
 		WITH values_in AS (
 			SELECT
 				$1::text AS tenant_id,
@@ -128,14 +142,19 @@ func (h *Handler) SetFullControlPilot(w http.ResponseWriter, r *http.Request) {
 				$13::float8::numeric AS max_spend_without_order_brl,
 				$14::float8::numeric AS min_roas,
 				NULLIF($15::float8, 0)::numeric AS max_acos,
-				NULLIF($16::text,'') AS notes,
-				NULLIF($17::text,'') AS user_id
+				$16::float8::numeric AS max_top_of_search_pct,
+				$17::float8::numeric AS max_product_page_pct,
+				$18::float8::numeric AS max_rest_of_search_pct,
+				COALESCE(NULLIF($19::text,'')::jsonb, '{}'::jsonb) AS strategy_config,
+				NULLIF($20::text,'') AS notes,
+				NULLIF($21::text,'') AS user_id
 		), upserted AS (
 			INSERT INTO marketcloud_control.full_control_pilots (
 				tenant_id, product_asin, seller_sku, product_title, campaign_id, campaign_name,
 				mode, status, sale_price_brl, unit_cost_brl, stock_available,
 				gross_margin_brl, gross_margin_pct,
 				max_daily_budget_brl, max_spend_without_order_brl, min_roas, max_acos,
+				max_top_of_search_pct, max_product_page_pct, max_rest_of_search_pct, strategy_config,
 				notes, created_by, updated_by, updated_at
 			)
 			SELECT
@@ -144,6 +163,7 @@ func (h *Handler) SetFullControlPilot(w http.ResponseWriter, r *http.Request) {
 				CASE WHEN sale_price_brl IS NOT NULL AND unit_cost_brl IS NOT NULL THEN sale_price_brl - unit_cost_brl END,
 				CASE WHEN sale_price_brl > 0 AND unit_cost_brl IS NOT NULL THEN (sale_price_brl - unit_cost_brl) / sale_price_brl END,
 				max_daily_budget_brl, max_spend_without_order_brl, min_roas, max_acos,
+				max_top_of_search_pct, max_product_page_pct, max_rest_of_search_pct, strategy_config,
 				notes, user_id, user_id, NOW()
 			FROM values_in
 			ON CONFLICT (tenant_id, product_asin, campaign_id) DO UPDATE SET
@@ -161,6 +181,10 @@ func (h *Handler) SetFullControlPilot(w http.ResponseWriter, r *http.Request) {
 				max_spend_without_order_brl=EXCLUDED.max_spend_without_order_brl,
 				min_roas=EXCLUDED.min_roas,
 				max_acos=EXCLUDED.max_acos,
+				max_top_of_search_pct=EXCLUDED.max_top_of_search_pct,
+				max_product_page_pct=EXCLUDED.max_product_page_pct,
+				max_rest_of_search_pct=EXCLUDED.max_rest_of_search_pct,
+				strategy_config=EXCLUDED.strategy_config,
 				notes=EXCLUDED.notes,
 				updated_by=EXCLUDED.updated_by,
 				updated_at=NOW()
@@ -170,7 +194,8 @@ func (h *Handler) SetFullControlPilot(w http.ResponseWriter, r *http.Request) {
 		tenantID, body.ProductASIN, body.SellerSKU, body.ProductTitle, body.CampaignID,
 		body.CampaignName, body.Mode, body.Status, body.SalePriceBRL, body.UnitCostBRL,
 		body.StockAvailable, body.MaxDailyBudgetBRL, body.MaxSpendWithoutOrderBRL,
-		body.MinROAS, body.MaxACOS, strings.TrimSpace(body.Notes), userID).Scan(&saved)
+		body.MinROAS, body.MaxACOS, body.MaxTopOfSearchPct, body.MaxProductPagePct,
+		body.MaxRestOfSearchPct, string(strategyJSON), strings.TrimSpace(body.Notes), userID).Scan(&saved)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "full_control_pilot_save_failed: "+err.Error())
 		return
@@ -198,6 +223,10 @@ func (h *Handler) FullControlGovernance(w http.ResponseWriter, r *http.Request) 
 		       max_spend_without_order_brl::float8 AS max_spend_without_order_brl,
 		       min_roas::float8 AS min_roas,
 		       max_acos::float8 AS max_acos,
+		       max_top_of_search_pct::float8 AS max_top_of_search_pct,
+		       max_product_page_pct::float8 AS max_product_page_pct,
+		       max_rest_of_search_pct::float8 AS max_rest_of_search_pct,
+		       strategy_config,
 		       spend_today::float8 AS spend_today,
 		       orders_today::float8 AS orders_today,
 		       sales_today::float8 AS sales_today,
@@ -234,6 +263,9 @@ func (h *Handler) FullControlMonitoring(w http.ResponseWriter, r *http.Request) 
 		       max_daily_budget_brl::float8 AS max_daily_budget_brl,
 		       max_spend_without_order_brl::float8 AS max_spend_without_order_brl,
 		       min_roas::float8 AS min_roas,
+		       max_top_of_search_pct::float8 AS max_top_of_search_pct,
+		       max_product_page_pct::float8 AS max_product_page_pct,
+		       max_rest_of_search_pct::float8 AS max_rest_of_search_pct,
 		       spend_today::float8 AS spend_today,
 		       orders_today::float8 AS orders_today,
 		       sales_today::float8 AS sales_today,
@@ -306,11 +338,59 @@ func (h *Handler) FullControlMonitoring(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	proposalRows, err := h.db.Query(r.Context(), `
+		WITH pilots AS (
+			SELECT DISTINCT campaign_id, lower(trim(campaign_name)) AS campaign_norm
+			FROM marketcloud_gold.full_control_effective_governance_v1
+			WHERE tenant_id = $1
+			  AND status IN ('active','paused','draft')
+		)
+		SELECT a.recommendation_id,
+		       a.campaign_id,
+		       a.campaign_name,
+		       a.event_hour,
+		       a.action_type,
+		       a.current_value::float8 AS current_value,
+		       a.recommended_value::float8 AS recommended_value,
+		       a.expected_roas::float8 AS expected_roas,
+		       a.conversion_probability::float8 AS conversion_probability,
+		       a.expected_delta_spend::float8 AS expected_delta_spend,
+		       a.expected_delta_sales::float8 AS expected_delta_sales,
+		       a.expected_delta_roas::float8 AS expected_delta_roas,
+		       a.confidence,
+		       a.priority_score::float8 AS priority_score,
+		       a.guardrail_status,
+		       a.decision_class,
+		       a.execution_strategy,
+		       a.data_sufficiency,
+		       a.operator_decision,
+		       a.operator_reason,
+		       a.audit_result,
+		       a.execution_status,
+		       a.computed_at
+		FROM marketcloud_recommendations.v_ml_full_control_360_audit_v1 a
+		JOIN pilots p
+		  ON (a.campaign_id IS NOT NULL AND a.campaign_id = p.campaign_id)
+		  OR (a.campaign_id IS NULL AND lower(trim(a.campaign_name)) = p.campaign_norm)
+		ORDER BY a.priority_score DESC NULLS LAST, a.computed_at DESC
+		LIMIT 80`, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "full_control_monitoring_proposals_failed: "+err.Error())
+		return
+	}
+	proposals, err := pgx.CollectRows(proposalRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "full_control_monitoring_proposals_scan_failed: "+err.Error())
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"pilots":       pilots,
-		"actions":      actions,
-		"pilot_count":  len(pilots),
-		"action_count": len(actions),
+		"pilots":         pilots,
+		"actions":        actions,
+		"proposed_360":   proposals,
+		"pilot_count":    len(pilots),
+		"action_count":   len(actions),
+		"proposal_count": len(proposals),
 	})
 }
 

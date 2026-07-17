@@ -36,7 +36,7 @@ from sklearn.metrics import (
     r2_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedKFold, cross_val_predict, KFold
+from sklearn.model_selection import StratifiedKFold, cross_val_predict, KFold, GroupKFold
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [ML-HOURLY-REAL] %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -62,6 +62,7 @@ def load(conn):
         ), pilot AS (
             SELECT DISTINCT ON (campaign_id)
                 campaign_id,
+                tenant_id,
                 product_asin,
                 seller_sku
             FROM marketcloud_gold.full_control_effective_governance_v1
@@ -72,6 +73,7 @@ def load(conn):
         )
         SELECT
             b.*,
+            COALESCE(p.tenant_id::text, 'zanom') AS tenant_id,
             COALESCE(q.quality_orders_30d,0) AS quality_orders_30d,
             COALESCE(q.quality_units_sold_30d,0) AS quality_units_sold_30d,
             COALESCE(q.refund_total_30d,0) AS refund_total_30d,
@@ -113,6 +115,7 @@ def load(conn):
                     "bidding_legacy_for_sales", "sale_price_brl", "unit_cost_brl",
                     "stock_available", "gross_margin_brl", "gross_margin_pct",
                     "max_daily_budget_brl", "max_spend_without_order_brl", "min_roas",
+                    "max_top_of_search_pct", "max_product_page_pct", "max_rest_of_search_pct",
                     "spend_to_fc_daily_cap_ratio", "spend_to_stop_loss_ratio",
                     "is_full_control_pilot", "is_active_pilot", "can_control_flag",
                     "placement_spend_45d", "placement_clicks_45d", "placement_impressions_45d",
@@ -153,6 +156,7 @@ def build_X(df):
                "sale_price_brl", "unit_cost_brl", "stock_available",
                "gross_margin_brl", "gross_margin_pct",
                "max_daily_budget_brl", "max_spend_without_order_brl", "min_roas",
+               "max_top_of_search_pct", "max_product_page_pct", "max_rest_of_search_pct",
                "spend_to_fc_daily_cap_ratio", "spend_to_stop_loss_ratio",
                "is_full_control_pilot", "is_active_pilot", "can_control_flag",
                "placement_spend_45d", "placement_clicks_45d", "placement_impressions_45d",
@@ -202,6 +206,220 @@ def record_run_status(conn, started_at, status, rows, positive_orders, predictio
         conn.commit()
 
 
+def confidence_for(cp, er, min_roas):
+    cp = float(cp or 0)
+    er = float(er or 0)
+    min_roas = float(min_roas or GOOD_HOUR_ROAS)
+    if cp >= 0.65 and er >= min_roas * 1.2:
+        return "HIGH"
+    if cp >= 0.45 and er >= min_roas:
+        return "MEDIUM"
+    return "LOW"
+
+
+def rec_id(campaign_id, campaign_name, hour, action_type):
+    raw = f"{campaign_id or campaign_name}:{hour}:{action_type}"
+    safe = "".join(ch if ch.isalnum() else "_" for ch in raw.lower()).strip("_")
+    return f"fc360_{safe[:180]}"
+
+
+def append_action(actions, row, action_type, current_value, recommended_value, cp, er, reason, priority_boost=0):
+    min_roas = float(row.get("min_roas") or GOOD_HOUR_ROAS)
+    spend = float(row.get("spend") or 0)
+    baseline_roas = float(row.get("roas") or 0)
+    expected_delta_roas = float(er or 0) - baseline_roas
+    spend_delta_ratio = 0.0
+    if action_type in ("INCREASE_DAILY_BUDGET", "INCREASE_TOP_OF_SEARCH", "TEST_PRODUCT_PAGE", "TEST_REST_OF_SEARCH"):
+        spend_delta_ratio = min(0.35, max(0.05, (float(recommended_value or 0) - float(current_value or 0)) / max(abs(float(current_value or 0)), 1.0)))
+    elif action_type in ("STOP_LOSS_PROTECT", "REDUCE_DAILY_BUDGET", "REDUCE_TOP_OF_SEARCH"):
+        spend_delta_ratio = -min(0.35, max(0.05, (float(current_value or 0) - float(recommended_value or 0)) / max(abs(float(current_value or 0)), 1.0)))
+    expected_delta_spend = round(spend * spend_delta_ratio, 4)
+    expected_delta_sales = round((spend + expected_delta_spend) * max(float(er or 0), 0) - spend * max(baseline_roas, 0), 4)
+    decision_class = classify_action(row, action_type, cp, er)
+    data_sufficiency = data_sufficiency_for(row, cp, er)
+    execution_strategy = "AUTO_EXECUTE_BID_ROBOT" if action_type.endswith("BID") else "REQUIRES_REAL_EXECUTOR"
+    if action_type in ("STOP_LOSS_PROTECT", "REDUCE_DAILY_BUDGET", "REDUCE_TOP_OF_SEARCH"):
+        execution_strategy = "SAFETY_RECOMMENDATION"
+    priority = max(0.0, float(er or 0) - min_roas) * 10.0 + float(cp or 0) * 25.0 + priority_boost
+    actions.append((
+        rec_id(row.get("campaign_id"), row.get("campaign_name"), int(row.get("event_hour") or 0), action_type),
+        str(row.get("tenant_id") or "zanom"),
+        row.get("campaign_id"),
+        row.get("campaign_name"),
+        int(row.get("event_hour") or 0),
+        action_type,
+        "FULL_CONTROL_360",
+        float(current_value or 0),
+        float(recommended_value or 0),
+        None if er is None or np.isnan(er) else round(float(er), 4),
+        None if cp is None or np.isnan(cp) else round(float(cp), 4),
+        confidence_for(cp, er, min_roas),
+        round(priority, 4),
+        "READY" if int(row.get("can_control_flag") or 0) == 1 else "BLOCKED_BY_GOVERNANCE",
+        reason,
+        json.dumps({
+            "spend": float(row.get("spend") or 0),
+            "spend_to_budget_ratio": float(row.get("spend_to_budget_ratio") or 0),
+            "spend_to_fc_daily_cap_ratio": float(row.get("spend_to_fc_daily_cap_ratio") or 0),
+            "spend_to_stop_loss_ratio": float(row.get("spend_to_stop_loss_ratio") or 0),
+            "current_budget_brl": float(row.get("current_budget_brl") or 0),
+            "max_daily_budget_brl": float(row.get("max_daily_budget_brl") or 0),
+            "max_spend_without_order_brl": float(row.get("max_spend_without_order_brl") or 0),
+            "top_search_spend_share_45d": float(row.get("top_search_spend_share_45d") or 0),
+            "product_page_spend_share_45d": float(row.get("product_page_spend_share_45d") or 0),
+            "rest_search_spend_share_45d": float(row.get("rest_search_spend_share_45d") or 0),
+            "max_top_of_search_pct": float(row.get("max_top_of_search_pct") or 0),
+            "max_product_page_pct": float(row.get("max_product_page_pct") or 0),
+            "max_rest_of_search_pct": float(row.get("max_rest_of_search_pct") or 0),
+            "stock_available": float(row.get("stock_available") or 0),
+            "gross_margin_pct": float(row.get("gross_margin_pct") or 0),
+        }),
+        round(expected_delta_spend, 4),
+        round(expected_delta_sales, 4),
+        round(expected_delta_roas, 4),
+        decision_class,
+        execution_strategy,
+        round(min_roas, 4),
+        data_sufficiency,
+        operator_note_for(decision_class, action_type),
+    ))
+
+
+def data_sufficiency_for(row, cp, er):
+    days = float(row.get("days_observed") or 0)
+    clicks = float(row.get("clicks") or 0)
+    orders = float(row.get("orders") or 0)
+    if days < 7 or clicks < 10:
+        return "LOW_DATA"
+    if orders <= 0 and (cp or 0) < 0.35:
+        return "NO_CONVERSION_SIGNAL"
+    if (er or 0) <= 0:
+        return "ROAS_MODEL_CONFLICT"
+    return "ENOUGH_DATA"
+
+
+def classify_action(row, action_type, cp, er):
+    if int(row.get("can_control_flag") or 0) != 1:
+        return "BLOCKED"
+    min_roas = float(row.get("min_roas") or GOOD_HOUR_ROAS)
+    suff = data_sufficiency_for(row, cp, er)
+    if action_type in ("STOP_LOSS_PROTECT", "REDUCE_DAILY_BUDGET", "REDUCE_TOP_OF_SEARCH") and float(er or 0) < min_roas:
+        return "APPLY_SAFETY"
+    if suff != "ENOUGH_DATA":
+        return "WAIT_MORE_DATA"
+    if float(cp or 0) >= 0.65 and float(er or 0) >= min_roas * 1.15:
+        return "APPLY"
+    if float(cp or 0) >= 0.45 and float(er or 0) >= min_roas:
+        return "TEST_CONTROLLED"
+    return "WAIT_MORE_DATA"
+
+
+def operator_note_for(decision_class, action_type):
+    if decision_class == "BLOCKED":
+        return "Bloqueado por governanca atual do piloto."
+    if decision_class == "APPLY_SAFETY":
+        return "Acao defensiva: pode reduzir risco, mas ainda exige executor real para esta variavel."
+    if decision_class == "APPLY":
+        return "Sinal forte para aplicacao, sujeito ao executor real e limites do piloto."
+    if decision_class == "TEST_CONTROLLED":
+        return "Sinal positivo para teste pequeno/holdout antes de escalar."
+    return "Aguardar mais dados antes de aplicar automaticamente."
+
+
+def write_full_control_360_actions(conn, df, proba_full, roas_full):
+    actions = []
+    for i in range(len(df)):
+        row = df.iloc[i]
+        if int(row.get("is_full_control_pilot") or 0) != 1:
+            continue
+        cp = None if np.isnan(proba_full[i]) else float(proba_full[i])
+        er = None if np.isnan(roas_full[i]) else float(roas_full[i])
+        if cp is None or er is None:
+            continue
+        min_roas = float(row.get("min_roas") or GOOD_HOUR_ROAS)
+        current_budget = float(row.get("current_budget_brl") or 0)
+        max_budget = float(row.get("max_daily_budget_brl") or 0)
+        stop_loss = float(row.get("max_spend_without_order_brl") or 0)
+        spend_to_budget = float(row.get("spend_to_budget_ratio") or 0)
+        spend_to_stop = float(row.get("spend_to_stop_loss_ratio") or 0)
+        top_limit = float(row.get("max_top_of_search_pct") or 0)
+        product_limit = float(row.get("max_product_page_pct") or 0)
+        rest_limit = float(row.get("max_rest_of_search_pct") or 0)
+        top_current = float(row.get("top_of_search_bid_adjustment") or 0)
+
+        if spend_to_stop >= 0.90 and er < min_roas:
+            append_action(actions, row, "STOP_LOSS_PROTECT", stop_loss, 0, cp, er,
+                          "Gasto sem pedido perto do limite e ROAS previsto abaixo do minimo.", 35)
+        if cp >= GOOD_HOUR_PROB and er >= min_roas and spend_to_budget >= 0.85 and max_budget > current_budget > 0:
+            recommended = min(max_budget, max(current_budget * 1.2, current_budget + 5))
+            append_action(actions, row, "INCREASE_DAILY_BUDGET", current_budget, recommended, cp, er,
+                          "Hora boa prevista e campanha perto do budget diario.", 30)
+        if er < min_roas * 0.75 and current_budget > 0 and spend_to_budget > 0.50:
+            recommended = max(5, current_budget * 0.8)
+            append_action(actions, row, "REDUCE_DAILY_BUDGET", current_budget, recommended, cp, er,
+                          "ROAS previsto fraco com consumo relevante de budget.", 20)
+        if top_limit > 0 and cp >= GOOD_HOUR_PROB and er >= min_roas and top_current < top_limit:
+            recommended = min(top_limit, max(top_current + 10, top_limit * 0.5))
+            append_action(actions, row, "INCREASE_TOP_OF_SEARCH", top_current, recommended, cp, er,
+                          "Hora forte; limite do piloto permite testar Top of Search.", 25)
+        if top_current > 0 and er < min_roas:
+            recommended = max(0, top_current - 10)
+            append_action(actions, row, "REDUCE_TOP_OF_SEARCH", top_current, recommended, cp, er,
+                          "Top of Search ativo com ROAS previsto abaixo do minimo.", 18)
+        if product_limit > 0 and cp >= 0.45 and er >= min_roas and float(row.get("product_page_spend_share_45d") or 0) < 0.35:
+            append_action(actions, row, "TEST_PRODUCT_PAGE", 0, product_limit, cp, er,
+                          "Produto/campanha com sinal positivo; testar Product Page dentro do limite.", 12)
+        if rest_limit > 0 and cp >= 0.45 and er >= min_roas and float(row.get("rest_search_spend_share_45d") or 0) < 0.35:
+            append_action(actions, row, "TEST_REST_OF_SEARCH", 0, rest_limit, cp, er,
+                          "Produto/campanha com sinal positivo; testar Rest of Search dentro do limite.", 8)
+
+    with conn.cursor() as cur:
+        cur.execute("TRUNCATE marketcloud_gold.ml_full_control_action_recommendations_v1")
+        if actions:
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                INSERT INTO marketcloud_gold.ml_full_control_action_recommendations_v1
+                    (recommendation_id, tenant_id, campaign_id, campaign_name, event_hour,
+                     action_type, action_scope, current_value, recommended_value,
+                     expected_roas, conversion_probability, confidence, priority_score,
+                     guardrail_status, reason, evidence_json,
+                     expected_delta_spend, expected_delta_sales, expected_delta_roas,
+                     decision_class, execution_strategy, min_roas_used, data_sufficiency, operator_note)
+                VALUES %s
+                ON CONFLICT (recommendation_id) DO UPDATE SET
+                    tenant_id=EXCLUDED.tenant_id,
+                    current_value=EXCLUDED.current_value,
+                    recommended_value=EXCLUDED.recommended_value,
+                    expected_roas=EXCLUDED.expected_roas,
+                    conversion_probability=EXCLUDED.conversion_probability,
+                    confidence=EXCLUDED.confidence,
+                    priority_score=EXCLUDED.priority_score,
+                    guardrail_status=EXCLUDED.guardrail_status,
+                    reason=EXCLUDED.reason,
+                    evidence_json=EXCLUDED.evidence_json,
+                    expected_delta_spend=EXCLUDED.expected_delta_spend,
+                    expected_delta_sales=EXCLUDED.expected_delta_sales,
+                    expected_delta_roas=EXCLUDED.expected_delta_roas,
+                    decision_class=EXCLUDED.decision_class,
+                    execution_strategy=EXCLUDED.execution_strategy,
+                    min_roas_used=EXCLUDED.min_roas_used,
+                    data_sufficiency=EXCLUDED.data_sufficiency,
+                    operator_note=EXCLUDED.operator_note,
+                    computed_at=NOW()
+                """,
+                actions,
+                page_size=200,
+            )
+        conn.commit()
+        cur.execute("SELECT marketcloud_recommendations.sync_ml_full_control_360_proposals() AS synced")
+        synced = cur.fetchone()
+        conn.commit()
+        if synced:
+            log.info("%s propostas Full Control 360 sincronizadas no ledger", synced.get("synced"))
+    return len(actions)
+
+
 def main():
     started_at = datetime.now(timezone.utc)
     conn = get_conn()
@@ -237,6 +455,22 @@ def main():
                 "beats_baseline": bool(roc_auc_score(y_cls, proba) > roc_auc_score(y_cls, hour_rate)),
                 "cv": "stratified_5fold_oof",
             })
+            # Metrica HONESTA de generalizacao cross-campanha (GroupKFold por
+            # campaign_norm). Com os dummies de campanha, o CV aleatorio acima
+            # mede "prever hora de campanha CONHECIDA" (uso operacional, legitimo);
+            # este numero mede "prever campanha NOVA" (SaaS). Ambos divulgados
+            # pra auditoria — o gap entre eles e o quanto o modelo depende da
+            # identidade da campanha.
+            try:
+                groups = df["campaign_norm"].astype("category").cat.codes.values
+                ng = int(df["campaign_norm"].nunique())
+                if ng >= 3:
+                    gcv = GroupKFold(n_splits=min(5, ng))
+                    gproba = cross_val_predict(cls, X, y_cls, cv=gcv, groups=groups,
+                                               method="predict_proba", n_jobs=1)[:, 1]
+                    cls_metrics["roc_auc_cross_campaign"] = float(roc_auc_score(y_cls, gproba))
+            except Exception as exc:
+                cls_metrics["roc_auc_cross_campaign_error"] = str(exc)[:120]
             cls.fit(X, y_cls)
             proba_full = cls.predict_proba(X)[:, 1]
             imp = sorted(zip(feat_cols, cls.feature_importances_), key=lambda t: -t[1])[:8]
@@ -271,6 +505,16 @@ def main():
                 "target_mean": float(np.mean(y_roas)),
                 "cv": "kfold_5_oof",
             })
+            # MAE honesto cross-campanha (GroupKFold) — ver nota no classificador.
+            try:
+                groups = df["campaign_norm"].astype("category").cat.codes.values
+                ng = int(df["campaign_norm"].nunique())
+                if ng >= 3:
+                    gcv = GroupKFold(n_splits=min(5, ng))
+                    goof = np.clip(cross_val_predict(reg, X, y_roas, cv=gcv, groups=groups, n_jobs=1), 0, ROAS_CAP)
+                    reg_metrics["mae_cross_campaign"] = float(mean_absolute_error(y_roas, goof))
+            except Exception as exc:
+                reg_metrics["mae_cross_campaign_error"] = str(exc)[:120]
             reg.fit(X, y_roas)
             roas_full = np.clip(reg.predict(X), 0, ROAS_CAP)
             imp = sorted(zip(feat_cols, reg.feature_importances_), key=lambda t: -t[1])[:8]
@@ -304,12 +548,15 @@ def main():
             )
             conn.commit()
         log.info(f"{len(rows)} predicoes gravadas em hourly_ml_predictions_v2")
+        actions_written = write_full_control_360_actions(conn, df, proba_full, roas_full)
+        log.info(f"{actions_written} recomendacoes Full Control 360 gravadas")
         run_status = "COMPLETED"
         if cls_metrics.get("positives", 0) < 10 or reg_metrics.get("n", 0) == 0:
             run_status = "PARTIAL"
         record_run_status(conn, started_at, run_status, n, pos, len(rows), {
             "conversion": cls_metrics,
             "expected_roas": reg_metrics,
+            "full_control_360_actions_written": actions_written,
         })
     except Exception:
         log.exception("erro no ML hourly-real v2")

@@ -92,6 +92,21 @@ function auditModelText(result) {
   return 'sem conclusao'
 }
 
+function decisionClass(decision) {
+  if (decision === 'APLICAR' || decision === 'APLICAR_SEGURANCA') return 'ok'
+  if (decision === 'TESTAR_CONTROLADO' || decision === 'AGUARDAR_DADOS') return 'warn'
+  return 'bad'
+}
+
+function decisionText(decision) {
+  if (decision === 'APLICAR') return 'Aplicar'
+  if (decision === 'APLICAR_SEGURANCA') return 'Aplicar seguranca'
+  if (decision === 'TESTAR_CONTROLADO') return 'Teste controlado'
+  if (decision === 'AGUARDAR_DADOS') return 'Aguardar dados'
+  if (decision === 'BLOQUEAR') return 'Bloquear'
+  return decision || '-'
+}
+
 function windowCell(row, suffix) {
   const label = row[`outcome_label_${suffix}`]
   const before = row[`baseline_roas_${suffix}`]
@@ -112,7 +127,7 @@ function latestRun(runs, kind) {
 
 export default function StatusAmsMl({ ctx }) {
   const { tenantID } = ctx
-  const [data, setData] = useState({ totals: {}, models: [], ml_runs: [], ams_hours: [], learning_outcomes: [], audit_360: [], audit_360_summary: {} })
+  const [data, setData] = useState({ totals: {}, models: [], ml_runs: [], ams_hours: [], learning_outcomes: [], audit_360: [], audit_360_summary: {}, full_control_360_summary: {}, full_control_360: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [updatedAt, setUpdatedAt] = useState(null)
@@ -121,7 +136,7 @@ export default function StatusAmsMl({ ctx }) {
     setError('')
     const res = await api.goldMlAmsStatus(tenantID)
     if (res.ok) {
-      setData(res.data || { totals: {}, models: [], ml_runs: [], ams_hours: [], learning_outcomes: [], audit_360: [], audit_360_summary: {} })
+      setData(res.data || { totals: {}, models: [], ml_runs: [], ams_hours: [], learning_outcomes: [], audit_360: [], audit_360_summary: {}, full_control_360_summary: {}, full_control_360: [] })
       setUpdatedAt(new Date())
     } else {
       setError(res.data?.error || `Falha ao carregar (${res.status})`)
@@ -142,6 +157,8 @@ export default function StatusAmsMl({ ctx }) {
   const learning = data.learning_outcomes || []
   const audit360 = data.audit_360 || []
   const auditSummary = data.audit_360_summary || {}
+  const fc360Summary = data.full_control_360_summary || {}
+  const fullControl360 = data.full_control_360 || []
 
   const latest = useMemo(() => ({
     campaign: latestRun(runs, 'hourly_real_v2'),
@@ -256,6 +273,67 @@ export default function StatusAmsMl({ ctx }) {
                 </tr>
               ))}
               {!audit360.length && <tr><td colSpan="10" className="empty-cell">Ainda nao ha alteracoes full-auto registradas.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="section-band">
+        <div className="section-head">
+          <div>
+            <h3>ML 360 proposto</h3>
+            <p>Budget, stop-loss e placement com classificacao operacional: aplicar, testar, aguardar ou bloquear. So vira medicao quando um executor real registrar EXECUTED.</p>
+          </div>
+          <span>{fmt(fullControl360.length)} propostas</span>
+        </div>
+        <div className="audit-score">
+          <div><span>Aplicar</span><b className="good">{fmt(fc360Summary.aplicar)}</b></div>
+          <div><span>Testar</span><b>{fmt(fc360Summary.testar)}</b></div>
+          <div><span>Aguardar</span><b>{fmt(fc360Summary.aguardar)}</b></div>
+          <div><span>Bloquear</span><b className="bad-text">{fmt(fc360Summary.bloquear)}</b></div>
+          <div><span>Executar</span><b>{fmt(fc360Summary.pending_execution)}</b></div>
+        </div>
+        <div className="table-wrap audit-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Campanha</th>
+                <th>Hora</th>
+                <th>Acao 360</th>
+                <th>Decisao</th>
+                <th>Atual</th>
+                <th>Sugerido</th>
+                <th>ROAS ML</th>
+                <th>P(conv.)</th>
+                <th>Delta esperado</th>
+                <th>Conf.</th>
+                <th>Guardrail</th>
+                <th>Execucao</th>
+                <th>Resultado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fullControl360.map(row => (
+                <tr key={row.recommendation_id}>
+                  <td><b>{row.campaign_name || '-'}</b><span className="row-sub">{row.recommendation_id}</span></td>
+                  <td className="num">{row.event_hour !== null && row.event_hour !== undefined ? `${String(row.event_hour).padStart(2, '0')}h` : '-'}</td>
+                  <td>{row.action_type}</td>
+                  <td><span className={`pill ${decisionClass(row.operator_decision)}`}>{decisionText(row.operator_decision)}</span><span className="row-sub">{row.data_sufficiency || '-'}</span></td>
+                  <td className="num">{fmt(row.current_value, 2)}</td>
+                  <td className="num">{fmt(row.recommended_value, 2)}</td>
+                  <td className="num">{fmt(row.expected_roas, 2)}</td>
+                  <td className="num">{fmt(Number(row.conversion_probability || 0) * 100, 1)}%</td>
+                  <td className="num">
+                    <b className={Number(row.expected_delta_sales || 0) >= 0 ? 'delta-pos' : 'delta-neg'}>{money(row.expected_delta_sales)}</b>
+                    <span className="row-sub">gasto {money(row.expected_delta_spend)} / ROAS {fmt(row.expected_delta_roas, 2)}</span>
+                  </td>
+                  <td><span className={`pill ${row.confidence === 'HIGH' ? 'ok' : row.confidence === 'LOW' ? 'bad' : 'warn'}`}>{row.confidence}</span></td>
+                  <td><span className={`pill ${row.guardrail_status === 'READY' ? 'ok' : 'warn'}`}>{row.guardrail_status}</span></td>
+                  <td><span className={`pill ${row.execution_status === 'EXECUTED' ? 'ok' : 'warn'}`}>{row.execution_status || 'NOT_EXECUTED'}</span><span className="row-sub">{row.execution_strategy}</span></td>
+                  <td><span className={`pill ${auditClass(row.audit_result)}`}>{auditText(row.audit_result)}</span><span className="row-sub">{row.operator_reason || row.reason || '-'}</span></td>
+                </tr>
+              ))}
+              {!fullControl360.length && <tr><td colSpan="13" className="empty-cell">Ainda nao ha recomendacoes 360 de budget/placement/stop-loss.</td></tr>}
             </tbody>
           </table>
         </div>

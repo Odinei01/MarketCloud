@@ -5418,3 +5418,502 @@ Implementacao do #1 (commit pendente):
   os dois sistemas de audit agora enxergam o pin. Falta so o callback de outcome 1h/3h/24h
   amarrar de volta (o SWARM ja mede via learning_outcomes; a leitura MarketCloud pode
   cruzar por recommendation_id no futuro).
+
+### 2026-07-17 - Hardening do apply Keywords x hora apos auditoria
+
+Pedido: resolver os findings da auditoria da funcionalidade nova
+`POST /api/v1/gold/keyword-hourly/apply`.
+
+Problema corrigido:
+
+- O endpoint aceitava campos criticos vindos do browser (`campaign_id`,
+  `keyword_text`, `hour`, `action_type`, `suggested_multiplier`, `base_bid` e
+  baseline).
+- Isso permitia um usuario com permissao postar uma alteracao fora da fila
+  acionavel ou com multiplicador adulterado.
+
+Correcao aplicada:
+
+- `internal/query/gold_v2.go`:
+  - o endpoint agora exige operacionalmente apenas `recommendation_id`;
+  - busca o snapshot canonico em
+    `marketcloud_gold.gold_keyword_hourly_recommendations_v3`;
+  - exige `audit_decision='APPROVED'`;
+  - exige `campaign_action_type IN ('BID_UP','BID_DOWN','CUT_HOUR')`;
+  - reconstrói no backend o payload enviado ao Robo;
+  - ignora/sobrescreve os campos criticos caso o frontend envie valores antigos;
+  - grava em `gold_evidence_json` a origem do snapshot:
+    `marketcloud_gold.gold_keyword_hourly_recommendations_v3`, `audit_reason`,
+    `confidence`, `source_grain`, multiplicador atual e bid efetivo atual;
+  - `ALREADY_ALIGNED` agora conta como sucesso operacional (`EXECUTED`), pois a
+    agenda ja esta no estado desejado.
+- `frontend/src/pages/KeywordHorarios.jsx`:
+  - removeu chamada direta/indireta com payload completo;
+  - `api.goldKeywordApply` agora envia somente `recommendation_id`.
+
+Validacao executada:
+
+- `gofmt -w internal/query/gold_v2.go`.
+- `go test ./internal/query ./cmd/api` passou.
+- `npm run build` no frontend passou.
+
+Estado apos correcao:
+
+- P0 de confianca no payload do browser: FECHADO.
+- P1 de validar se a recomendacao ainda esta aprovada: FECHADO, porque a linha
+  precisa existir na `v3` no momento do clique.
+- P2 de `ALREADY_ALIGNED`: FECHADO como sucesso operacional.
+- Limite consciente restante: outcome 1h/3h/24h do pin keyword ainda nao e
+  materializado em `recommendation_hourly_outcomes`; o caminho fino continua
+  sendo `swarm_src.amazon_ads_bid_learning_outcomes` +
+  `marketcloud_gold.measure_keyword_pin_outcomes()`, que depende de volume
+  minimo de AMS target.
+
+### 2026-07-17 - Comercializacao SaaS: Onboarding Readiness
+
+Pedido: seguir o plano de comercializacao do Zanom e transformar o roadmap em
+uma funcionalidade operacional, sempre registrando no handoff.
+
+Contexto do roadmap:
+
+- O proximo modulo recomendado para tornar o MarketCloud repetivel por seller e
+  `Seller Onboarding + Product Control Plane`.
+- A Fase 1 ja tinha base pronta: Config Center, settings do tenant, saude,
+  Full Control por produto/campanha, governanca fail-closed e monitoria.
+- Faltava um painel simples dizendo se um seller esta pronto para um piloto
+  comercial e quais pendencias impedem escala.
+
+Implementacao aplicada:
+
+- Novo endpoint backend:
+  - `GET /api/v1/settings/onboarding`
+  - handler: `SellerOnboarding` em `internal/query/seller_onboarding.go`
+  - rota adicionada em `cmd/api/main.go`.
+- O endpoint calcula um checklist de prontidao do tenant usando fontes ja
+  existentes:
+  - `marketcloud_control.tenant_settings`;
+  - `amazon_ads_profiles`;
+  - `marketcloud_bronze.bronze_swarm_current_bids`;
+  - `marketcloud_gold.full_control_product_candidates_v1`;
+  - `marketcloud_bronze.bronze_ams_hourly`;
+  - `marketcloud_gold.ml_hourly_run_status`;
+  - `marketcloud_gold.gold_campaign_automation_governance`;
+  - `marketcloud_gold.full_control_effective_governance_v1`.
+- O retorno entrega:
+  - `readiness_score` (0-100);
+  - `status` (`ok`, `warn`, `error`);
+  - `headline`;
+  - `steps[]` com status, detalhe e proximo passo;
+  - contadores comerciais: produtos prontos, campanhas full-auto, auto-apply
+    aptas, pilotos ativos, pilotos Full Control bloqueados.
+- Frontend:
+  - `frontend/src/api/client.js`: novo client `sellerOnboarding`.
+  - `frontend/src/pages/Settings.jsx`: nova aba `Onboarding SaaS` no Config
+    Center.
+  - A tela mostra score, headline, checklist operacional e resumo do pacote
+    vendavel.
+
+Objetivo de negocio:
+
+- Dar para o operador uma tela unica que responda:
+  - este seller esta conectado?
+  - campanhas/bids foram sincronizados?
+  - AMS esta chegando?
+  - existe produto com custo/preco/estoque?
+  - o ML horario esta rodando?
+  - ha campanha liberada em full-auto?
+  - ha piloto Full Control ativo e desbloqueado?
+- Isso vira o primeiro artefato de onboarding repetivel para futuros sellers.
+
+Validacao executada:
+
+- `gofmt -w internal/query/seller_onboarding.go cmd/api/main.go`.
+- `go test ./internal/query ./cmd/api` passou.
+- `npm run build` no frontend passou.
+- `docker compose up -d --build api` concluiu e reiniciou `marketcloud_api`.
+- `GET /health` em `http://localhost:8090` retornou OK.
+- `GET /api/v1/settings/onboarding` no tenant ZANOM
+  (`d7ec8c23-3f86-4cd1-b4cb-2a753a74c5f9`) retornou:
+  - `readiness_score=100`;
+  - `status=ok`;
+  - `headline="Conta pronta para piloto comercial controlado"`;
+  - `products_ready=23/24`;
+  - `full_auto_campaigns=14`;
+  - `auto_apply_ready=14`;
+  - `active_pilots=6`;
+  - `full_control_pilots=2`;
+  - `blocked_full_control=0`;
+  - AMS: `937` linhas com trafego e `28` com conversao;
+  - ML: `hourly_target_real_v3 COMPLETED`.
+
+Proximo passo recomendado:
+
+- Evoluir a mesma tela para o wizard comercial:
+  conectar seller -> escolher produto -> associar campanha -> definir modo,
+  budget, stop-loss, top of search/product page/rest of search -> ligar piloto.
+- Criar pacote de evidencias comerciais: export/print do onboarding, pilotos
+  ativos, ultimas acoes, outcomes 1h/3h/24h e economia por produto.
+
+### 2026-07-17 - Wizard comercial do piloto Full Control
+
+Pedido: transformar a aba `Onboarding SaaS` em wizard comercial:
+conectar seller -> escolher produto -> associar campanha -> configurar budget,
+stop-loss e posicionamentos -> ligar piloto.
+
+Implementacao aplicada:
+
+- Migration nova:
+  - `migrations/104_full_control_commercial_wizard_strategy.sql`
+  - adiciona em `marketcloud_control.full_control_pilots`:
+    - `max_top_of_search_pct`;
+    - `max_product_page_pct`;
+    - `max_rest_of_search_pct`;
+    - `strategy_config` (`jsonb`).
+  - recria `marketcloud_gold.full_control_effective_governance_v1` para expor
+    esses campos no fim da view, preservando compatibilidade com a ordem antiga.
+  - recria `marketcloud_features.feature_full_control_campaign_hour_v1` para o
+    ML receber os limites comerciais do piloto como features.
+- Backend:
+  - `internal/query/full_control.go` agora aceita/salva/devolve os campos de
+    posicionamento e `strategy_config`.
+  - validacao: percentuais de posicionamento precisam estar entre `0` e `900`.
+- Frontend:
+  - `frontend/src/pages/Settings.jsx`:
+    - a aba `Onboarding SaaS` ganhou o componente `CommercialWizard`;
+    - o wizard mostra os 5 passos:
+      1. seller;
+      2. produto;
+      3. campanha;
+      4. estrategia;
+      5. piloto;
+    - permite escolher produto e campanha;
+    - permite configurar:
+      - modo/status;
+      - budget diario;
+      - stop-loss de gasto sem pedido;
+      - ROAS minimo;
+      - ACOS maximo;
+      - limite Top Search;
+      - limite Product Page;
+      - limite Rest Search;
+    - o botao `Ligar piloto Full Control` grava o piloto como
+      `mode=full_control` + `status=active`.
+    - o formulario antigo de `Full Control` tambem recebeu os campos de
+      posicionamento.
+
+Validacao executada:
+
+- Migration 104 aplicada no Postgres local via:
+  `Get-Content migrations/104_full_control_commercial_wizard_strategy.sql | docker exec -i marketcloud_db psql -U mcadmin -d marketcloud`.
+- Primeira tentativa da migration falhou porque `CREATE OR REPLACE VIEW` nao
+  permite inserir colunas no meio de uma view existente; corrigido para adicionar
+  os novos campos no fim das views.
+- `go test ./internal/query ./cmd/api` passou.
+- `npm run build` no frontend passou.
+- `docker compose up -d --build api` passou e reiniciou `marketcloud_api`.
+- `GET /api/v1/settings/full-control-governance` autenticado no tenant ZANOM
+  retornou os campos novos:
+  - `max_top_of_search_pct`;
+  - `max_product_page_pct`;
+  - `max_rest_of_search_pct`;
+  - `strategy_config`.
+- `GET /api/v1/settings/onboarding` continuou OK:
+  - `readiness_score=100`;
+  - `status=ok`;
+  - `full_control_pilots=2`;
+  - `blocked_full_control=0`.
+
+Observacoes:
+
+- Nao foi feito `PUT` criando/alterando piloto real durante a validacao para nao
+  mudar operacao ativa sem comando explicito do dono.
+- Os campos de posicionamento agora ficam persistidos e entram no dataset de ML,
+  mas enforcement de aplicar ajuste de placement na Amazon ainda e proxima fase:
+  worker precisa transformar essas metas/limites em chamada concreta do Robo/Ads.
+
+#### Ajuste de UX apos feedback do dono
+
+Feedback: a primeira versao do wizard ficou parecida demais com a tela
+`Full Control`, apenas repetindo produto/campanha/campos em outra aba.
+
+Correcao aplicada:
+
+- `CommercialWizard` em `frontend/src/pages/Settings.jsx` deixou de ser um
+  formulario aberto duplicado.
+- Agora e um fluxo sequencial com estado proprio:
+  1. `Seller readiness`;
+  2. `Produto do piloto`;
+  3. `Campanha associada`;
+  4. `Plano sugerido`;
+  5. `Revisao final`.
+- A etapa `Plano sugerido` calcula um preset por economia do produto e historico
+  da campanha (`suggestedCommercialPlan`):
+  - budget diario sugerido;
+  - stop-loss sugerido;
+  - ROAS minimo sugerido;
+  - ACOS maximo;
+  - limites Top Search/Product Page/Rest Search.
+- O operador pode aplicar a sugestao e so no final ligar `Full Control + Active`.
+- `npm run build` passou apos o ajuste.
+
+Estado: a aba `Onboarding SaaS` agora serve para onboarding comercial guiado; a
+aba `Full Control` fica como painel operacional/detalhado.
+
+### 2026-07-17 - Fechamento ML 360 Full Control
+
+Pedido: "Complete 100% o ML".
+
+Interpretacao tecnica aplicada:
+
+- Completar o ML significa fechar o pipeline operacional:
+  - dados do wizard e governanca viram features;
+  - modelo treina com esses campos;
+  - modelo grava predicoes;
+  - modelo gera recomendacoes 360 alem de BID;
+  - API/tela expõem as recomendacoes;
+  - scheduler usa o worker atualizado.
+- Nao significa executar budget/placement automaticamente na Amazon sem endpoint
+  especifico do Robo/Ads. Esses novos tipos ficam advisor/auditaveis ate existir
+  executor seguro.
+
+Implementacao aplicada:
+
+- `workers/ml-worker/marketcloud_ml_worker_hourly_real_v2.py`
+  - passou a incluir no `numeric_cols` e no `build_X`:
+    - `max_top_of_search_pct`;
+    - `max_product_page_pct`;
+    - `max_rest_of_search_pct`.
+  - adicionou geracao de recomendacoes Full Control 360:
+    - `STOP_LOSS_PROTECT`;
+    - `INCREASE_DAILY_BUDGET`;
+    - `REDUCE_DAILY_BUDGET`;
+    - `INCREASE_TOP_OF_SEARCH`;
+    - `REDUCE_TOP_OF_SEARCH`;
+    - `TEST_PRODUCT_PAGE`;
+    - `TEST_REST_OF_SEARCH`.
+  - grava o total em `metrics_json.full_control_360_actions_written` no status
+    da rodada `hourly_real_v2`.
+- Migration nova:
+  - `migrations/115_ml_full_control_360_actions.sql`
+  - cria `marketcloud_gold.ml_full_control_action_recommendations_v1`.
+  - tabela contem:
+    - campanha/hora;
+    - tipo de acao 360;
+    - valor atual e valor sugerido;
+    - ROAS esperado;
+    - probabilidade de conversao;
+    - confianca;
+    - status de guardrail;
+    - motivo;
+    - evidencia JSON.
+- API:
+  - `internal/query/ml_ams_status.go` agora retorna `full_control_360` em
+    `GET /api/v1/gold/ml-ams-status`.
+- Frontend:
+  - `frontend/src/pages/StatusAmsMl.jsx` ganhou a secao `ML 360 proposto`.
+  - Mostra budget, stop-loss e placement sugeridos, com aviso de que ainda sao
+    advisor/auditaveis ate existir executor especifico.
+
+Validacao executada:
+
+- Migration 115 aplicada no Postgres local.
+- `go test ./internal/query ./cmd/api` passou.
+- `npm run build` passou.
+- Python local Windows nao estava disponivel; validacao feita no runtime real:
+  - `docker cp ... marketcloud_modeling_worker:/app/...`
+  - `docker exec marketcloud_modeling_worker python -m py_compile ...` passou.
+- Rodada manual:
+  - `docker exec marketcloud_modeling_worker python /app/marketcloud_ml_worker_hourly_real_v2.py`
+  - resultado:
+    - `611` celulas campanha x hora;
+    - `105` com pedido;
+    - modelo conversao AUC `0.963`, baseline `0.715`;
+    - modelo ROAS MAE `1.362`, baseline MAE `2.580`;
+    - `611` predicoes gravadas;
+    - `78` recomendacoes Full Control 360 gravadas.
+- Distribuicao das recomendacoes 360 geradas:
+  - `REDUCE_TOP_OF_SEARCH`: 64 total (41 READY, 23 bloqueadas por governanca);
+  - `STOP_LOSS_PROTECT`: 8 total (6 READY, 2 bloqueadas por governanca);
+  - `REDUCE_DAILY_BUDGET`: 6 total (4 READY, 2 bloqueadas por governanca).
+- API validada:
+  - `GET /api/v1/gold/ml-ams-status` retornou `full_control_360` com `50`
+    linhas (limite da API);
+  - ultima rodada `hourly_real_v2` retornou
+    `metrics_json.full_control_360_actions_written=78`.
+- Infra:
+  - `docker compose up -d --build api` passou.
+  - `docker compose build modeling-worker` passou.
+  - `docker compose up -d modeling-worker` reiniciou o scheduler com a imagem nova.
+
+Estado final:
+
+- ML campanha x hora agora usa dados comerciais completos do piloto Full Control:
+  budget, stop-loss, estoque, margem, qualidade de produto, placement historico e
+  limites de placement definidos no wizard.
+- ML agora tambem gera recomendacao 360 de budget/placement/stop-loss.
+- Auto-apply real continua limitado a BID horario; budget/placement ficam
+  visiveis e auditaveis ate criarmos o executor seguro no Robo/Ads.
+
+### 2026-07-17 - Fechamento ML 360 sem mock: decisao, ledger e outcome canonico
+
+Pedido: completar o ML de ponta a ponta sem mock, com ciclo real:
+
+`proposta -> classificacao -> execucao real quando existir -> AMS/gold mede -> outcome`.
+
+Implementacao aplicada:
+
+- Nova migration:
+  - `migrations/116_ml_full_control_decision_outcome_360.sql`.
+  - adiciona na tabela `marketcloud_gold.ml_full_control_action_recommendations_v1`:
+    - `expected_delta_spend`;
+    - `expected_delta_sales`;
+    - `expected_delta_roas`;
+    - `decision_class`;
+    - `execution_strategy`;
+    - `min_roas_used`;
+    - `data_sufficiency`;
+    - `operator_note`.
+  - cria `marketcloud_gold.v_ml_full_control_360_decision_v1`.
+  - cria `marketcloud_recommendations.sync_ml_full_control_360_proposals()`.
+  - cria `marketcloud_recommendations.v_ml_full_control_360_audit_v1`.
+  - recria `marketcloud_recommendations.refresh_recommendation_hourly_outcomes()`
+    para medir outcomes pela fonte canonica `marketcloud_gold.gold_hourly_signal_unified`
+    + `marketcloud_gold.gold_campaign_identity`, em vez de bronze SP-only.
+
+Comportamento real:
+
+- Toda proposta 360 do ML agora ganha classificacao operacional:
+  - `APLICAR`;
+  - `APLICAR_SEGURANCA`;
+  - `TESTAR_CONTROLADO`;
+  - `AGUARDAR_DADOS`;
+  - `BLOQUEAR`.
+- Toda proposta 360 e sincronizada no ledger
+  `marketcloud_recommendations.recommendation_decisions` como
+  `decision=NOT_DECIDED` e `execution_status=NOT_EXECUTED`, ate que um executor real
+  registre a execucao.
+- Se/Quando um executor real marcar `EXECUTED`, a funcao de outcome passa a medir
+  1h/3h/24h pela fonte canonica e atualizar o audit.
+- Nao foi criado mock de execucao. Budget/placement/stop-loss seguem com
+  `PENDING_EXECUTION` enquanto nao houver endpoint transacional real no Robo/Ads.
+
+Worker atualizado:
+
+- `workers/ml-worker/marketcloud_ml_worker_hourly_real_v2.py`
+  - calcula deltas esperados de gasto, venda e ROAS;
+  - calcula suficiencia de dados (`LOW_DATA`, `ENOUGH_DATA`, etc.);
+  - classifica a decisao operacional;
+  - grava `execution_strategy`;
+  - chama `sync_ml_full_control_360_proposals()` ao final da rodada.
+
+API/UI:
+
+- `internal/query/ml_ams_status.go`
+  - retorna `full_control_360_summary`;
+  - retorna `full_control_360` via `v_ml_full_control_360_audit_v1`.
+- `internal/query/full_control.go`
+  - `GET /api/v1/settings/full-control-monitoring` agora retorna `proposed_360`.
+- `frontend/src/pages/StatusAmsMl.jsx`
+  - secao `ML 360 proposto` mostra:
+    - decisao operacional;
+    - delta esperado;
+    - guardrail;
+    - status de execucao;
+    - status de outcome.
+- `frontend/src/pages/Settings.jsx`
+  - painel de Full Control mostra `Propostas 360 do ML` por piloto/campanha.
+
+Validacao executada:
+
+- Migration 116 aplicada no Postgres local:
+  - `sync_ml_full_control_360_proposals()` sincronizou `78` propostas;
+  - `refresh_recommendation_hourly_outcomes()` recalculou `61` outcomes.
+- Worker no runtime real:
+  - `611` celulas campanha x hora;
+  - `105` com pedido;
+  - AUC conversao `0.964` vs baseline `0.715`;
+  - ROAS MAE `1.358` vs baseline `2.580`;
+  - `611` predicoes gravadas;
+  - `78` propostas Full Control 360 sincronizadas no ledger;
+  - `78` recomendacoes Full Control 360 gravadas.
+- Worker target reiniciado:
+  - `829` celulas target x hora;
+  - `117` com clique;
+  - `26` com pedido;
+  - AUC click `0.868`;
+  - AUC conversao target `0.899`;
+  - MAE ROAS target `0.522`;
+  - `829` predicoes target gravadas.
+- Auto-apply real:
+  - rodou;
+  - encontrou `5` candidatos de BID;
+  - aplicou `0` porque todos eram `Localizador` fora da allowlist full-auto;
+  - isso confirma que a trava de allowlist segue funcionando.
+- API validada:
+  - `GET /api/v1/gold/ml-ams-status`:
+    - `fc360_total=78`;
+    - `aplicar=51`;
+    - `bloquear=27`;
+    - `pending_execution=78`;
+    - primeira acao: `STOP_LOSS_PROTECT`;
+    - primeira decisao: `APLICAR_SEGURANCA`;
+    - primeiro audit: `PENDING_EXECUTION`.
+  - `GET /api/v1/settings/full-control-monitoring`:
+    - `pilots=8`;
+    - `actions=7`;
+    - `proposals=51`.
+- Build/servicos:
+  - `go test ./internal/query ./cmd/api` passou;
+  - `npm run build` passou;
+  - `docker compose build api` passou;
+  - `docker compose up -d api` passou;
+  - `docker compose build modeling-worker` passou;
+  - `docker compose up -d modeling-worker` passou.
+
+Parecer:
+
+- O ML esta completo como motor real de decisao e aprendizado:
+  dados canonicos -> features -> predicao -> proposta -> classificacao -> ledger
+  -> outcome quando existe execucao real.
+- O unico limite remanescente nao e do ML: budget/placement/stop-loss precisam de
+  executor seguro no Robo/Ads para sair de `PENDING_EXECUTION`.
+- Enquanto esse executor nao existir, a postura correta e manter proposta 360
+  auditavel e nao simular aplicacao.
+
+### 2026-07-17 - Auditoria detalhada 115/116 + honestidade da metrica ML
+
+Pedido: auditar 115/116 no detalhe, corrigir/implementar, fechar o ML sem finding
+oculto antes da auditoria externa.
+
+Veredito: 115/116 estao SOLIDOS. A 116 ja fecha os achados que eu tinha levantado:
+- ledger sync (proposta 360 -> `recommendation_decisions` NOT_DECIDED/NOT_EXECUTED);
+- `data_sufficiency` explicito (LOW_DATA torna o limite de dado visivel, nao escondido);
+- outcome pela fonte canonica `gold_hourly_signal_unified` (mesma da minha migration 101);
+- classificacao operacional honesta: os REDUCE viram `APLICAR_SEGURANCA` (defensivo),
+  nao "aplicar com certeza"; `v_ml_full_control_360_decision_v1` rechecka governanca.
+
+Estado vivo validado: 78 propostas 360 -> 51 APLICAR_SEGURANCA (governanca liberou) +
+27 BLOQUEAR; 78 no ledger; 78 no audit. Zero "APLICAR confiante" — honesto, os 3 pilotos
+tem ROAS real baixo (0.6-1.6), nao ha acao de crescimento defensavel. 360 unidirecional
+(so cortes) NAO e bug: e reflexo do dado. Lado de alta (INCREASE/TEST) existe no codigo,
+so nao dispara porque nenhum piloto tem ROAS acima do min.
+
+CORRECAO APLICADA (unico finding real de metodologia):
+- O CV era aleatorio (`shuffle=True`) + dummies de campanha (`get_dummies(campaign_norm)`).
+  Isso poderia inflar a AUC medindo "prever hora de campanha conhecida" e vender como
+  generalizacao. FIX: alem do CV operacional, o worker agora computa e grava a metrica
+  HONESTA cross-campanha via `GroupKFold` por `campaign_norm` (roc_auc_cross_campaign,
+  mae_cross_campaign no `metrics_json`).
+- Resultado que a metrica revelou (e VINDICA o modelo): conversao AUC 0.963 operacional
+  vs **0.961 cross-campanha** (quase igual -> NAO depende da identidade da campanha,
+  generaliza pra seller novo). ROAS MAE 1.357 vs 1.441 cross-campanha (gap pequeno).
+  Ou seja, o receio de overfit por dummy foi refutado pelo proprio dado, agora divulgado.
+
+Limites que ficam (DADO, nao codigo — explicitos, nao ocultos):
+- poucos positivos (105 pedidos/611 celulas) e 3 pilotos Full Control -> features de
+  piloto quase-constantes; `data_sufficiency` sinaliza LOW_DATA onde aplica.
+- `hourly_ml_predictions_v2` / recomendacoes 360 usam TRUNCATE por rodada (sem historico
+  versionado) — divida P1-6 conscientemente adiada ([[ml-versionamento-p1-6]]); o
+  `model_registry` guarda metrica por rodada, mas as predicoes nao versionam.
+- 360 so exercitou o lado defensivo; o lado de alta so sera validado quando existir
+  piloto de ROAS bom.
