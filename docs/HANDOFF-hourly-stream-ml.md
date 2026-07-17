@@ -5305,3 +5305,116 @@ O que a auditoria mandou corrigir (feito):
 
 Commits: mercado-data-app `fa49232` (pilha + fix DSN + compose), marketcloud `b2323a1`
 (106 + ml-worker + handoff SaaS + nota de superacao). Ver [[keyword-pin-and-ml-learning-loop]].
+
+### 2026-07-17 - Auditoria tecnica da solucao Keywords x hora / ML / apply
+
+Pedido: auditar o que foi feito como solucao, nao o arquivo em si.
+
+Escopo auditado:
+
+- chain SQL de recomendacoes keyword x hora;
+- endpoint `GET /api/v1/gold/keyword-hourly-real`;
+- tela `frontend/src/pages/KeywordHorarios.jsx`;
+- worker `marketcloud_ml_auto_apply_campaign_recommendations.py`;
+- views de Full Control usadas como guardrail;
+- validacao viva no Postgres.
+
+Validacoes executadas:
+
+- `go test ./internal/query ./cmd/api` passou.
+- `npm run build` no frontend passou.
+- `EXPLAIN ANALYZE SELECT count(*) FROM marketcloud_gold.gold_keyword_hourly_recommendations_v3`
+  executou em aproximadamente `359 ms`.
+- Banco confirmou a cadeia atual:
+  - `gold_keyword_hourly_recommendations_candidates_v1`: `72` candidatos, `16` held/veto/sem dado;
+  - `gold_keyword_hourly_recommendation_audit_v1`: `72` auditados;
+  - `gold_keyword_hourly_recommendations_v3`: `37` acionaveis, `0` held/veto/sem dado;
+  - duplicatas acionaveis: `0`.
+
+Parecer tecnico:
+
+- A solucao esta aprovada para exibicao e aplicacao manual assistida.
+- A migration `114_keyword_recommendation_chain_reconciled.sql` corrigiu a arquitetura:
+  `candidates_v1 -> audit_v1 -> v3`.
+- A `v3` agora e fila acionavel de verdade: somente `APPROVED`, acao real
+  (`BID_UP`, `BID_DOWN`, `CUT_HOUR`) e sem duplicata.
+- VETOS, SEM_DADO e REVIEW ficam preservados em `audit_v1`/`candidates_v1`,
+  mas nao entram na tela/endpoint acionavel.
+
+Achados de risco:
+
+1. P1 - Aplicar pela tela nao registra decisao no MarketCloud.
+   - `KeywordHorarios.jsx` chama direto o Robo em
+     `/api/amazon/ads/bid-robot/schedules/apply-suggestion-entity`.
+   - Depois faz `refreshSwarmState`, mas nao grava explicitamente no
+     `marketcloud_recommendations.recommendation_decisions`.
+   - Risco: a alteracao pode acontecer, mas o loop `proposta -> aplicada ->
+     medida -> outcome` fica dependente do audit do Robo/SWARM e nao da decisao
+     local do MarketCloud.
+   - Correcao recomendada: criar endpoint MarketCloud de apply/decision para
+     keyword-hour, que chama o Robo e registra a decisao/aplicacao localmente,
+     ou garantir callback/audit do Robo para alimentar `recommendation_decisions`.
+
+2. P1 - Auto-apply ainda nao consome a cadeia auditada de keyword.
+   - O worker automatico continua carregando candidatos de
+     `marketcloud_gold.gold_hourly_recommendations_v1` no grao campanha/hora.
+   - A nova cadeia `candidates -> audit -> v3` protege a tela Keywords x hora,
+     mas nao e o motor principal do auto-apply.
+   - Leitura correta: keyword V3 ainda e principalmente explicacao/gate/manual,
+     nao Full Auto keyword.
+
+3. P1 - `BID_UP` aprovado ainda pode vir sem ML target especifico.
+   - Estado vivo auditado:
+     - `BID_UP`: `7`;
+     - todos `CAMPAIGN_HOUR_INHERITED`;
+     - todos sem `target_ml_click_probability`.
+   - Isso e aceitavel como recomendacao herdada de campanha/hora, mas nao deve
+     ser vendido como certeza no grao keyword.
+   - Se a exigencia for rigor maximo, `BID_UP` herdado sem ML target deve virar
+     `REVIEW` ou teste pequeno/holdout.
+
+4. P2 - Performance atual da view esta aceitavel.
+   - A view acionavel nao apresenta o gargalo antigo de dezenas de segundos.
+   - Ainda assim, se a tela crescer para milhares de entidades, materializar
+     `audit_v1/v3` pode ser necessario.
+
+Conclusao:
+
+- A solucao fecha bem o problema visual/operacional imediato: recomendacoes
+  ruins, vetadas, sem dado e duplicadas nao aparecem mais como acionaveis.
+- A solucao ainda nao fecha o ciclo 360 perfeito no nivel keyword/target.
+- Proximo passo tecnico recomendado: transformar o clique de aplicar da tela em
+  um fluxo transacional MarketCloud -> Robo -> MarketCloud audit, registrando:
+  proposta, usuario/origem, horario aplicado, multiplicador antigo/novo,
+  resposta do Robo, refresh SWARM e outcome 1h/3h/24h.
+
+### 2026-07-17 - Resposta aos findings + implementacao do P1
+
+Parecer sobre os 4 findings acima:
+
+- #1 (apply nao grava decisao no MarketCloud): VERDADEIRO, mas o loop NAO estava
+  quebrado — o pin ja gravava baseline no SWARM (`amazon_ads_bid_learning_outcomes`,
+  `recordKeywordPinLearningBaseline`), medido e realimentado no ML via
+  `gold_bid_change_learning` (fan-out/mislabel ja corrigidos). O que faltava era so
+  UNIFICAR o registro no MarketCloud. **IMPLEMENTADO** (abaixo).
+- #2 (auto-apply nao consome o chain keyword): correto e POR DESIGN. Keyword = advisor/
+  manual; campanha = auto. O auto-apply (grao campanha) ja esta protegido pela
+  suavizacao por evidencia no worker. Nao e bug.
+- #3 (BID_UP aprovado sem ML target): OPCAO DE POLITICA, nao bug. Heranca de
+  campanha/hora e sinal legitimo; mandar todos p/ REVIEW zeraria a fila BID_UP (7->0).
+  Mantido APPROVED (decisao do dono). No maximo um badge "sem ML target" na UI.
+- #4 (performance): ok (359ms). Sem acao; materializar so se crescer p/ milhares.
+
+Implementacao do #1 (commit pendente):
+
+- Endpoint MarketCloud `POST /api/v1/gold/keyword-hourly/apply` (`GoldKeywordApply`
+  em `internal/query/gold_v2.go`, rota com `managerUp`): chama o Robo
+  (`/api/amazon/ads/bid-robot/schedules/apply-suggestion-entity` via `BID_ROBOT_API_BASE`)
+  E grava a decisao em `marketcloud_recommendations.recommendation_decisions`
+  (entity_type `KEYWORD_HOUR`, decided_by = usuario, mult antigo/novo, evidencia +
+  status do Robo, execution_status=EXECUTED so se o Robo aplicou).
+- `KeywordHorarios.jsx` deixa de chamar o Robo direto; passa por `api.goldKeywordApply`.
+- Efeito: proposta -> aplicada -> decisao gravada no MarketCloud E baseline no SWARM;
+  os dois sistemas de audit agora enxergam o pin. Falta so o callback de outcome 1h/3h/24h
+  amarrar de volta (o SWARM ja mede via learning_outcomes; a leitura MarketCloud pode
+  cruzar por recommendation_id no futuro).

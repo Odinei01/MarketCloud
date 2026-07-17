@@ -1,10 +1,14 @@
 package query
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -340,6 +344,127 @@ func (h *Handler) GoldKeywordHourlyReal(w http.ResponseWriter, r *http.Request) 
 // POST /api/v1/gold/review-queue/{id}/decision
 // Registra a decisÃ£o humana. NÃƒO executa nada na Amazon.
 // Body: { decision, decided_action?, decision_notes?, execution_status? }
+// POST /api/v1/gold/keyword-hourly/apply
+// Aplica um pin de keyword-hora via Robo/SWARM E registra a decisao localmente
+// em recommendation_decisions. Antes a tela chamava o Robo direto e o loop
+// proposta->aplicada->medida->outcome so existia no SWARM; agora o MarketCloud
+// tem o registro da decisao (achado P1 da auditoria 17/07).
+func (h *Handler) GoldKeywordApply(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromCtx(r.Context()).String()
+	userID := middleware.UserIDFromCtx(r.Context()).String()
+
+	var body struct {
+		RecommendationID      string  `json:"recommendation_id"`
+		CampaignID            string  `json:"campaign_id"`
+		CampaignName          string  `json:"campaign_name"`
+		AdGroupID             string  `json:"ad_group_id"`
+		KeywordText           string  `json:"keyword_text"`
+		MatchType             string  `json:"match_type"`
+		Hour                  int     `json:"hour"`
+		ActionType            string  `json:"action_type"`
+		SuggestedMultiplier   float64 `json:"suggested_multiplier"`
+		BaseBid               float64 `json:"base_bid"`
+		SuggestedEffectiveBid float64 `json:"suggested_effective_bid"`
+		BaselineImpressions   float64 `json:"baseline_impressions"`
+		BaselineClicks        float64 `json:"baseline_clicks"`
+		BaselineSpend         float64 `json:"baseline_spend"`
+		BaselineOrders        float64 `json:"baseline_orders"`
+		BaselineSales         float64 `json:"baseline_sales"`
+		BaselineRoas          float64 `json:"baseline_roas"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	if body.RecommendationID == "" || body.CampaignID == "" || body.KeywordText == "" {
+		writeError(w, http.StatusBadRequest, "recommendation_id_campaign_keyword_required")
+		return
+	}
+
+	// 1) Chama o Robo (SWARM) — mesma acao que a tela fazia direto.
+	roboBase := strings.TrimRight(os.Getenv("BID_ROBOT_API_BASE"), "/")
+	if roboBase == "" {
+		roboBase = "http://host.docker.internal:8080"
+	}
+	roboPayload, _ := json.Marshal(map[string]interface{}{
+		"campaign_id": body.CampaignID, "ad_group_id": body.AdGroupID,
+		"keyword_text": body.KeywordText, "match_type": body.MatchType,
+		"campaign_name": body.CampaignName, "hour": body.Hour,
+		"suggested_multiplier": body.SuggestedMultiplier, "recommendation_id": body.RecommendationID,
+		"base_bid": body.BaseBid, "suggested_effective_bid": body.SuggestedEffectiveBid,
+		"baseline_impressions": body.BaselineImpressions, "baseline_clicks": body.BaselineClicks,
+		"baseline_spend": body.BaselineSpend, "baseline_orders": body.BaselineOrders,
+		"baseline_sales": body.BaselineSales, "baseline_roas": body.BaselineRoas,
+	})
+	roboStatus := "ROBOT_UNREACHABLE"
+	roboBody := map[string]interface{}{}
+	applied := false
+	client := &http.Client{Timeout: 60 * time.Second}
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, roboBase+"/api/amazon/ads/bid-robot/schedules/apply-suggestion-entity", bytes.NewReader(roboPayload))
+	req.Header.Set("Content-Type", "application/json")
+	if resp, err := client.Do(req); err == nil {
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		_ = json.Unmarshal(raw, &roboBody)
+		if s, ok := roboBody["status"].(string); ok {
+			roboStatus = strings.ToUpper(s)
+		}
+		applied = resp.StatusCode < 300 && (roboStatus == "APPLIED" || roboStatus == "OK" || roboStatus == "PUBLISHED")
+	}
+
+	// 2) Registra a decisao no MarketCloud, independente do resultado do Robo.
+	//    execution_status reflete se aplicou de fato.
+	execStatus := "SKIPPED"
+	if applied {
+		execStatus = "EXECUTED"
+	}
+	action := body.ActionType
+	if action == "" {
+		action = "KEYWORD_HOUR_PIN"
+	}
+	entityKey := body.KeywordText + ":" + strconv.Itoa(body.Hour)
+	evidence, _ := json.Marshal(map[string]interface{}{
+		"source": "keyword_hourly_apply_screen", "robot_status": roboStatus,
+		"base_bid": body.BaseBid, "suggested_effective_bid": body.SuggestedEffectiveBid,
+		"baseline": map[string]float64{"impressions": body.BaselineImpressions, "clicks": body.BaselineClicks,
+			"spend": body.BaselineSpend, "orders": body.BaselineOrders, "sales": body.BaselineSales, "roas": body.BaselineRoas},
+	})
+	_, err := h.db.Exec(r.Context(), `
+		INSERT INTO marketcloud_recommendations.recommendation_decisions (
+			recommendation_id, tenant_id, amc_instance_id, ads_profile_id,
+			entity_type, entity_key, campaign_id, campaign_name, ad_product_type,
+			event_hour, recommended_action, recommended_bid_multiplier,
+			decision, decided_action, decided_bid_multiplier, decided_by,
+			decision_notes, gold_evidence_json, decided_at, execution_status, executed_at, updated_at)
+		SELECT
+			$1, $2,
+			COALESCE((SELECT amc_instance_id FROM marketcloud_control.amc_instances WHERE tenant_id=$2 LIMIT 1), 'amcoo5vzswt'),
+			COALESCE((SELECT ads_profile_id FROM marketcloud_control.amc_instances WHERE tenant_id=$2 LIMIT 1), '3084626225435227'),
+			'KEYWORD_HOUR', $3, NULLIF($4,''), $5, 'SPONSORED_PRODUCTS',
+			$6, $7, $8,
+			'APPROVED', $7, $8, $9,
+			$10, $11::jsonb, NOW(), $12, CASE WHEN $12='EXECUTED' THEN NOW() ELSE NULL END, NOW()
+		ON CONFLICT (recommendation_id) DO UPDATE SET
+			decision='APPROVED', decided_action=EXCLUDED.decided_action,
+			decided_bid_multiplier=EXCLUDED.decided_bid_multiplier, decided_by=EXCLUDED.decided_by,
+			decision_notes=EXCLUDED.decision_notes, gold_evidence_json=EXCLUDED.gold_evidence_json,
+			decided_at=NOW(), execution_status=EXCLUDED.execution_status, executed_at=EXCLUDED.executed_at, updated_at=NOW()
+	`, body.RecommendationID, tenantID, entityKey, body.CampaignID, body.CampaignName,
+		body.Hour, action, body.SuggestedMultiplier, userID, "Aplicado pela tela Keywords x hora.", string(evidence), execStatus)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "decision_record_failed: "+err.Error())
+		return
+	}
+	if h.audit != nil {
+		h.audit.LogRequest(r.Context(), r, "GOLD_KEYWORD_APPLY", "keyword_hour", body.RecommendationID, nil,
+			map[string]string{"robot_status": roboStatus, "execution_status": execStatus})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": roboStatus, "applied": applied, "execution_status": execStatus,
+		"recommendation_id": body.RecommendationID, "robot": roboBody,
+	})
+}
+
 func (h *Handler) GoldDecide(w http.ResponseWriter, r *http.Request) {
 	tenantID := middleware.TenantIDFromCtx(r.Context()).String()
 	userID := middleware.UserIDFromCtx(r.Context()).String()

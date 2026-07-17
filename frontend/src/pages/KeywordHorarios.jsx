@@ -105,25 +105,25 @@ export default function KeywordHorarios({ ctx }) {
     PUBLISH_FAILED: '⚠️ Falhou ao publicar a agenda',
   })[st] || `⚠️ ${st}`
 
+  // Passa pelo MarketCloud (nao chama o Robo direto): o endpoint chama o Robo E
+  // grava a decisao em recommendation_decisions, fechando o loop no MarketCloud
+  // e nao so no SWARM (achado P1 da auditoria 17/07).
   const applyOne = async (item) => {
-    const res = await fetch(`${BID_ROBOT_API_BASE}/api/amazon/ads/bid-robot/schedules/apply-suggestion-entity`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        campaign_id: item.campaign_id, ad_group_id: item.ad_group_id,
-        keyword_text: item.keyword_text, match_type: item.match_type,
-        campaign_name: item.campaign_name,
-        hour: Number(item.event_hour),
-        suggested_multiplier: Number(item.suggested_hour_multiplier),
-        recommendation_id: item.keyword_hour_recommendation_id,
-        base_bid: item.base_bid, suggested_effective_bid: item.suggested_effective_bid,
-        baseline_impressions: item.impressions, baseline_clicks: item.clicks,
-        baseline_spend: item.spend, baseline_orders: item.orders,
-        baseline_sales: item.sales, baseline_roas: item.roas,
-      }),
+    const res = await api.goldKeywordApply(tenantID, {
+      campaign_id: item.campaign_id, ad_group_id: item.ad_group_id,
+      keyword_text: item.keyword_text, match_type: item.match_type,
+      campaign_name: item.campaign_name,
+      hour: Number(item.event_hour),
+      action_type: item.campaign_action_type,
+      suggested_multiplier: Number(item.suggested_hour_multiplier),
+      recommendation_id: item.keyword_hour_recommendation_id,
+      base_bid: item.base_bid, suggested_effective_bid: item.suggested_effective_bid,
+      baseline_impressions: item.impressions, baseline_clicks: item.clicks,
+      baseline_spend: item.spend, baseline_orders: item.orders,
+      baseline_sales: item.sales, baseline_roas: item.roas,
     })
-    const data = await res.json().catch(() => ({}))
-    return data.status || `HTTP ${res.status}`
+    if (!res.ok) return res.data?.error || `HTTP ${res.status}`
+    return res.data?.status || `HTTP ${res.status}`
   }
 
   const applySelected = async () => {
