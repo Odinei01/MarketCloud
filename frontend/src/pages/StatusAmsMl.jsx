@@ -181,6 +181,7 @@ export default function StatusAmsMl({ ctx }) {
   const fc360Summary = data.full_control_360_summary || {}
   const fullControl360 = data.full_control_360 || []
   const learningSummary = data.learning_summary || {}
+  const holdout = data.holdout || {}
 
   const latest = useMemo(() => ({
     campaign: latestRun(runs, 'hourly_real_v2'),
@@ -425,6 +426,42 @@ export default function StatusAmsMl({ ctx }) {
       <section className="section-band">
         <div className="section-head">
           <div>
+            <h3>Holdout — robo x deixar quieto</h3>
+            <p>Controle = horas que o robo NAO toca (mesmo mercado, sem robo). Tratamento = horas geridas. Compara o ROAS dos dois pra separar o efeito do robo do efeito do mercado.</p>
+          </div>
+          <span>{fmt(holdout.control_cells)} controle / {fmt(holdout.treatment_cells)} tratamento</span>
+        </div>
+        {holdout.treatment_roas !== undefined && (
+          <>
+            <div className="holdout-grid">
+              <div className="holdout-card ctrl">
+                <span className="ops-label">Deixar quieto (controle)</span>
+                <b>ROAS {fmt(holdout.control_roas, 2)}</b>
+                <small>{money(holdout.control_spend)} gasto - {money(holdout.control_sales)} venda - {fmt(holdout.control_cells)} celulas</small>
+              </div>
+              <div className="holdout-card trat">
+                <span className="ops-label">Robo (tratamento)</span>
+                <b>ROAS {fmt(holdout.treatment_roas, 2)}</b>
+                <small>{money(holdout.treatment_spend)} gasto - {money(holdout.treatment_sales)} venda - {fmt(holdout.treatment_cells)} celulas</small>
+              </div>
+              <div className={`holdout-card lift ${Number(holdout.lift_pct || 0) >= 0 ? 'pos' : 'neg'}`}>
+                <span className="ops-label">Lift do robo</span>
+                <b>{Number(holdout.lift_pct || 0) >= 0 ? '+' : ''}{fmt(holdout.lift_pct, 1)}%</b>
+                <small>ROAS tratamento vs controle</small>
+              </div>
+            </div>
+            <div className="verdict-banner warn">
+              <b>Leitura DIRECIONAL — ainda nao e prova causal</b>
+              <span>O controle vive o mesmo mercado sem o robo, entao a diferenca aponta para o robo. MAS: o robo comecou 16/07 e o dado maduro (atribuicao 7d) desse periodo ainda nao existe — hoje isso reflete muito o equilibrio ORIGINAL dos grupos, nao o efeito recente. Prova causal real (diff-in-diff antes/depois) so quando o pos-robo maturar.</span>
+            </div>
+          </>
+        )}
+        {holdout.treatment_roas === undefined && <div className="empty-cell">Sem dado de holdout ainda.</div>}
+      </section>
+
+      <section className="section-band">
+        <div className="section-head">
+          <div>
             <h3>Rodadas do ML</h3>
             <p>COMPLETED = tudo treinou. PARTIAL = rodou e escreveu predicoes, mas algum modelo ficou sem exemplos positivos suficientes.</p>
           </div>
@@ -599,6 +636,17 @@ export default function StatusAmsMl({ ctx }) {
         .status-page .verdict-banner.warn b{color:#ffb86b}
         .status-page .verdict-banner.bad{border-color:rgba(255,84,112,.35);background:rgba(255,84,112,.08)}
         .status-page .verdict-banner.bad b{color:#ff5470}
+        .status-page .holdout-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:10px}
+        .status-page .holdout-card{border:1px solid rgba(148,163,184,.18);border-radius:8px;padding:13px 14px;background:rgba(255,255,255,.035)}
+        .status-page .holdout-card b{display:block;margin-top:8px;font-size:22px;color:#fff}
+        .status-page .holdout-card small{display:block;margin-top:8px;color:var(--muted,#9aa7bd);font-size:12px;line-height:1.35}
+        .status-page .holdout-card.ctrl{border-color:rgba(148,163,184,.30)}
+        .status-page .holdout-card.trat{border-color:rgba(84,160,255,.35);background:rgba(84,160,255,.07)}
+        .status-page .holdout-card.lift.pos{border-color:rgba(38,222,129,.35);background:rgba(38,222,129,.07)}
+        .status-page .holdout-card.lift.pos b{color:#26de81}
+        .status-page .holdout-card.lift.neg{border-color:rgba(255,84,112,.35);background:rgba(255,84,112,.07)}
+        .status-page .holdout-card.lift.neg b{color:#ff5470}
+        @media(max-width:900px){.status-page .holdout-grid{grid-template-columns:1fr}}
         .status-page .window-cell{display:grid;gap:5px;min-width:118px}
         .status-page .window-cell small{color:#b7c7de;font-size:11px;white-space:nowrap}
         .status-page .model-list{display:grid;gap:8px}

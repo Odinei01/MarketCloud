@@ -254,6 +254,39 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		"sample": sample, "verdict": verdict,
 	}
 
+	// Holdout: robo (TRATAMENTO) x deixar quieto (CONTROLE) no dado maduro.
+	// Leitura DIRECIONAL (nivel de ROAS), nao diff-in-diff — ver migration 119.
+	type hoRow struct {
+		Grupo                          string
+		Celulas                        int
+		Gasto, Venda, Pedidos, Roas    float64
+	}
+	var ctrl, trat hoRow
+	if hoRows, hoErr := h.db.Query(ctx, `SELECT grupo, celulas, gasto::float8, venda::float8, pedidos::float8, roas::float8 FROM marketcloud_recommendations.v_holdout_analysis_v1`); hoErr == nil {
+		defer hoRows.Close()
+		for hoRows.Next() {
+			var g hoRow
+			if hoRows.Scan(&g.Grupo, &g.Celulas, &g.Gasto, &g.Venda, &g.Pedidos, &g.Roas) == nil {
+				if g.Grupo == "CONTROLE" {
+					ctrl = g
+				} else if g.Grupo == "TRATAMENTO" {
+					trat = g
+				}
+			}
+		}
+	}
+	liftPct := 0.0
+	if ctrl.Roas > 0 {
+		liftPct = (trat.Roas - ctrl.Roas) / ctrl.Roas * 100
+	}
+	holdoutSummary := map[string]any{
+		"control_roas": ctrl.Roas, "treatment_roas": trat.Roas, "lift_pct": liftPct,
+		"control_cells": ctrl.Celulas, "treatment_cells": trat.Celulas,
+		"control_spend": ctrl.Gasto, "treatment_spend": trat.Gasto,
+		"control_sales": ctrl.Venda, "treatment_sales": trat.Venda,
+		"reading": "DIRECIONAL",
+	}
+
 	var auditSummary map[string]any
 	err = h.db.QueryRow(ctx, `
 		SELECT jsonb_build_object(
@@ -373,6 +406,7 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		"ams_hours":                ams,
 		"learning_outcomes":        learning,
 		"learning_summary":         learningSummary,
+		"holdout":                  holdoutSummary,
 		"audit_360_summary":        auditSummary,
 		"audit_360":                audit360,
 		"full_control_360_summary": fc360Summary,
