@@ -401,3 +401,94 @@ func validFullControlMode(mode string) bool {
 func validFullControlStatus(status string) bool {
 	return status == "draft" || status == "active" || status == "paused" || status == "completed" || status == "archived"
 }
+
+// GET /api/v1/settings/full-control-keywords?campaign_id=
+// Keywords selecionadas para Full Control (escopo por keyword).
+func (h *Handler) FullControlKeywords(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromCtx(r.Context()).String()
+	campaignID := strings.TrimSpace(r.URL.Query().Get("campaign_id"))
+	if campaignID == "" {
+		writeError(w, http.StatusBadRequest, "campaign_id_required")
+		return
+	}
+	rows, err := h.db.Query(r.Context(), `
+		SELECT id, campaign_id, COALESCE(ad_group_id,'') AS ad_group_id, COALESCE(keyword_id,'') AS keyword_id,
+		       keyword_text, COALESCE(match_type,'') AS match_type, enabled, updated_at
+		FROM marketcloud_control.full_control_keywords
+		WHERE tenant_id=$1 AND campaign_id=$2
+		ORDER BY enabled DESC, keyword_text`, tenantID, campaignID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fc_keywords_failed: "+err.Error())
+		return
+	}
+	items, err := pgx.CollectRows(rows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fc_keywords_scan_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+// PUT /api/v1/settings/full-control-keyword — adiciona/atualiza uma keyword no escopo.
+func (h *Handler) SetFullControlKeyword(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromCtx(r.Context()).String()
+	userID := middleware.UserIDFromCtx(r.Context()).String()
+	var b struct {
+		CampaignID  string `json:"campaign_id"`
+		AdGroupID   string `json:"ad_group_id"`
+		KeywordID   string `json:"keyword_id"`
+		KeywordText string `json:"keyword_text"`
+		MatchType   string `json:"match_type"`
+		Enabled     *bool  `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json")
+		return
+	}
+	if strings.TrimSpace(b.CampaignID) == "" || strings.TrimSpace(b.KeywordText) == "" {
+		writeError(w, http.StatusBadRequest, "campaign_id_keyword_required")
+		return
+	}
+	enabled := true
+	if b.Enabled != nil {
+		enabled = *b.Enabled
+	}
+	_, err := h.db.Exec(r.Context(), `
+		INSERT INTO marketcloud_control.full_control_keywords
+			(tenant_id, campaign_id, ad_group_id, keyword_id, keyword_text, match_type, enabled, created_by)
+		VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,NULLIF($6,''),$7,$8)
+		ON CONFLICT (tenant_id, campaign_id, lower(trim(keyword_text)), lower(trim(COALESCE(match_type,''))))
+		DO UPDATE SET enabled=EXCLUDED.enabled, ad_group_id=EXCLUDED.ad_group_id,
+			keyword_id=EXCLUDED.keyword_id, updated_at=NOW()`,
+		tenantID, b.CampaignID, b.AdGroupID, b.KeywordID, b.KeywordText, b.MatchType, enabled, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fc_keyword_save_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "campaign_id": b.CampaignID, "keyword_text": b.KeywordText, "enabled": enabled})
+}
+
+// GET /api/v1/settings/full-control-monitor — monitor das campanhas liberadas.
+func (h *Handler) FullControlMonitor(w http.ResponseWriter, r *http.Request) {
+	tenantID := middleware.TenantIDFromCtx(r.Context()).String()
+	rows, err := h.db.Query(r.Context(), `
+		SELECT campaign_id, campaign_name, product_asin, can_control, gate_reason,
+		       spend_today::float8 AS spend_today, orders_today::float8 AS orders_today, roas_today::float8 AS roas_today,
+		       stock_available::float8 AS stock_available, max_daily_budget_brl::float8 AS max_daily_budget_brl,
+		       max_spend_without_order_brl::float8 AS max_spend_without_order_brl, min_roas::float8 AS min_roas,
+		       escopo_keyword, keywords_selecionadas, propostas_360, propostas_a_aplicar,
+		       propostas_bloqueadas, propostas_aguardando, acoes_360_executadas
+		FROM marketcloud_gold.v_full_control_monitoring_v1
+		WHERE tenant_id=$1
+		ORDER BY propostas_a_aplicar DESC, campaign_name`, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fc_monitor_failed: "+err.Error())
+		return
+	}
+	items, err := pgx.CollectRows(rows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fc_monitor_scan_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}

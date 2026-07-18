@@ -158,10 +158,14 @@ func main() {
 		r.Get("/tenant", queryH.TenantSettings)
 		r.With(managerUp).Put("/tenant", queryH.SetTenantSettings)
 		r.Get("/health", queryH.TenantHealth)
+		r.Get("/onboarding", queryH.SellerOnboarding)
 		r.Get("/full-control-products", queryH.FullControlProducts)
 		r.Get("/full-control-governance", queryH.FullControlGovernance)
 		r.Get("/full-control-monitoring", queryH.FullControlMonitoring)
 		r.With(managerUp).Put("/full-control-pilot", queryH.SetFullControlPilot)
+		r.Get("/full-control-keywords", queryH.FullControlKeywords)
+		r.With(managerUp).Put("/full-control-keyword", queryH.SetFullControlKeyword)
+		r.Get("/full-control-monitor", queryH.FullControlMonitor)
 	})
 	// --- Amazon Marketing Stream: gerÃªncia de subscriptions (Fase 2) ---
 	r.Route("/api/v1/stream/subscriptions", func(r chi.Router) {

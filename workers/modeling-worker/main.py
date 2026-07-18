@@ -69,6 +69,27 @@ def auto_apply_ml_campaign_recommendations():
             log.error("ml-auto-apply-campaign failed rc=%s in %.1fs", result.returncode, time.time() - started)
     except Exception as exc:
         log.exception("ml-auto-apply-campaign scheduler error: %s", exc)
+
+
+def apply_full_control_360():
+    # Executor Full Control 360 (budget/placement/stop-loss). Roda todo ciclo,
+    # mas so age se FULL_CONTROL_360_APPLY_ENABLED=true (default OFF) — agendar
+    # aqui e seguro: dorme ate o dono armar as travas.
+    script = os.path.join(os.path.dirname(__file__), "marketcloud_full_control_360_executor.py")
+    if not os.path.exists(script):
+        return
+    try:
+        started = time.time()
+        result = subprocess.run([sys.executable, script], check=False, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.stdout:
+            log.info("[fc360-executor]\n%s", result.stdout.strip())
+        if result.returncode != 0:
+            log.error("fc360-executor failed rc=%s in %.1fs", result.returncode, time.time() - started)
+    except Exception as exc:
+        log.exception("fc360-executor scheduler error: %s", exc)
+
+
 def hourly_real_ml_loop():
     if not HOURLY_REAL_ML_ENABLED:
         log.info("Hourly real ML scheduler disabled")
@@ -108,6 +129,7 @@ def hourly_real_ml_loop():
             except Exception as exc:
                 log.exception("%s scheduler error: %s", name, exc)
         auto_apply_ml_campaign_recommendations()
+        apply_full_control_360()
         refresh_learning_outcomes()
 
 

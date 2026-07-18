@@ -173,6 +173,9 @@ services:
       ML_FULL_AUTO_CAMPAIGN_IDS: "${ML_FULL_AUTO_CAMPAIGN_IDS:-}"
       ML_FULL_AUTO_CAMPAIGN_NAMES: "${ML_FULL_AUTO_CAMPAIGN_NAMES:-}"
       ML_FULL_AUTO_REQUIRE_ALLOWLIST: "${ML_FULL_AUTO_REQUIRE_ALLOWLIST:-true}"
+      # Full Control 360 executor (budget/placement/stop-loss). Default OFF + dry-run.
+      FULL_CONTROL_360_APPLY_ENABLED: "${FULL_CONTROL_360_APPLY_ENABLED:-false}"
+      FULL_CONTROL_360_APPLY_DRY_RUN: "${FULL_CONTROL_360_APPLY_DRY_RUN:-true}"
       BID_ROBOT_API_BASE: "${BID_ROBOT_API_BASE:-http://host.docker.internal:8080}"
     depends_on:
       postgres:

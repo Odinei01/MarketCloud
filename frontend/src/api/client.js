@@ -2,7 +2,7 @@ const BASE = '/api/v1'
 
 // Le o token guardado, descartando lixo. setItem(chave, undefined) grava a
 // STRING "undefined", que passa no || como se fosse token e faz o app mandar
-// "Bearer undefined" em toda chamada — 401 sem explicacao. Auto-cura o
+// "Bearer undefined" em toda chamada - 401 sem explicacao. Auto-cura o
 // navegador que ja tem esse lixo preso.
 function readStoredToken() {
   const raw = localStorage.getItem('mc_token')
@@ -147,10 +147,14 @@ export const api = {
   tenantSettings: (tid) => req('GET', '/settings/tenant', null, tid),
   setTenantSettings: (tid, body) => req('PUT', '/settings/tenant', body, tid),
   tenantHealth: (tid) => req('GET', '/settings/health', null, tid),
+  sellerOnboarding: (tid) => req('GET', '/settings/onboarding', null, tid),
   fullControlProducts: (tid) => req('GET', '/settings/full-control-products', null, tid),
   fullControlGovernance: (tid) => req('GET', '/settings/full-control-governance', null, tid),
   fullControlMonitoring: (tid) => req('GET', '/settings/full-control-monitoring', null, tid),
   setFullControlPilot: (tid, body) => req('PUT', '/settings/full-control-pilot', body, tid),
+  fullControlKeywords: (tid, campaignID) => req('GET', `/settings/full-control-keywords?campaign_id=${encodeURIComponent(campaignID)}`, null, tid),
+  setFullControlKeyword: (tid, body) => req('PUT', '/settings/full-control-keyword', body, tid),
+  fullControlMonitor: (tid) => req('GET', '/settings/full-control-monitor', null, tid),
   goldPartnerCampaignMonitor: (tid) => req('GET', '/gold/partner-campaign-monitor', null, tid),
   goldCampaignPlans: (tid) => req('GET', '/gold/campaign-plans', null, tid),
   goldDecide: (tid, id, body) => req('POST', `/gold/review-queue/${id}/decision`, body, tid),
