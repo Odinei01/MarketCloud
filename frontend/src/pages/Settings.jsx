@@ -34,10 +34,13 @@ export default function Settings({ ctx }) {
   const [fullControlProducts, setFullControlProducts] = useState([])
   const [fullControlGovernance, setFullControlGovernance] = useState([])
   const [fullControlMonitoring, setFullControlMonitoring] = useState({ pilots: [], actions: [] })
+  const [fcMonitor, setFcMonitor] = useState([])
   const [selectedProductASIN, setSelectedProductASIN] = useState('')
+  const [wizardCampaignID, setWizardCampaignID] = useState('')
   const [pilotDrafts, setPilotDrafts] = useState({})
   const [settings, setSettings] = useState(null)
   const [health, setHealth] = useState([])
+  const [onboarding, setOnboarding] = useState(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState('')
   const [saveNotice, setSaveNotice] = useState('')
@@ -47,19 +50,22 @@ export default function Settings({ ctx }) {
     if (!tenantID) return
     setLoading(true)
     setError('')
-    const [campaignRes, settingsRes, healthRes, fullControlRes, fullControlGovRes, fullControlMonitoringRes] = await Promise.all([
+    const [campaignRes, settingsRes, healthRes, onboardingRes, fullControlRes, fullControlGovRes, fullControlMonitoringRes] = await Promise.all([
       api.goldMlFullAutoCampaigns(tenantID),
       api.tenantSettings(tenantID),
       api.tenantHealth(tenantID),
+      api.sellerOnboarding(tenantID),
       api.fullControlProducts(tenantID),
       api.fullControlGovernance(tenantID),
       api.fullControlMonitoring(tenantID),
     ])
+    api.fullControlMonitor(tenantID).then(r => { if (r.ok) setFcMonitor(r.data.items || []) })
     if (campaignRes.ok) setCampaigns(campaignRes.data.items || [])
     else setError(campaignRes.data?.error || `HTTP ${campaignRes.status}`)
     if (settingsRes.ok) setSettings(settingsRes.data)
     else setError(settingsRes.data?.error || `HTTP ${settingsRes.status}`)
     if (healthRes.ok) setHealth(healthRes.data.items || [])
+    if (onboardingRes.ok) setOnboarding(onboardingRes.data)
     if (fullControlRes.ok) {
       const items = fullControlRes.data.items || []
       setFullControlProducts(items)
@@ -124,6 +130,20 @@ export default function Settings({ ctx }) {
     () => fullControlProducts.find(p => p.product_asin === selectedProductASIN) || null,
     [fullControlProducts, selectedProductASIN],
   )
+  const selectedProductCampaigns = selectedProduct?.campaigns || []
+  const selectedWizardCampaign = useMemo(
+    () => selectedProductCampaigns.find(c => c.campaign_id === wizardCampaignID) || selectedProductCampaigns[0] || null,
+    [selectedProductCampaigns, wizardCampaignID],
+  )
+  useEffect(() => {
+    if (!selectedProductCampaigns.length) {
+      setWizardCampaignID('')
+      return
+    }
+    if (!selectedProductCampaigns.some(c => c.campaign_id === wizardCampaignID)) {
+      setWizardCampaignID(selectedProductCampaigns[0].campaign_id)
+    }
+  }, [selectedProductCampaigns, wizardCampaignID])
   const toggleHour = (hour) => {
     const next = new Set(protectedHours)
     if (next.has(hour)) next.delete(hour)
@@ -144,6 +164,9 @@ export default function Settings({ ctx }) {
       max_spend_without_order_brl: 0,
       min_roas: Number(settings?.min_roas || 4),
       max_acos: 0,
+      max_top_of_search_pct: Number(campaign.max_top_of_search_pct || 0),
+      max_product_page_pct: Number(campaign.max_product_page_pct || 0),
+      max_rest_of_search_pct: Number(campaign.max_rest_of_search_pct || 0),
       notes: '',
     }
   }
@@ -180,6 +203,13 @@ export default function Settings({ ctx }) {
       product_title: product.product_title || product.product_asin,
       campaign_id: campaign.campaign_id,
       campaign_name: campaign.campaign_name,
+      strategy_config: {
+        source: 'commercial_wizard',
+        saved_at: new Date().toISOString(),
+        max_top_of_search_pct: Number(draft.max_top_of_search_pct || 0),
+        max_product_page_pct: Number(draft.max_product_page_pct || 0),
+        max_rest_of_search_pct: Number(draft.max_rest_of_search_pct || 0),
+      },
     })
     if (res.ok) {
       await loadAll()
@@ -189,6 +219,20 @@ export default function Settings({ ctx }) {
       setError(res.data?.error || `HTTP ${res.status}`)
     }
     setSaving('')
+  }
+
+  const activateCommercialPilot = async () => {
+    if (!selectedProduct || !selectedWizardCampaign) return
+    const key = `wizard|${draftKey(selectedProduct, selectedWizardCampaign)}`
+    const draft = {
+      ...getPilotDraft(selectedProduct, selectedWizardCampaign),
+      mode: 'full_control',
+      status: 'active',
+      notes: 'Piloto Full Control ativado pelo wizard comercial.',
+    }
+    updatePilotDraft(selectedProduct, selectedWizardCampaign, draft)
+    await persistPilot(selectedProduct, selectedWizardCampaign, draft, key)
+    setTab('full-control')
   }
 
   return (
@@ -206,6 +250,7 @@ export default function Settings({ ctx }) {
       <div className="settings-tabs">
         {[
           ['health', 'Saude'],
+          ['onboarding', 'Onboarding SaaS'],
           ['operation', 'Operacao'],
           ['campaigns', 'Campanhas'],
           ['full-control', 'Full Control'],
@@ -255,6 +300,78 @@ export default function Settings({ ctx }) {
             </div>
           </div>
         </div>
+      )}
+
+      {!loading && tab === 'onboarding' && (
+        <>
+        <div className="grid two onboarding-grid">
+          <div className="panel onboarding-main">
+            <div className="panel-head">
+              <div>
+                <h3>Prontidao comercial</h3>
+                <p className="subtle">Checklist para transformar um seller em piloto repetivel do Zanom.</p>
+              </div>
+              <span className={`pill ${statusClass(onboarding?.status)}`}>{onboarding?.status || '-'}</span>
+            </div>
+            <div className="panel-body">
+              <div className="readiness-hero">
+                <div>
+                  <span>Score de prontidao</span>
+                  <strong>{fmt(onboarding?.readiness_score)}%</strong>
+                </div>
+                <p>{onboarding?.headline || 'Carregue os dados do seller para avaliar.'}</p>
+              </div>
+              <div className="onboarding-steps">
+                {(onboarding?.steps || []).map(item => (
+                  <div className="onboarding-step" key={item.key}>
+                    <span className={`health-dot ${item.status}`} />
+                    <div>
+                      <strong>{item.title}</strong>
+                      <p>{item.detail}</p>
+                      <small>{item.next}</small>
+                    </div>
+                    <span className={`pill ${statusClass(item.status)}`}>{item.status}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <h3>Pacote vendavel</h3>
+                <p className="subtle">O que precisa estar de pe para replicar em outro seller.</p>
+              </div>
+            </div>
+            <div className="panel-body metric-stack">
+              <Metric label="Modulo atual" value={onboarding?.commercial_next_module || 'Seller Onboarding'} />
+              <Metric label="Produtos prontos" value={`${fmt(onboarding?.products_ready)}/${fmt(onboarding?.products_total)}`} />
+              <Metric label="Campanhas full-auto" value={fmt(onboarding?.full_auto_campaigns)} />
+              <Metric label="Auto-apply aptas" value={fmt(onboarding?.auto_apply_ready)} />
+              <Metric label="Pilotos ativos" value={fmt(onboarding?.active_pilots)} />
+              <Metric label="Full Control bloqueados" value={fmt(onboarding?.blocked_full_control)} />
+              <div className="notice">
+                Ordem recomendada: conectar seller, validar campanhas e AMS, escolher produto com economia pronta, ligar monitoria, depois Full Control com budget e stop-loss.
+              </div>
+            </div>
+          </div>
+        </div>
+        <CommercialWizard
+          onboarding={onboarding}
+          products={fullControlProducts}
+          selectedProduct={selectedProduct}
+          selectedProductASIN={selectedProductASIN}
+          setSelectedProductASIN={setSelectedProductASIN}
+          selectedCampaign={selectedWizardCampaign}
+          campaignID={wizardCampaignID}
+          setCampaignID={setWizardCampaignID}
+          getPilotDraft={getPilotDraft}
+          updatePilotDraft={updatePilotDraft}
+          onActivate={activateCommercialPilot}
+          saving={saving}
+        />
+        </>
       )}
 
       {!loading && tab === 'operation' && settings && (
@@ -369,6 +486,39 @@ export default function Settings({ ctx }) {
 
       {!loading && tab === 'full-control' && (
         <>
+        {fcMonitor.length > 0 && (
+          <div className="panel" style={{ marginBottom: 14 }}>
+            <div className="panel-head">
+              <div>
+                <h3>Robô cuidando destas campanhas</h3>
+                <p className="subtle">Campanhas liberadas em Full Control: governança, gasto do dia, escopo de keyword e o que o robô 360 propõe/executou. Execução real só quando as travas forem armadas.</p>
+              </div>
+              <span className="pill blue">{fcMonitor.length} liberadas</span>
+            </div>
+            <div className="panel-body">
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Campanha</th><th>Pode controlar?</th><th>Gasto hoje</th><th>ROAS hoje</th><th>Escopo</th><th>360 a aplicar</th><th>360 executadas</th></tr>
+                  </thead>
+                  <tbody>
+                    {fcMonitor.map(m => (
+                      <tr key={m.campaign_id}>
+                        <td><strong>{m.campaign_name}</strong><div className="muted">{m.product_asin}</div></td>
+                        <td><span className={`pill ${m.can_control ? 'green' : 'orange'}`}>{m.can_control ? 'liberado' : m.gate_reason}</span></td>
+                        <td>R$ {fmt(m.spend_today, 2)}<div className="muted">teto {fmt(m.max_daily_budget_brl, 0)}</div></td>
+                        <td>{fmt(m.roas_today, 2)}</td>
+                        <td><span className="pill">{m.escopo_keyword === 'ESCOPO_KEYWORD' ? `${fmt(m.keywords_selecionadas)} keywords` : 'campanha inteira'}</span></td>
+                        <td>{fmt(m.propostas_a_aplicar)}<div className="muted">{fmt(m.propostas_bloqueadas)} bloq / {fmt(m.propostas_aguardando)} aguard</div></td>
+                        <td><strong>{fmt(m.acoes_360_executadas)}</strong></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="grid two full-control-grid">
           <div className="panel">
             <div className="panel-head">
@@ -461,7 +611,7 @@ export default function Settings({ ctx }) {
                     <div className="monitor-banner">
                       <div>
                         <strong>{draft.mode === 'monitor_only' && draft.status === 'active' ? 'Campanha em monitoria' : 'Escolher esta campanha para monitoria'}</strong>
-                        <span>Salva como Monitor only + Active. O robô observa por hora, mas não executa alteração.</span>
+                        <span>Salva como Monitor only + Active. O robo observa por hora, mas nao executa alteracao.</span>
                       </div>
                       <button className="btn primary" disabled={saving === `monitor|${key}`} onClick={() => startMonitoring(selectedProduct, campaign)}>
                         {saving === `monitor|${key}` ? 'Ativando...' : 'Iniciar monitoria'}
@@ -485,6 +635,9 @@ export default function Settings({ ctx }) {
                       <label><span>Budget/dia</span><input type="number" min="0" step="1" value={draft.max_daily_budget_brl} onChange={e => updatePilotDraft(selectedProduct, campaign, { max_daily_budget_brl: Number(e.target.value) })} /></label>
                       <label><span>Gasto sem pedido</span><input type="number" min="0" step="1" value={draft.max_spend_without_order_brl} onChange={e => updatePilotDraft(selectedProduct, campaign, { max_spend_without_order_brl: Number(e.target.value) })} /></label>
                       <label><span>ROAS min.</span><input type="number" min="0" step="0.1" value={draft.min_roas} onChange={e => updatePilotDraft(selectedProduct, campaign, { min_roas: Number(e.target.value) })} /></label>
+                      <label><span>Top Search %</span><input type="number" min="0" max="900" step="5" value={draft.max_top_of_search_pct} onChange={e => updatePilotDraft(selectedProduct, campaign, { max_top_of_search_pct: Number(e.target.value) })} /></label>
+                      <label><span>Product Page %</span><input type="number" min="0" max="900" step="5" value={draft.max_product_page_pct} onChange={e => updatePilotDraft(selectedProduct, campaign, { max_product_page_pct: Number(e.target.value) })} /></label>
+                      <label><span>Rest Search %</span><input type="number" min="0" max="900" step="5" value={draft.max_rest_of_search_pct} onChange={e => updatePilotDraft(selectedProduct, campaign, { max_rest_of_search_pct: Number(e.target.value) })} /></label>
                     </div>
                     <div className="pilot-actions">
                       <span className={`pill ${economicsReady ? 'green' : 'orange'}`}>{economicsReady ? 'economia pronta' : 'faltam dados economicos'}</span>
@@ -541,6 +694,37 @@ export default function Settings({ ctx }) {
         .metric{border:1px solid var(--line);border-radius:8px;padding:14px;background:rgba(255,255,255,.035)}
         .metric span{display:block;color:var(--muted);font-size:12px;margin-bottom:5px}
         .metric strong{font-size:24px}
+        .onboarding-grid{grid-template-columns:minmax(0,1.25fr) minmax(320px,.75fr)}
+        .readiness-hero{display:flex;justify-content:space-between;gap:18px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:18px;background:rgba(255,255,255,.035);margin-bottom:14px}
+        .readiness-hero.compact{margin-bottom:12px}
+        .readiness-hero span{display:block;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px}
+        .readiness-hero strong{font-size:42px;line-height:1}
+        .readiness-hero p{color:var(--muted);line-height:1.45;margin:0;max-width:420px}
+        .onboarding-steps{display:grid;gap:10px}
+        .onboarding-step{display:grid;grid-template-columns:14px 1fr auto;align-items:start;gap:12px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:13px}
+        .onboarding-step p{color:var(--muted);font-size:12px;margin:3px 0 0}
+        .onboarding-step small{display:block;color:#b8d6ff;font-size:12px;margin-top:6px;line-height:1.35}
+        .wizard-panel{margin-top:18px}
+        .wizard-rail{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:10px;margin-bottom:16px}
+        .wizard-step-pill{border:1px solid var(--line);border-radius:8px;padding:10px;background:rgba(255,255,255,.03)}
+        button.wizard-step-pill{color:var(--text);text-align:left;cursor:pointer}
+        .wizard-step-pill strong{display:block;font-size:12px}
+        .wizard-step-pill span{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+        .wizard-step-pill.ok{border-color:rgba(44,224,139,.35);background:rgba(44,224,139,.08)}
+        .wizard-step-pill.warn{border-color:rgba(255,184,77,.35);background:rgba(255,184,77,.08)}
+        .wizard-step-pill.active{box-shadow:0 0 0 2px rgba(84,160,255,.35);border-color:rgba(84,160,255,.75)}
+        .wizard-body{display:grid;grid-template-columns:minmax(260px,.9fr) minmax(0,1.1fr);gap:14px}
+        .wizard-card{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03);padding:14px}
+        .wizard-card h4{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+        .wizard-form{display:grid;grid-template-columns:repeat(2,minmax(120px,1fr));gap:10px}
+        .wizard-form label{display:grid;gap:5px}
+        .wizard-form label span{font-size:11px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+        .wizard-summary{display:grid;gap:8px}
+        .wizard-summary div{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:7px}
+        .wizard-summary div:last-child{border-bottom:0}
+        .wizard-summary span{color:var(--muted);font-size:12px}
+        .wizard-summary strong{text-align:right}
+        .wizard-actions{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:14px}
         .settings-form{display:grid;gap:16px}
         .settings-form label{display:grid;gap:7px}
         .settings-form label span{font-weight:800}
@@ -589,7 +773,7 @@ export default function Settings({ ctx }) {
         .actions-table td{vertical-align:top}
         .actions-table small{display:block;color:var(--muted);font-size:11px;margin-top:3px}
         select{min-width:150px}
-        @media(max-width:1100px){.full-control-grid{grid-template-columns:1fr}.pilot-form{grid-template-columns:repeat(2,minmax(110px,1fr))}.monitor-banner{align-items:stretch;flex-direction:column}.mini-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.pilot-monitor-row{grid-template-columns:1fr}}
+        @media(max-width:1100px){.full-control-grid,.onboarding-grid,.wizard-body{grid-template-columns:1fr}.wizard-rail{grid-template-columns:repeat(2,minmax(120px,1fr))}.readiness-hero{align-items:flex-start;flex-direction:column}.pilot-form{grid-template-columns:repeat(2,minmax(110px,1fr))}.monitor-banner{align-items:stretch;flex-direction:column}.mini-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.pilot-monitor-row{grid-template-columns:1fr}}
       `}</style>
     </div>
   )
@@ -607,9 +791,240 @@ function defaultSettings() {
   }
 }
 
+function CommercialWizard({
+  onboarding,
+  products,
+  selectedProduct,
+  selectedProductASIN,
+  setSelectedProductASIN,
+  selectedCampaign,
+  campaignID,
+  setCampaignID,
+  getPilotDraft,
+  updatePilotDraft,
+  onActivate,
+  saving,
+}) {
+  const [step, setStep] = useState(0)
+  const campaigns = selectedProduct?.campaigns || []
+  const draft = selectedProduct && selectedCampaign ? getPilotDraft(selectedProduct, selectedCampaign) : null
+  const economicsReady = draft
+    ? Number(draft.sale_price_brl || 0) > 0 && Number(draft.unit_cost_brl || 0) > 0 && Number(draft.stock_available || 0) > 0
+    : false
+  const guardrailsReady = draft
+    ? Number(draft.max_daily_budget_brl || 0) > 0 && Number(draft.max_spend_without_order_brl || 0) > 0 && Number(draft.min_roas || 0) > 0
+    : false
+  const readyToActivate = Boolean(selectedProduct && selectedCampaign && economicsReady && guardrailsReady)
+  const key = selectedProduct && selectedCampaign ? `wizard|${selectedProduct.product_asin}|${selectedCampaign.campaign_id}` : 'wizard'
+
+  const setDraft = (patch) => {
+    if (!selectedProduct || !selectedCampaign) return
+    updatePilotDraft(selectedProduct, selectedCampaign, patch)
+  }
+  const suggested = selectedProduct ? suggestedCommercialPlan(selectedProduct, selectedCampaign, draft) : null
+  const applySuggestedPlan = () => {
+    if (!suggested) return
+    setDraft({
+      mode: 'full_control',
+      status: 'active',
+      max_daily_budget_brl: suggested.max_daily_budget_brl,
+      max_spend_without_order_brl: suggested.max_spend_without_order_brl,
+      min_roas: suggested.min_roas,
+      max_acos: suggested.max_acos,
+      max_top_of_search_pct: suggested.max_top_of_search_pct,
+      max_product_page_pct: suggested.max_product_page_pct,
+      max_rest_of_search_pct: suggested.max_rest_of_search_pct,
+    })
+    setStep(3)
+  }
+  const steps = [
+    { title: '1. Seller', status: onboarding?.status === 'ok' ? 'ok' : 'warn', detail: onboarding?.headline || 'Validar conexoes' },
+    { title: '2. Produto', status: selectedProduct ? 'ok' : 'warn', detail: selectedProduct?.product_asin || 'Escolher ASIN' },
+    { title: '3. Campanha', status: selectedCampaign ? 'ok' : 'warn', detail: selectedCampaign?.campaign_name || 'Associar campanha' },
+    { title: '4. Plano', status: guardrailsReady ? 'ok' : 'warn', detail: guardrailsReady ? 'Tetos definidos' : 'Usar preset ou ajustar' },
+    { title: '5. Ligar', status: readyToActivate ? 'ok' : 'warn', detail: 'Full Control + Active' },
+  ]
+
+  return (
+    <div className="panel wizard-panel">
+      <div className="panel-head">
+        <div>
+          <h3>Wizard comercial</h3>
+          <p className="subtle">Fluxo repetivel: conectar seller, escolher produto, associar campanha, configurar estrategia e ligar piloto.</p>
+        </div>
+        <span className={`pill ${readyToActivate ? 'green' : 'orange'}`}>{readyToActivate ? 'pronto' : 'pendente'}</span>
+      </div>
+      <div className="panel-body">
+        <div className="wizard-rail">
+          {steps.map((item, index) => (
+            <button key={item.title} className={`wizard-step-pill ${item.status} ${step === index ? 'active' : ''}`} onClick={() => setStep(index)}>
+              <strong>{item.title}</strong>
+              <span>{item.detail}</span>
+            </button>
+          ))}
+        </div>
+
+        {step === 0 && (
+          <div className="wizard-card">
+            <h4>Seller readiness</h4>
+            <div className="readiness-hero compact">
+              <div>
+                <span>Score</span>
+                <strong>{fmt(onboarding?.readiness_score)}%</strong>
+              </div>
+              <p>{onboarding?.headline || 'Validar conexoes e dados antes de vender autonomia.'}</p>
+            </div>
+            <div className="wizard-summary">
+              {(onboarding?.steps || []).slice(0, 8).map(item => (
+                <div key={item.key}><span>{item.title}</span><strong>{item.status}</strong></div>
+              ))}
+            </div>
+            <div className="wizard-actions">
+              <span className={`pill ${onboarding?.status === 'ok' ? 'green' : 'orange'}`}>{onboarding?.status || 'pendente'}</span>
+              <button className="btn primary" onClick={() => setStep(1)}>Escolher produto</button>
+            </div>
+          </div>
+        )}
+
+        {step === 1 && (
+          <div className="wizard-card">
+            <h4>Produto do piloto</h4>
+            <div className="settings-form">
+              <label>
+                <span>Produto</span>
+                <select value={selectedProductASIN} onChange={e => setSelectedProductASIN(e.target.value)}>
+                  {products.map(product => (
+                    <option key={product.product_asin} value={product.product_asin}>
+                      {product.product_asin} - {product.product_title || product.seller_sku || 'Produto'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {selectedProduct ? (
+              <div className="product-metrics">
+                <Metric label="Preco" value={`R$ ${fmt(selectedProduct.sale_price_brl, 2)}`} />
+                <Metric label="Custo" value={`R$ ${fmt(selectedProduct.unit_cost_brl, 2)}`} />
+                <Metric label="Estoque" value={fmt(selectedProduct.stock_available)} />
+                <Metric label="ROAS 30d" value={fmt(selectedProduct.roas_30d, 2)} />
+              </div>
+            ) : (
+              <div className="empty">Nenhum produto disponivel para onboarding.</div>
+            )}
+            <div className="wizard-actions">
+              <button className="btn" onClick={() => setStep(0)}>Voltar</button>
+              <button className="btn primary" disabled={!selectedProduct} onClick={() => setStep(2)}>Associar campanha</button>
+            </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="wizard-card">
+            <h4>Campanha associada</h4>
+            {campaigns.length ? (
+              <div className="settings-form">
+                <label>
+                  <span>Campanha</span>
+                  <select value={campaignID} onChange={e => setCampaignID(e.target.value)}>
+                    {campaigns.map(campaign => (
+                      <option key={campaign.campaign_id} value={campaign.campaign_id}>{campaign.campaign_name}</option>
+                    ))}
+                  </select>
+                </label>
+                <div className="wizard-summary">
+                  <div><span>Gasto 30d</span><strong>R$ {fmt(selectedCampaign?.spend_30d, 2)}</strong></div>
+                  <div><span>Pedidos 30d</span><strong>{fmt(selectedCampaign?.orders_30d)}</strong></div>
+                  <div><span>ROAS 30d</span><strong>{fmt(selectedCampaign?.roas_30d, 2)}</strong></div>
+                </div>
+              </div>
+            ) : (
+              <div className="empty">Este produto ainda nao tem campanha derivada pelo ASIN.</div>
+            )}
+            <div className="wizard-actions">
+              <button className="btn" onClick={() => setStep(1)}>Voltar</button>
+              <button className="btn primary" disabled={!selectedCampaign} onClick={() => setStep(3)}>Configurar plano</button>
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div className="wizard-card">
+            <h4>Plano sugerido</h4>
+            {draft && suggested ? (
+              <>
+                <div className="notice">
+                  Preset calculado por economia do produto e historico da campanha. Ele prepara o piloto; a execucao continua travada pelos guardrails.
+                </div>
+                <div className="wizard-summary">
+                  <div><span>Budget sugerido</span><strong>R$ {fmt(suggested.max_daily_budget_brl, 2)}</strong></div>
+                  <div><span>Stop-loss sugerido</span><strong>R$ {fmt(suggested.max_spend_without_order_brl, 2)}</strong></div>
+                  <div><span>ROAS minimo</span><strong>{fmt(suggested.min_roas, 2)}</strong></div>
+                  <div><span>Posicionamentos</span><strong>Top {fmt(suggested.max_top_of_search_pct)}% | PDP {fmt(suggested.max_product_page_pct)}% | Rest {fmt(suggested.max_rest_of_search_pct)}%</strong></div>
+                </div>
+                <div className="wizard-actions">
+                  <button className="btn" onClick={() => setStep(2)}>Voltar</button>
+                  <button className="btn" onClick={applySuggestedPlan}>Usar sugestao</button>
+                  <button className="btn primary" onClick={() => setStep(4)}>Revisar e ligar</button>
+                </div>
+              </>
+            ) : (
+              <div className="empty">Escolha produto e campanha para gerar o plano.</div>
+            )}
+          </div>
+        )}
+
+        {step === 4 && draft && selectedCampaign && (
+          <div className="wizard-card">
+            <h4>Revisao final</h4>
+            <div className="wizard-summary">
+              <div><span>Produto</span><strong>{selectedProduct.product_asin} | {selectedProduct.seller_sku || 'sem SKU'}</strong></div>
+              <div><span>Campanha</span><strong>{selectedCampaign.campaign_name}</strong></div>
+              <div><span>Orcamento / stop-loss</span><strong>R$ {fmt(draft.max_daily_budget_brl, 2)} / R$ {fmt(draft.max_spend_without_order_brl, 2)}</strong></div>
+              <div><span>ROAS / ACOS</span><strong>{fmt(draft.min_roas, 2)} / {fmt(draft.max_acos, 2)}</strong></div>
+              <div><span>Posicionamentos</span><strong>Top {fmt(draft.max_top_of_search_pct)}% | PDP {fmt(draft.max_product_page_pct)}% | Rest {fmt(draft.max_rest_of_search_pct)}%</strong></div>
+            </div>
+            <div className="wizard-actions">
+              <button className="btn" onClick={() => setStep(3)}>Voltar</button>
+              <span className={`pill ${readyToActivate ? 'green' : 'orange'}`}>{readyToActivate ? 'pode ligar' : 'faltam tetos/economia'}</span>
+              <button className="btn primary" disabled={!readyToActivate || saving === key} onClick={onActivate}>
+                {saving === key ? 'Ligando...' : 'Ligar piloto Full Control'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function suggestedCommercialPlan(product, campaign, draft) {
+  const price = Number(product?.sale_price_brl || draft?.sale_price_brl || 0)
+  const cost = Number(product?.unit_cost_brl || draft?.unit_cost_brl || 0)
+  const margin = Math.max(price - cost, 0)
+  const spend30d = Number(campaign?.spend_30d || 0)
+  const orders30d = Number(campaign?.orders_30d || 0)
+  const roas30d = Number(campaign?.roas_30d || 0)
+  const avgDailySpend = spend30d > 0 ? spend30d / 30 : 0
+  const baseBudget = Math.max(10, avgDailySpend * 1.3, margin * 2)
+  return {
+    max_daily_budget_brl: roundMoney(Math.min(Math.max(baseBudget, 10), 80)),
+    max_spend_without_order_brl: roundMoney(Math.max(5, margin || 5, avgDailySpend * 0.8)),
+    min_roas: Number((roas30d > 0 ? Math.max(3, Math.min(roas30d * 0.75, 8)) : 4).toFixed(1)),
+    max_acos: price > 0 ? Number(Math.max(0, Math.min((margin / price) * 100, 60)).toFixed(1)) : 0,
+    max_top_of_search_pct: orders30d > 0 && roas30d >= 4 ? 50 : 20,
+    max_product_page_pct: orders30d > 0 ? 25 : 10,
+    max_rest_of_search_pct: 0,
+  }
+}
+
+function roundMoney(value) {
+  return Math.round(Number(value || 0) * 100) / 100
+}
+
 function FullControlMonitoringPanel({ monitoring }) {
   const pilots = monitoring?.pilots || []
   const actions = monitoring?.actions || []
+  const proposals = monitoring?.proposed_360 || []
   const activePilots = pilots.filter(p => p.status === 'active')
   const fullControl = activePilots.filter(p => p.mode === 'full_control')
   const monitorOnly = activePilots.filter(p => p.mode === 'monitor_only')
@@ -712,6 +1127,59 @@ function FullControlMonitoringPanel({ monitoring }) {
           </div>
         ) : (
           <div className="empty">Ainda nao ha acao aplicada pelo robo para os pilotos atuais. Monitoria nao altera BID; Full Control so aplica se estiver Active e com gate liberado.</div>
+        )}
+
+        <h4 className="section-title">Propostas 360 do ML</h4>
+        {proposals.length ? (
+          <div className="table-wrap">
+            <table className="actions-table">
+              <thead>
+                <tr>
+                  <th>Campanha</th>
+                  <th>Hora</th>
+                  <th>Variavel</th>
+                  <th>Decisao</th>
+                  <th>Atual</th>
+                  <th>Sugerido</th>
+                  <th>Delta esperado</th>
+                  <th>Execucao</th>
+                </tr>
+              </thead>
+              <tbody>
+                {proposals.map(action => (
+                  <tr key={`${action.recommendation_id}-${action.action_type}`}>
+                    <td>
+                      <strong>{action.campaign_name}</strong>
+                      <small>{action.campaign_id || action.recommendation_id}</small>
+                    </td>
+                    <td>{String(action.event_hour ?? '-').padStart(2, '0')}h</td>
+                    <td>
+                      {action.action_type || '-'}
+                      <small>ROAS ML {fmt(action.expected_roas, 2)} | P(conv.) {fmt(Number(action.conversion_probability || 0) * 100, 1)}%</small>
+                    </td>
+                    <td>
+                      <span className={`pill ${action.operator_decision === 'APLICAR' || action.operator_decision === 'APLICAR_SEGURANCA' ? 'green' : action.operator_decision === 'BLOQUEAR' ? 'red' : 'orange'}`}>
+                        {action.operator_decision || action.decision_class || '-'}
+                      </span>
+                      <small>{action.data_sufficiency || '-'}</small>
+                    </td>
+                    <td>{fmt(action.current_value, 2)}</td>
+                    <td>{fmt(action.recommended_value, 2)}</td>
+                    <td>
+                      R$ {fmt(action.expected_delta_sales, 2)}
+                      <small>gasto R$ {fmt(action.expected_delta_spend, 2)} / ROAS {fmt(action.expected_delta_roas, 2)}</small>
+                    </td>
+                    <td>
+                      {action.execution_status || 'NOT_EXECUTED'}
+                      <small>{action.execution_strategy || action.audit_result || '-'}</small>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty">Ainda nao ha proposta 360 do ML para os pilotos atuais. O worker precisa rodar depois do plano salvo.</div>
         )}
       </div>
     </div>
