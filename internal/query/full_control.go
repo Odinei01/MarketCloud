@@ -411,22 +411,39 @@ func (h *Handler) FullControlKeywords(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "campaign_id_required")
 		return
 	}
-	rows, err := h.db.Query(r.Context(), `
-		SELECT id, campaign_id, COALESCE(ad_group_id,'') AS ad_group_id, COALESCE(keyword_id,'') AS keyword_id,
-		       keyword_text, COALESCE(match_type,'') AS match_type, enabled, updated_at
+	// Selecionadas (escopo full_control).
+	selRows, err := h.db.Query(r.Context(), `
+		SELECT keyword_text, COALESCE(match_type,'') AS match_type, enabled
 		FROM marketcloud_control.full_control_keywords
-		WHERE tenant_id=$1 AND campaign_id=$2
-		ORDER BY enabled DESC, keyword_text`, tenantID, campaignID)
+		WHERE tenant_id=$1 AND campaign_id=$2`, tenantID, campaignID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "fc_keywords_failed: "+err.Error())
 		return
 	}
-	items, err := pgx.CollectRows(rows, pgx.RowToMap)
+	selected, err := pgx.CollectRows(selRows, pgx.RowToMap)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "fc_keywords_scan_failed: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+	// Disponiveis: keywords ATIVAS da campanha (fonte fresca dos lances atuais).
+	availRows, err := h.db.Query(r.Context(), `
+		SELECT DISTINCT keyword_text, COALESCE(match_type,'') AS match_type,
+		       COALESCE(ad_group_id,'') AS ad_group_id, COALESCE(keyword_id,'') AS keyword_id
+		FROM marketcloud_bronze.bronze_swarm_current_bids
+		WHERE campaign_id=$1 AND upper(COALESCE(state,''))='ENABLED'
+		  AND COALESCE(keyword_text,'') <> ''
+		ORDER BY keyword_text
+		LIMIT 500`, campaignID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fc_keywords_available_failed: "+err.Error())
+		return
+	}
+	available, err := pgx.CollectRows(availRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fc_keywords_available_scan_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"selected": selected, "available": available})
 }
 
 // PUT /api/v1/settings/full-control-keyword — adiciona/atualiza uma keyword no escopo.

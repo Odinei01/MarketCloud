@@ -35,6 +35,9 @@ export default function Settings({ ctx }) {
   const [fullControlGovernance, setFullControlGovernance] = useState([])
   const [fullControlMonitoring, setFullControlMonitoring] = useState({ pilots: [], actions: [] })
   const [fcMonitor, setFcMonitor] = useState([])
+  const [fcKwCampaign, setFcKwCampaign] = useState('')
+  const [fcKw, setFcKw] = useState({ selected: [], available: [] })
+  const [fcKwBusy, setFcKwBusy] = useState('')
   const [selectedProductASIN, setSelectedProductASIN] = useState('')
   const [wizardCampaignID, setWizardCampaignID] = useState('')
   const [pilotDrafts, setPilotDrafts] = useState({})
@@ -82,6 +85,30 @@ export default function Settings({ ctx }) {
   }, [tenantID])
 
   useEffect(() => { loadAll() }, [loadAll])
+
+  const loadFcKeywords = useCallback(async (campaignID) => {
+    if (!campaignID) { setFcKw({ selected: [], available: [] }); return }
+    const r = await api.fullControlKeywords(tenantID, campaignID)
+    if (r.ok) setFcKw({ selected: r.data.selected || [], available: r.data.available || [] })
+  }, [tenantID])
+
+  useEffect(() => { loadFcKeywords(fcKwCampaign) }, [fcKwCampaign, loadFcKeywords])
+
+  const isKwSelected = (kwText, matchType) => (fcKw.selected || []).some(
+    s => (s.keyword_text || '').toLowerCase() === (kwText || '').toLowerCase()
+      && (s.match_type || '').toLowerCase() === (matchType || '').toLowerCase() && s.enabled)
+
+  const toggleFcKeyword = async (kw) => {
+    const key = `${kw.keyword_text}|${kw.match_type}`
+    setFcKwBusy(key)
+    const enabled = !isKwSelected(kw.keyword_text, kw.match_type)
+    await api.setFullControlKeyword(tenantID, {
+      campaign_id: fcKwCampaign, ad_group_id: kw.ad_group_id || '', keyword_id: kw.keyword_id || '',
+      keyword_text: kw.keyword_text, match_type: kw.match_type || '', enabled,
+    })
+    await loadFcKeywords(fcKwCampaign)
+    setFcKwBusy('')
+  }
 
   const enabledCount = campaigns.filter(c => c.automation_mode === 'full_auto' || c.full_auto_enabled).length
   const tenantMode = settings?.operational_mode || 'advisor'
@@ -519,6 +546,46 @@ export default function Settings({ ctx }) {
             </div>
           </div>
         )}
+        <div className="panel" style={{ marginBottom: 14 }}>
+          <div className="panel-head">
+            <div>
+              <h3>Keywords sob Full Control</h3>
+              <p className="subtle">Escolha quais keywords da campanha o robo gerencia. Nenhuma marcada = campanha inteira. Marcadas = so essas.</p>
+            </div>
+          </div>
+          <div className="panel-body settings-form">
+            <label>
+              <span>Campanha liberada</span>
+              <select value={fcKwCampaign} onChange={e => setFcKwCampaign(e.target.value)}>
+                <option value="">Selecione uma campanha...</option>
+                {fcMonitor.map(m => <option key={m.campaign_id} value={m.campaign_id}>{m.campaign_name}</option>)}
+              </select>
+            </label>
+            {fcKwCampaign && (
+              <>
+                <div className="notice">
+                  {(fcKw.selected || []).filter(s => s.enabled).length > 0
+                    ? `${(fcKw.selected || []).filter(s => s.enabled).length} keyword(s) sob controle — so essas sao geridas pelo robo.`
+                    : 'Nenhuma marcada — o robo gere a campanha inteira.'}
+                </div>
+                <div className="kw-list">
+                  {(fcKw.available || []).map(kw => {
+                    const key = `${kw.keyword_text}|${kw.match_type}`
+                    const on = isKwSelected(kw.keyword_text, kw.match_type)
+                    return (
+                      <label key={key} className={`kw-row ${on ? 'on' : ''}`}>
+                        <input type="checkbox" checked={on} disabled={fcKwBusy === key} onChange={() => toggleFcKeyword(kw)} />
+                        <span className="kw-txt">{kw.keyword_text}</span>
+                        <small>{kw.match_type}</small>
+                      </label>
+                    )
+                  })}
+                  {!(fcKw.available || []).length && <div className="empty">Sem keywords ativas encontradas para esta campanha.</div>}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
         <div className="grid two full-control-grid">
           <div className="panel">
             <div className="panel-head">
@@ -734,6 +801,11 @@ export default function Settings({ ctx }) {
         .hour-btn.locked{background:rgba(255,107,107,.16);border-color:rgba(255,107,107,.35);color:#ffb1bd}
         .narrow-panel{max-width:720px}
         .full-control-grid{grid-template-columns:minmax(320px,.8fr) minmax(0,1.2fr)}
+        .kw-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px;margin-top:10px;max-height:280px;overflow:auto}
+        .kw-row{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:rgba(255,255,255,.02);cursor:pointer;font-size:13px}
+        .kw-row.on{border-color:rgba(44,224,139,.4);background:rgba(44,224,139,.07)}
+        .kw-row .kw-txt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .kw-row small{color:var(--muted);font-size:11px;text-transform:uppercase}
         .product-card{border:1px solid var(--line);border-radius:8px;padding:14px;background:rgba(255,255,255,.035)}
         .product-card strong{display:block;font-size:18px}
         .product-card span{display:block;color:var(--muted);font-size:12px;margin-top:4px}
