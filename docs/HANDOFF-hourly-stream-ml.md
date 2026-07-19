@@ -7872,3 +7872,288 @@ Sincronismo diario automatico do Risk:
   - budget/stop-loss do Risk fica atualizado automaticamente uma vez por dia;
   - a tela/worker continuam podendo executar avaliacoes horarias sem travar o
     banco com ressincronismo completo a cada ciclo.
+
+Auditoria de workers em `2026-07-19 08:31 BRT`:
+
+- Containers:
+  - `pricing_api`: `Up`;
+  - `pricing_dashboard`: `Up`;
+  - `pricing_db`: `Up`.
+- Observacao de startup:
+  - apos rebuild/restart, o `pricing_api` ficou alguns minutos sem listener na
+    porta `8080`;
+  - evidência: processo vivo, mas `netstat` inicialmente sem `:8080`;
+  - depois abriu `:::8080 LISTEN`;
+  - provavel causa operacional: inicializacao/migrations/workers de startup
+    demorando antes de `StartAPI`.
+- Workers horarios:
+  - `sales_notifier`: OK, heartbeat `2026-07-19T08:28:42-03:00`,
+    status `SALE_POLL_NO_NEW_SALES`;
+  - `finance_received`: OK apos primeiro tick, heartbeat
+    `2026-07-19T08:30:10-03:00`;
+    log: `groups=82`, `transactions=1319`, ambos `COMPLETED`;
+  - `ads_risk`: OK, heartbeat `2026-07-19T08:28:20-03:00`;
+  - `ads_automator_scheduler`: OK, heartbeat `2026-07-19T08:28:15-03:00`,
+    proxima execucao `2026-07-19T09:00:05-03:00`;
+  - Telegram do scheduler: `SENT`, ultimo envio `2026-07-19 08:28:42`.
+- Workers diarios:
+  - `review_monitor`: `started=true`, ainda `UNKNOWN` porque roda as
+    `09:20 BRT`; proxima execucao `2026-07-19T09:20:00-03:00`;
+  - `review_solicitations`: `started=true`, `NOT_RUN`, proxima execucao
+    `2026-07-19T10:35:00-03:00`, limite `25`.
+- Reports Ads:
+  - `spCampaigns`: `WAITING_AMAZON`, requisitado `08:30:21 BRT`;
+  - `spSearchTerm`: `WAITING_AMAZON`, requisitado `08:30:21 BRT`;
+  - `spAdvertisedProduct`: `PROCESSED`, mas `WARNING` por lag.
+- Pipelines:
+  - OK: Orders, Sales Daily, Listings, Finance Transactions;
+  - CRITICAL: FBA Inventory (`last_synced_at=2026-07-18T01:05:42-03:00`);
+  - CRITICAL: Ads Intraday Snapshots
+    (`last_synced_at=2026-07-18T01:07:23-03:00`).
+- Veredito:
+  - workers horarios principais estao de pe;
+  - operacao geral ainda fica `CRITICAL` por frescor de FBA Inventory e Ads
+    Intraday Snapshots, nao por scheduler/Risk/finance;
+  - revisar inicializacao lenta do `pricing_api` e frescor dos dois pipelines
+    criticos.
+
+Follow-up da auditoria de workers em `2026-07-19 08:35 BRT`:
+
+- FBA Inventory:
+  - era `CRITICAL` por ultimo sync em `2026-07-18T01:05:42-03:00`;
+  - executado sync manual via `POST /api/amazon/fba-inventory/sync`;
+  - resultado: `COMPLETED`, `count=38`, sem `safe_errors`;
+  - painel passou para OK com `last_synced_at=2026-07-19T08:34:47-03:00`.
+- Ads Intraday Snapshots:
+  - segue `CRITICAL`;
+  - causa identificada:
+    - a tabela `amazon_ads_intraday_cost_snapshots` so recebe amostra quando
+      `spAdvertisedProduct` grava linhas do dia atual;
+    - o job `spAdvertisedProduct` de `2026-07-19` estava `PROCESSED`, mas
+      `amazon_ads_advertised_product_daily` nao tinha linhas de `2026-07-19`;
+    - `amazon_ads_campaigns_daily` tinha `2026-07-19` com `11` linhas, mas
+      `cost=0`, entao o alerta intraday pode ser falso positivo em manha sem
+      gasto por ASIN.
+  - executado force sync:
+    - `POST /api/amazon/ads/sponsored-products/advertised-product/sync`
+      com `date_from=2026-07-19`, `date_to=2026-07-19`, `force=true`;
+    - novo `report_id=7e69e8b0-f41d-41ae-bc7f-ea1382a11d67`;
+    - apos 20s, status ainda `WAITING_AMAZON`, attempt `1`.
+- Avaliacao tecnica:
+  - FBA nao deveria depender de sync manual; precisa entrar em cadencia
+    automatica diaria/horaria curta, ou ser chamado pelo worker de vendas;
+  - o painel de intraday nao deveria marcar `CRITICAL` quando ainda nao ha
+    gasto Ads no dia ou quando o `spAdvertisedProduct` esta esperando Amazon;
+  - melhorar regra de health para distinguir:
+    - `NO_SPEND_TODAY`;
+    - `WAITING_AMAZON`;
+    - `INGESTION_FAILED`;
+    - `STALE_REAL`.
+
+Correcao aplicada para FBA Inventory automatico:
+
+- Implementado em `mercado-data-app/internal/services/amazon_sales_notifier.go`.
+- O refresh `HOURLY_REPORT` do `amazonSalesNotifier` agora executa
+  `syncFBAInventory` no primeiro ciclo do dia operacional BRT.
+- Controle:
+  - `amazonSalesNotifierLastFBASyncDate` guarda `YYYYMMDD` em memoria;
+  - se ja sincronizou no dia, retorna
+    `SKIPPED_ALREADY_SYNCED_TODAY`;
+  - se falhar, a trava e resetada para tentar novamente no proximo ciclo.
+- Configuracao:
+  - `AMAZON_SALES_NOTIFIER_FBA_SYNC_MAX_PAGES`;
+  - default `5`, maximo `10`.
+- Validacao:
+  - `go test ./internal/services -run "Risk|FullControl|SalesNotifier" -count=1`:
+    OK.
+  - `docker compose build go-backend`: OK.
+  - `docker compose up -d go-backend`: OK.
+  - Log apos restart:
+    - `AMAZON_FBA_INVENTORY_SYNC_STARTED`;
+    - `AMAZON_SALES_NOTIFIER_REFRESH_STEP reason=HOURLY_REPORT step=FBA_INVENTORY status=COMPLETED count=38 errors=0`.
+- Resultado:
+  - FBA Inventory deixou de depender de clique/sync manual;
+  - o pipeline fica alimentado diariamente junto do refresh operacional Amazon.
+
+## 140. Checkpoint treinamento ML - 2026-07-19
+
+Consulta feita em `2026-07-19 11:44 BRT` diretamente no banco
+`marketcloud` (`marketcloud_gold.ml_hourly_run_status`,
+`marketcloud_features.model_registry` e
+`marketcloud_gold.v_ml_training_volume_reconciliation_v1`).
+
+Resultado das rodadas de hoje:
+
+- `hourly_real_v2` (`campaign_hour`):
+  - `9` rodadas hoje, todas `COMPLETED`;
+  - ultima finalizada `2026-07-19 11:39 BRT`;
+  - `611` linhas de treino, `108` linhas com pedido;
+  - `611` predicoes escritas;
+  - metricas atuais:
+    - conversao campanha: AUC `0.9598`, AUC clicked-only `0.8829`,
+      baseline `0.7184`;
+    - ROAS campanha: MAE `1.4286`, MAE clicked-only `3.0980`,
+      baseline `2.5550`.
+- `hourly_target_real_v3` (`keyword_target_hour`):
+  - `11` rodadas hoje, todas `COMPLETED`;
+  - ultima finalizada `2026-07-19 11:40 BRT`;
+  - `11.086` linhas de treino, `947` com clique e `249` com pedido;
+  - `11.086` predicoes escritas;
+  - `667` targets cobertos;
+  - click, conversao e ROAS target treinados.
+
+Metricas atuais registradas:
+
+- `HourlyTargetClickRealV3`: AUC `0.8872` vs baseline `0.6133`
+  (`947` positivos).
+- `HourlyTargetConversionRealV3`: AUC global `0.8386`,
+  AUC clicked-only `0.5053` vs baseline `0.6309` (`249` positivos).
+- `HourlyTargetExpectedRoasRealV3`: MAE global `0.4232` vs baseline
+  `0.6213`, mas MAE clicked-only `3.5914`.
+- `HourlyConversionRealV2`: AUC global `0.9598`, AUC clicked-only `0.8829`.
+- `HourlyExpectedRoasRealV2`: MAE global `1.4286`, MAE clicked-only
+  `3.0980`.
+
+Volume reconciliado disponivel para treino:
+
+- `campaign_hour_gold`: `11.029` linhas, `40` campanhas, `294` pedidos,
+  `R$ 11.676,15` vendas Ads, `R$ 3.741,97` gasto.
+- `target_hour_reconciled`: `28.559` linhas, `25` campanhas, `667` targets,
+  `1.512` cliques, `169` pedidos, `R$ 7.127,17` vendas,
+  `R$ 1.530,28` gasto.
+- `amc_daily_total_context`: `50` linhas, `314` pedidos,
+  `R$ 12.847,74` vendas.
+
+Leitura operacional:
+
+- o treino de hoje esta rodando e finalizando;
+- os classificadores de campanha e de clique target estao bons;
+- o classificador global de conversao target melhorou, mas a leitura
+  clicked-only ainda e fraca (`0.5053`), entao recomendacao target com baixo
+  sinal proprio deve continuar sendo tratada como teste controlado/holdout;
+- o ROAS target global bate baseline, mas o erro clicked-only segue alto, logo
+  nao deve ser usado sozinho para liberar aumento agressivo;
+- logs do worker mostram apenas `PerformanceWarning` do pandas por dataframe
+  fragmentado; nao houve traceback/erro fatal no recorte analisado.
+
+## 141. Correcao tela Keywords x hora travada - 2026-07-19
+
+Sintoma:
+
+- Tela `Keywords x hora` ficava em `Carregando...` e mostrava `0` itens.
+- Log do frontend/Vite registrava `socket hang up` em:
+  - `/api/v1/gold/keyword-hourly-real?source=CAMPAIGN_HOUR_INHERITED&limit=500`
+- Log antigo da API mostrou a mesma rota respondendo apenas depois de
+  `36.86s`, tempo suficiente para parecer travada no navegador.
+
+Causa:
+
+- A rota `GoldKeywordHourlyReal` fazia `LEFT JOIN` com
+  `marketcloud_gold.v_keyword_hourly_recommendation_explain_v1` para carregar
+  `explanation_json` de todas as linhas da lista.
+- A lista principal sem essa explicacao e rapida (`~0.3s` no banco).
+- A view de explicacao e pesada: `EXPLAIN ANALYZE` para o caminho de detalhe
+  chegou a `~42s` por reprocessar contexto comercial/calendario/ML.
+
+Correcao aplicada:
+
+- `internal/query/gold_v2.go`:
+  - a listagem `GoldKeywordHourlyReal` nao carrega mais
+    `explanation_json`;
+  - criada rota leve `GoldKeywordHourlyExplain` para detalhe sob demanda.
+- `cmd/api/main.go`:
+  - adicionada rota:
+    `/api/v1/gold/keyword-hourly-real/{id}/explain`.
+- `frontend/src/api/client.js`:
+  - adicionado client `goldKeywordHourlyExplain`.
+- `frontend/src/pages/KeywordHorarios.jsx`:
+  - botao `Detalhes` agora busca explicacao sob demanda;
+  - a listagem deixa de depender do JSON pesado.
+
+Validacao:
+
+- `npm --prefix frontend run build`: OK.
+- `go test ./internal/query ./cmd/api`: OK.
+- `docker compose build api`: OK.
+- `docker compose up -d api`: OK.
+- Chamada autenticada local apos restart:
+  - lista:
+    `/api/v1/gold/keyword-hourly-real?source=CAMPAIGN_HOUR_INHERITED&limit=500`
+    retornou `22` itens em `~0.77s` no PowerShell e `189ms` no log da API;
+  - detalhe:
+    `/api/v1/gold/keyword-hourly-real/{id}/explain` retornou em `~0.29s`.
+
+Nota tecnica:
+
+- O endpoint de detalhe foi mantido leve para nao prender a UX. Se quisermos
+  recuperar o contexto comercial/calendario completo no modal, o proximo passo
+  correto e materializar/precomputar `v_keyword_hourly_recommendation_explain_v1`
+  ou quebrar a explicacao em fontes menores indexadas, e nao voltar a fazer o
+  join pesado na listagem.
+
+## 142. Validacao da extracao AMC - cobertura, supressao e reconciliacao - 2026-07-19
+
+Contexto:
+
+- Pergunta levantada: o modelo target V3 (keyword x hora) esta faminto de dado;
+  o AMC deveria ter venda por keyword desde o inicio da operacao - ja extraimos
+  100%? O dado que temos e valido? Vale re-extrair o AMC para encher o V3?
+- Metodo: consulta a IA de suporte da Amazon (datasets, retencao, colunas,
+  supressao) + duas queries rodadas direto no AMC sobre
+  `amazon_attributed_events_by_traffic_time` (Sponsored Products), janela cheia
+  de 13 meses.
+
+O que a Amazon confirmou:
+
+- Retencao de 13 meses; nenhuma fonte fura a supressao (clean-room threshold)
+  para keyword x hora.
+- `Amazon Marketing Stream` e forward-only e so tem conversao a nivel de
+  campanha (nao keyword); `Ads Reporting v3` e diario no minimo para keyword;
+  `Data Kiosk` e ASIN/dia sem keyword.
+- Sponsored Products usa `amazon_attributed_events_by_traffic_time` (traffic
+  time), nao conversion time.
+- Caminho recomendado quando o volume escalar: modelo horario no grao
+  ad group x bloco de 4h, janela movel de 7-14 dias, com
+  `filteredMetricsDiscriminatorColumn` e `distinctUserCountColumn` na submissao
+  do workflow para diagnosticar supressao em vez de perder linhas.
+
+Query A - histerico mensal (janela cheia 13m):
+
+- Retornou apenas 3 meses: `2026-05` = 2 pedidos, `2026-06` = 173, `2026-07` =
+  121. Total `296` pedidos atribuidos, `R$ 11.550,65`.
+- Janela anterior a maio/2026 VAZIA -> a operacao comecou em maio/2026; nao ha
+  historico anterior no AMC.
+
+Query B - reconciliacao campanha x mes (>= 2026-05-31):
+
+- Soma bate exatamente com a Query A: `296` pedidos.
+- ~`10` pedidos (~3%) caem em buckets com `campaign_id` anonimizado (campanhas
+  pequenas abaixo do threshold) - supressao no grao campanha e minima.
+- Nosso `marketcloud_gold.v_ml_training_volume_reconciliation_v1`
+  (`campaign_hour_gold`) = `294` pedidos ~= `296` do AMC (diferenca de 2 =
+  timing de atribuicao). Ingestao fiel e completa.
+
+Conclusoes cravadas:
+
+- HISTORICO 100% EXTRAIDO. Operacao comecou maio/2026; janela de 13m vazia
+  antes disso. Nao ha backfill a fazer.
+- DADO VALIDO. `294` nosso ~= `296` AMC, reconciliado campanha a campanha.
+- SUPRESSAO por grao: `43%` no grao keyword (ingerimos `168` de `296` no
+  `bronze_amc_target_daily`) vs `3%` no grao campanha. O V3 keyword tem TETO
+  ESTRUTURAL, nao buraco de extracao.
+- V2 (campanha, modelo que move o dinheiro) e alimentado pelo Ads Reporting
+  hourly (NAO suprimido) e enxerga `294` ~= `296` - captura ate o que o AMC
+  esconde no grao campanha. A escolha de nao usar AMC no V2 foi a correta.
+- NAO FALTA EXTRACAO, FALTA VOLUME DE VENDA. O V3 nao melhora puxando mais AMC;
+  melhora quando o negocio vender mais. Nao reabrir "trocar a fonte do V3".
+
+Ressalvas para o futuro:
+
+- IDs do AMC vem no formato string/entidade (ex.: `A0265710ARIXRGXX68C5`),
+  diferente do `campaign_id` numerico usado no Robo/Ads API
+  (ex.: `140196475614872`). Para cruzar AMC direto com nossas campanhas sera
+  preciso um mapa `campaign_id_string` <-> `campaign_id` numerico.
+- Blueprint do modelo horario fino (quando escalar): `line_item`/`line_item_id`
+  (ad group), bloco de 4h via `(traffic_event_hour_utc / 4) * 4`,
+  `DATE_TRUNC('DAY', traffic_event_dt_hour_utc)`, filtro
+  `ad_product_type = 'sponsored_products'`, janela movel 7-14d.
