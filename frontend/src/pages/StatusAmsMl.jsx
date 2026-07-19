@@ -176,6 +176,17 @@ function metric(model, key) {
   return obj?.[key]
 }
 
+// Cor honesta do card: usa a metrica de DECISAO (AUC condicional a clique),
+// nao o AUC global que infla pelo gate "sem trafego => sem pedido".
+function aucClass(v) {
+  if (v == null || Number.isNaN(Number(v))) return 'warn'
+  return Number(v) >= 0.65 ? 'ok' : 'warn'
+}
+function maeClass(v) {
+  if (v == null || Number.isNaN(Number(v))) return 'warn'
+  return Number(v) <= 2 ? 'ok' : 'warn'
+}
+
 const DEFAULT_STATUS_DATA = { totals: {}, models: [], ml_runs: [], ams_hours: [], learning_outcomes: [], audit_360: [], audit_360_summary: {}, full_control_360_summary: {}, full_control_360: [], ams_quality_summary: [], ams_quality_divergences: [], ads_reprocess_requests: [], ads_reprocess_health: [], ml_training_volume: [], ams_target_quality_summary: [], ams_target_quality_divergences: [], operational_alerts: [] }
 
 export default function StatusAmsMl({ ctx }) {
@@ -349,7 +360,7 @@ export default function StatusAmsMl({ ctx }) {
         <div className={`ops-card ${targetMlReady ? 'ok' : 'warn'}`}>
           <span className="ops-label">4. ML Target V3</span>
           <b>{targetMlReady ? 'Completo' : 'Parcial'}</b>
-          <small>AUC pedido {fmt(metric(targetConversionModel, 'roc_auc'), 3)} vs baseline {fmt(metric(targetConversionModel, 'baseline_hourrate_auc'), 3)} - {fmt(totals.target_predictions)} predições</small>
+          <small>AUC pedido clicado {fmt(metric(targetConversionModel, 'roc_auc_clicked_only'), 3)} (global {fmt(metric(targetConversionModel, 'roc_auc'), 3)} infla) - {fmt(totals.target_predictions)} predições</small>
         </div>
       </section>
 
@@ -393,16 +404,16 @@ export default function StatusAmsMl({ ctx }) {
         <div className="section-head">
           <div>
             <h3>Confianca dos modelos</h3>
-            <p>Compara o ML contra uma regra simples por hora. Quanto maior o AUC, melhor a separação; quanto menor o MAE, menor o erro de ROAS.</p>
+            <p><b>AUC clicado</b> = habilidade onde a decisão de lance importa (só células com tráfego). O <b>AUC global</b> infla porque separa trivialmente "sem clique ⇒ sem pedido" — não confie nele sozinho. <b>x-campanha</b> = generalização para campanha nova.</p>
           </div>
           <span>última rodada</span>
         </div>
         <div className="model-metrics-grid">
-          <div className="metric-card ok"><span>Target clique</span><b>AUC {fmt(metric(targetClickModel, 'roc_auc'), 3)}</b><small>baseline {fmt(metric(targetClickModel, 'baseline_hourrate_auc'), 3)} · {fmt(metric(targetClickModel, 'positives'))} positivos</small></div>
-          <div className="metric-card ok"><span>Target pedido</span><b>AUC {fmt(metric(targetConversionModel, 'roc_auc'), 3)}</b><small>baseline {fmt(metric(targetConversionModel, 'baseline_hourrate_auc'), 3)} · {fmt(metric(targetConversionModel, 'positives'))} positivos</small></div>
-          <div className="metric-card ok"><span>Target ROAS</span><b>MAE {fmt(metric(targetRoasModel, 'mae'), 3)}</b><small>baseline {fmt(metric(targetRoasModel, 'baseline_hourmean_mae'), 3)} · {fmt(metric(targetRoasModel, 'nonzero'))} nonzero</small></div>
-          <div className="metric-card ok"><span>Campanha pedido</span><b>AUC {fmt(metric(campaignConversionModel, 'roc_auc'), 3)}</b><small>baseline {fmt(metric(campaignConversionModel, 'baseline_hourrate_auc'), 3)} · {fmt(metric(campaignConversionModel, 'positives'))} positivos</small></div>
-          <div className="metric-card ok"><span>Campanha ROAS</span><b>MAE {fmt(metric(campaignRoasModel, 'mae'), 3)}</b><small>baseline {fmt(metric(campaignRoasModel, 'baseline_hourmean_mae'), 3)}</small></div>
+          <div className="metric-card ok"><span>Target clique</span><b>AUC {fmt(metric(targetClickModel, 'roc_auc'), 3)}</b><small>x-campanha (group CV) · baseline {fmt(metric(targetClickModel, 'baseline_hourrate_auc'), 3)} · {fmt(metric(targetClickModel, 'positives'))} positivos</small></div>
+          <div className={`metric-card ${aucClass(metric(targetConversionModel, 'roc_auc_clicked_only'))}`}><span>Target pedido</span><b>AUC clicado {fmt(metric(targetConversionModel, 'roc_auc_clicked_only'), 3)}</b><small>global {fmt(metric(targetConversionModel, 'roc_auc'), 3)} (infla) · {fmt(metric(targetConversionModel, 'clicked_cells'))} células com clique · dado escasso</small></div>
+          <div className={`metric-card ${maeClass(metric(targetRoasModel, 'mae_clicked_only'))}`}><span>Target ROAS</span><b>MAE clicado {fmt(metric(targetRoasModel, 'mae_clicked_only'), 3)}</b><small>global {fmt(metric(targetRoasModel, 'mae'), 3)} · {fmt(metric(targetRoasModel, 'nonzero'))} nonzero</small></div>
+          <div className={`metric-card ${aucClass(metric(campaignConversionModel, 'roc_auc_clicked_only'))}`}><span>Campanha pedido</span><b>AUC clicado {fmt(metric(campaignConversionModel, 'roc_auc_clicked_only'), 3)}</b><small>x-campanha {fmt(metric(campaignConversionModel, 'roc_auc_cross_campaign'), 3)} · global {fmt(metric(campaignConversionModel, 'roc_auc'), 3)} · {fmt(metric(campaignConversionModel, 'positives'))} positivos</small></div>
+          <div className={`metric-card ${maeClass(metric(campaignRoasModel, 'mae_clicked_only'))}`}><span>Campanha ROAS</span><b>MAE clicado {fmt(metric(campaignRoasModel, 'mae_clicked_only'), 3)}</b><small>x-campanha {fmt(metric(campaignRoasModel, 'mae_cross_campaign'), 3)} · global {fmt(metric(campaignRoasModel, 'mae'), 3)}</small></div>
         </div>
       </section>
       <section className="section-band">
