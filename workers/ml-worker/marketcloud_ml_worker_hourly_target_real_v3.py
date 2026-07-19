@@ -41,7 +41,11 @@ import psycopg2
 import psycopg2.extras
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import balanced_accuracy_score, mean_absolute_error, r2_score, roc_auc_score
-from sklearn.model_selection import StratifiedKFold, KFold, cross_val_predict
+from sklearn.model_selection import StratifiedKFold, KFold, GroupKFold, cross_val_predict
+try:
+    from sklearn.model_selection import StratifiedGroupKFold
+except ImportError:  # sklearn < 1.0
+    StratifiedGroupKFold = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [ML-TARGET-REAL] %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -460,7 +464,9 @@ def fit_classifier(conn, df, model_name, target_col, feature_target):
         log.warning("%s: sinal insuficiente positives=%s negatives=%s", model_name, pos, neg)
         return np.full(len(df), np.nan)
 
-    n_splits = max(2, min(5, pos, neg))
+    groups = df["target_entity_key"].astype(str).values
+    n_groups = int(len(np.unique(groups)))
+    n_splits = max(2, min(5, pos, neg, n_groups))
     clf = RandomForestClassifier(
         n_estimators=300,
         class_weight="balanced",
@@ -468,25 +474,46 @@ def fit_classifier(conn, df, model_name, target_col, feature_target):
         random_state=42,
         n_jobs=-1,
     )
-    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-    proba = cross_val_predict(clf, X, y, cv=cv, method="predict_proba", n_jobs=-1)[:, 1]
+    # HONESTIDADE DO CV (auditoria 19/07): split por GRUPO (target_entity_key).
+    # O StratifiedKFold aleatorio antigo deixava linhas do MESMO target em treino
+    # e teste, entao o OOF media memorizacao de propensao por entidade e inflava
+    # o AUC. Group split mede generalizacao para targets nao vistos.
+    if StratifiedGroupKFold is not None:
+        cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        cv_name = f"stratified_group_{n_splits}fold_oof"
+    else:
+        cv = GroupKFold(n_splits=n_splits)
+        cv_name = f"group_{n_splits}fold_oof"
+    proba = cross_val_predict(clf, X, y, cv=cv, groups=groups, method="predict_proba", n_jobs=-1)[:, 1]
     pred = (proba >= 0.5).astype(int)
     hour_rate = df.groupby("event_hour")[target_col].transform("mean").values
     auc = roc_auc_score(y, proba) if len(np.unique(y)) == 2 else np.nan
     base_auc = roc_auc_score(y, hour_rate) if len(np.unique(y)) == 2 else np.nan
+    # AUC CONDICIONAL A CLIQUE: mede so as celulas com trafego real (clicks>0),
+    # onde a decisao de bid importa. Remove o gate trivial "sem clique => sem
+    # pedido" que dominava o AUC global. Nao se aplica ao modelo de clique.
+    auc_clicked = np.nan
+    n_clicked = 0
+    if target_col != "has_click":
+        clicked = df["clicks_pos"].values > 0
+        n_clicked = int(clicked.sum())
+        if n_clicked > 0 and len(np.unique(y[clicked])) == 2:
+            auc_clicked = roc_auc_score(y[clicked], proba[clicked])
     metrics.update({
         "roc_auc": None if np.isnan(auc) else float(auc),
+        "roc_auc_clicked_only": None if np.isnan(auc_clicked) else float(auc_clicked),
+        "clicked_cells": n_clicked,
         "balanced_accuracy": float(balanced_accuracy_score(y, pred)),
         "baseline_hourrate_auc": None if np.isnan(base_auc) else float(base_auc),
         "beats_baseline": bool((not np.isnan(auc)) and (not np.isnan(base_auc)) and auc > base_auc),
-        "cv": f"stratified_{n_splits}fold_oof",
+        "cv": cv_name,
     })
     clf.fit(X, y)
     full = clf.predict_proba(X)[:, 1]
     imp = sorted(zip(feat_cols, clf.feature_importances_), key=lambda t: -t[1])[:8]
     metrics["top_features"] = [{"f": f, "imp": float(i)} for f, i in imp]
     register(conn, model_name, "classifier:rf", target_col, "TRAINED", len(df), metrics)
-    log.info("%s: AUC=%s baseline=%s positives=%s", model_name, metrics["roc_auc"], metrics["baseline_hourrate_auc"], pos)
+    log.info("%s: AUC=%s AUC_clicked=%s baseline=%s positives=%s cv=%s", model_name, metrics["roc_auc"], metrics.get("roc_auc_clicked_only"), metrics["baseline_hourrate_auc"], pos, cv_name)
     return full
 
 
@@ -500,18 +527,28 @@ def fit_roas(conn, df):
         log.warning("HourlyTargetExpectedRoasRealV3: variancia insuficiente nonzero=%s", nonzero)
         return np.full(len(df), np.nan)
 
-    n_splits = max(2, min(5, nonzero, len(df)))
+    groups = df["target_entity_key"].astype(str).values
+    n_groups = int(len(np.unique(groups)))
+    n_splits = max(2, min(5, nonzero, len(df), n_groups))
     reg = RandomForestRegressor(n_estimators=300, min_samples_leaf=2, random_state=42, n_jobs=-1)
-    cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-    oof = np.clip(cross_val_predict(reg, X, y, cv=cv, n_jobs=-1), 0, ROAS_CAP)
+    # HONESTIDADE DO CV (auditoria 19/07): group split por target_entity_key,
+    # como nos classificadores, para o MAE OOF nao memorizar entidade.
+    cv = GroupKFold(n_splits=n_splits)
+    oof = np.clip(cross_val_predict(reg, X, y, cv=cv, groups=groups, n_jobs=-1), 0, ROAS_CAP)
     baseline = df.groupby("event_hour")["roas"].transform("mean").clip(0, ROAS_CAP).values
+    # MAE condicional a clique: erro so onde houve trafego real (decisao importa).
+    clicked = df["clicks_pos"].values > 0
+    n_clicked = int(clicked.sum())
+    mae_clicked = float(mean_absolute_error(y[clicked], oof[clicked])) if n_clicked > 0 else None
     metrics.update({
         "mae": float(mean_absolute_error(y, oof)),
+        "mae_clicked_only": mae_clicked,
+        "clicked_cells": n_clicked,
         "r2": float(r2_score(y, oof)),
         "baseline_hourmean_mae": float(mean_absolute_error(y, baseline)),
         "beats_baseline": bool(mean_absolute_error(y, oof) < mean_absolute_error(y, baseline)),
         "target_mean": float(np.mean(y)),
-        "cv": f"kfold_{n_splits}_oof",
+        "cv": f"group_{n_splits}fold_oof",
     })
     reg.fit(X, y)
     full = np.clip(reg.predict(X), 0, ROAS_CAP)
