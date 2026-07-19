@@ -8157,3 +8157,66 @@ Ressalvas para o futuro:
   (ad group), bloco de 4h via `(traffic_event_hour_utc / 4) * 4`,
   `DATE_TRUNC('DAY', traffic_event_dt_hour_utc)`, filtro
   `ad_product_type = 'sponsored_products'`, janela movel 7-14d.
+
+## 143. Integridade do dado campanha->produto->economia + estoque real FBA - 2026-07-19
+
+Contexto:
+
+- Investigando por que o modal Keywords x hora mostrava contexto comercial vazio
+  ("-" em preco/custo/margem/estoque), descobriu-se que o dado EXISTE mas vem de
+  uma tabela MANUAL e nao-validada, com erros.
+
+Como funciona o mapa campanha->produto->economia:
+
+- `feature_campaign_commercial_context_v1` (feature de economia do ML + do modal)
+  deriva de `marketcloud_gold.full_control_effective_governance_v1`, que pega
+  campanha->ASIN de `marketcloud_control.full_control_pilots`.
+- `full_control_pilots` e preenchida A MAO (`created_by`/`updated_by`/`notes`;
+  preco/custo/estoque digitados ali). NAO existe fonte autoritativa do ASIN
+  anunciado real ingerida da Amazon. Ha ainda join por NOME
+  (`campaign_norm = lower(trim(campaign_name))`).
+
+Problemas achados:
+
+- ASIN draft/placeholder ("nao enviado") vazando: a CTE pilot ordenava
+  `CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2`, ou seja DRAFT
+  vencia COMPLETED. Abridor de Vinho pegava o draft `B0H887XGCJ` em vez do
+  completed `B0H2TXK1YG`.
+- Estoque manual era o TOTAL de unidades, sem descontar o que ja vendeu. Ex.:
+  Forma Silicone manual=99, FBA real=33.
+- Mesmo ASIN em campanhas diferentes (auto/frase/exata/retargeting SD) NAO e
+  erro - e normal para o mesmo produto. Nao flaggar.
+
+Correcoes aplicadas (migrations 136-138):
+
+- 136: feature comercial exclui `status='draft'` e ordena
+  active>completed>paused>resto. Abridor volta a usar B0H2TXK1YG (real).
+- 137: feature comercial usa ESTOQUE FBA REAL
+  (`swarm_src.amazon_fba_inventory.available_quantity`, sync Amazon por asin,
+  via FDW), fallback pro manual so sem FBA. O ledger `stock_position` estava
+  velho/zerado (07-04) e NAO foi usado.
+- 138 (trava do dinheiro, aprovado pelo dono): `effective_stock_available` da
+  governanca - que gate `can_control`/`NO_STOCK` do executor - passou a usar o
+  mesmo FBA real. Antes gateava Forma com 99; agora 33. Se o FBA zerar, NO_STOCK
+  dispara e para o gasto em produto esgotado.
+
+Verificacoes:
+
+- Draft nao aparece mais na feature; pilotos LIVE seguem READY (Forma stock 33,
+  Kadukli 114), nenhum bloqueado indevido.
+- Sao views: executor e retrain horario leem a versao corrigida no proximo ciclo,
+  sem rebuild.
+
+Blast radius / seguranca:
+
+- O executor NUNCA esteve exposto ao bug do draft (`can_control` ja exige
+  active+full_control). O bug do estoque (99 vs 33) tampouco causou erro hoje
+  (ambos > 0), mas era risco LATENTE: estoque real zerando sem NO_STOCK disparar.
+- Features de economia do ML tem baixa importancia (top_features sao
+  ctr/cpc/impressoes), entao o impacto no modelo era pequeno.
+
+Pendente (estrutural, dono):
+
+- Confirmar valores digitados: preco OK (confirmado); estoque agora vem do FBA.
+- Parar de depender da tabela manual: ingerir ASIN anunciado real por campanha
+  (Amazon Ads API product ads) e preco/custo via feed/SP-API.
