@@ -405,10 +405,12 @@ def build_X(df, target):
     # Traffic pre-clique (impressions/days) e o prior do modelo de campanha
     # (campaign_ml_*) continuam — nao derivam do label.
     if target != "has_click":
-        # Pos-clique: sinais de clique/custo da PROPRIA linha sao permitidos
-        # (o funil clique->pedido e contexto legitimo), e trafego 30d tambem.
-        cols.extend(["ctr", "cpc",
-                     "target_clicks_30d", "target_spend_30d", "target_ctr_30d",
+        # Pos-clique: usa so o HISTORICO 30d de clique/custo como contexto.
+        # O ctr/cpc da PROPRIA celula (funil realizado da mesma agregacao) foi
+        # REMOVIDO na auditoria 19/07: inflava o AUC global (0.96) sem ajudar a
+        # decisao — no teste condicional a clique ele ate piorava (A 0.536 vs
+        # B 0.560 sem ele). O historico 30d generaliza melhor entre targets.
+        cols.extend(["target_clicks_30d", "target_spend_30d", "target_ctr_30d",
                      "campaign_clicks_30d", "campaign_spend_30d", "campaign_ctr_30d"])
     base = df[cols].copy()
     match = pd.get_dummies(df["match_type_norm"], prefix="m")
