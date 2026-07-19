@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api/client.js'
 
-const BID_ROBOT_API_BASE = import.meta.env.VITE_BID_ROBOT_API_BASE || 'http://localhost:8080'
-
 const confidenceColor = {
   HIGH: '#26de81',
   MEDIUM: '#ff9f43',
@@ -36,6 +34,16 @@ function num(n) {
   return Number(n)
 }
 
+function parseMaybeJson(value) {
+  if (!value) return {}
+  if (typeof value === 'object') return value
+  try {
+    return JSON.parse(value)
+  } catch {
+    return {}
+  }
+}
+
 export default function KeywordHorarios({ ctx }) {
   const { tenantID } = ctx
   const [items, setItems] = useState([])
@@ -47,7 +55,7 @@ export default function KeywordHorarios({ ctx }) {
   const [filter, setFilter] = useState({ action: '', confidence: '', source: 'CAMPAIGN_HOUR_INHERITED' })
 
   // O finally e o que importa aqui: sem ele, qualquer excecao deixava a tela em
-  // "Carregando..." pra sempre, sem dizer o motivo — foi assim que uma query
+  // "Carregando..." pra sempre, sem dizer o motivo; foi assim que uma query
   // lenta (4min) virou "a tela travou" em 15/07.
   const load = useCallback(async () => {
     setLoading(true)
@@ -110,17 +118,7 @@ export default function KeywordHorarios({ ctx }) {
   // e nao so no SWARM (achado P1 da auditoria 17/07).
   const applyOne = async (item) => {
     const res = await api.goldKeywordApply(tenantID, {
-      campaign_id: item.campaign_id, ad_group_id: item.ad_group_id,
-      keyword_text: item.keyword_text, match_type: item.match_type,
-      campaign_name: item.campaign_name,
-      hour: Number(item.event_hour),
-      action_type: item.campaign_action_type,
-      suggested_multiplier: Number(item.suggested_hour_multiplier),
       recommendation_id: item.keyword_hour_recommendation_id,
-      base_bid: item.base_bid, suggested_effective_bid: item.suggested_effective_bid,
-      baseline_impressions: item.impressions, baseline_clicks: item.clicks,
-      baseline_spend: item.spend, baseline_orders: item.orders,
-      baseline_sales: item.sales, baseline_roas: item.roas,
     })
     if (!res.ok) return res.data?.error || `HTTP ${res.status}`
     return res.data?.status || `HTTP ${res.status}`
@@ -172,6 +170,7 @@ export default function KeywordHorarios({ ctx }) {
   const targetCount = items.filter(x => x.source_grain === 'TARGET_HOUR_OBSERVED').length
   const targetMlCount = items.filter(x => x.target_ml_click_probability !== null && x.target_ml_click_probability !== undefined).length
   const detail = detailItem ? (() => {
+    const explanation = parseMaybeJson(detailItem.explanation_json)
     const currentMult = num(detailItem.current_hour_multiplier)
     const suggestedMult = num(detailItem.suggested_hour_multiplier)
     const multRatio = currentMult && suggestedMult ? suggestedMult / currentMult : null
@@ -202,6 +201,11 @@ export default function KeywordHorarios({ ctx }) {
       deltaSpend: projectedSpend !== null ? projectedSpend - spend : null,
       deltaSales: projectedSales !== null ? projectedSales - sales : null,
       deltaRoasVsCurrent: campaignRoasTarget !== null && num(detailItem.roas) !== null ? campaignRoasTarget - Number(detailItem.roas) : null,
+      explanation,
+      commercial: explanation.commercial || {},
+      calendar: explanation.calendar || {},
+      experiment: explanation.experiment || {},
+      coverage: explanation.coverage || {},
     }
   })() : null
 
@@ -423,7 +427,7 @@ export default function KeywordHorarios({ ctx }) {
                   <div><dt>ROAS observado na hora</dt><dd>{fmt(detailItem.ml_roas_observado ?? detailItem.roas, 2)}</dd></div>
                   <div><dt>Gasto observado pelo modelo</dt><dd>{money(detailItem.ml_gasto_observado ?? detailItem.spend)}</dd></div>
                   <div><dt>Dias observados</dt><dd>{fmt(detailItem.days_observed)}</dd></div>
-                  <div><dt>Impressões / cliques / pedidos</dt><dd>{fmt(detailItem.impressions)} / {fmt(detailItem.clicks)} / {fmt(detailItem.orders)}</dd></div>
+                  <div><dt>Impressoes / cliques / pedidos</dt><dd>{fmt(detailItem.impressions)} / {fmt(detailItem.clicks)} / {fmt(detailItem.orders)}</dd></div>
                   <div><dt>Fonte do sinal</dt><dd>{detailItem.source_grain || '-'}</dd></div>
                   <div><dt>Escopo atual da agenda</dt><dd>{detailItem.current_multiplier_scope || '-'}</dd></div>
                 </dl>
@@ -440,7 +444,37 @@ export default function KeywordHorarios({ ctx }) {
                   <div><dt>ROAS previsto keyword/target</dt><dd className={detail?.targetDisagrees ? 'warn-value' : ''}>{fmt(detailItem.target_ml_expected_roas, 2)}</dd></div>
                 </dl>
               </section>
+
+              <section>
+                <h4>Contexto comercial</h4>
+                <dl>
+                  <div><dt>Preco / custo</dt><dd>{money(detail?.commercial.sale_price_brl)} / {money(detail?.commercial.unit_cost_brl)}</dd></div>
+                  <div><dt>Margem bruta</dt><dd>{fmt(detail?.commercial.gross_margin_pct, 1)}%</dd></div>
+                  <div><dt>Estoque / cobertura</dt><dd>{fmt(detail?.commercial.stock_available)} un. / {fmt(detail?.commercial.stock_days_of_cover, 1)} dias</dd></div>
+                  <div><dt>Preco concorrente</dt><dd>{detail?.coverage.competitor_price_available ? 'Disponivel' : 'Nao disponivel'}</dd></div>
+                  <div><dt>BSR</dt><dd>{detail?.coverage.bsr_available ? 'Disponivel' : 'Nao disponivel'}</dd></div>
+                </dl>
+              </section>
+
+              <section>
+                <h4>Calendario e teste</h4>
+                <dl>
+                  <div><dt>Fim de semana</dt><dd>{pct(detail?.calendar.weekend_share)}</dd></div>
+                  <div><dt>Janela pagamento</dt><dd>{pct(detail?.calendar.paycheck_window_share)}</dd></div>
+                  <div><dt>Pre-evento 7/14/30d</dt><dd>{pct(detail?.calendar.pre_event_7d_share)} / {pct(detail?.calendar.pre_event_14d_share)} / {pct(detail?.calendar.pre_event_30d_share)}</dd></div>
+                  <div><dt>Evento / pos-evento</dt><dd>{pct(detail?.calendar.event_day_share)} / {pct(detail?.calendar.post_event_7d_share)}</dd></div>
+                  <div><dt>Politica</dt><dd>{detail?.experiment.policy || '-'}</dd></div>
+                  <div><dt>Fatia de teste</dt><dd>{pct(detail?.experiment.suggested_test_fraction)}</dd></div>
+                  <div><dt>Multiplicador capado</dt><dd>{detail?.experiment.capped_test_multiplier ? `${fmt(detail.experiment.capped_test_multiplier, 2)}x` : '-'}</dd></div>
+                </dl>
+              </section>
             </div>
+
+            {detail?.experiment.reason && (
+              <div className="modal-note experiment-note">
+                Politica de teste: {detail.experiment.reason}
+              </div>
+            )}
 
             {detail?.targetDisagrees ? (
               <div className="modal-note warning-note">

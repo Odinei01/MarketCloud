@@ -257,9 +257,9 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 	// Holdout: robo (TRATAMENTO) x deixar quieto (CONTROLE) no dado maduro.
 	// Leitura DIRECIONAL (nivel de ROAS), nao diff-in-diff — ver migration 119.
 	type hoRow struct {
-		Grupo                          string
-		Celulas                        int
-		Gasto, Venda, Pedidos, Roas    float64
+		Grupo                       string
+		Celulas                     int
+		Gasto, Venda, Pedidos, Roas float64
 	}
 	var ctrl, trat hoRow
 	if hoRows, hoErr := h.db.Query(ctx, `SELECT grupo, celulas, gasto::float8, venda::float8, pedidos::float8, roas::float8 FROM marketcloud_recommendations.v_holdout_analysis_v1`); hoErr == nil {
@@ -399,17 +399,221 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	qualityRows, err := h.db.Query(ctx, `
+		SELECT data_quality_status, operator_action, rows,
+		       min_date, max_date,
+		       avg_quality_score::float8 AS avg_quality_score,
+		       ams_spend::float8 AS ams_spend,
+		       ads_spend::float8 AS ads_spend,
+		       delta_ads_spend::float8 AS delta_ads_spend,
+		       ams_orders_7d::float8 AS ams_orders_7d,
+		       ads_orders::float8 AS ads_orders,
+		       delta_ads_orders::float8 AS delta_ads_orders,
+		       last_ams_update, last_ads_sync
+		FROM marketcloud_gold.v_ams_quality_summary_v1
+		ORDER BY
+			CASE data_quality_status
+				WHEN 'DIVERGENT' THEN 0
+				WHEN 'ADS_MISSING' THEN 1
+				WHEN 'ATTRIBUTING' THEN 2
+				WHEN 'FRESH' THEN 3
+				WHEN 'DELTA_ONLY' THEN 4
+				WHEN 'MATURE_RECONCILED' THEN 5
+				ELSE 6
+			END,
+			rows DESC`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ams_quality_summary_failed: "+err.Error())
+		return
+	}
+	qualitySummary, err := pgx.CollectRows(qualityRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ams_quality_summary_scan_failed: "+err.Error())
+		return
+	}
+
+	divRows, err := h.db.Query(ctx, `
+		SELECT data_date, maturity_bucket, campaign_id, campaign_name,
+		       data_quality_status, data_quality_score, operator_action,
+		       ams_spend_clamped::float8 AS ams_spend,
+		       ads_spend::float8 AS ads_spend,
+		       delta_ads_spend::float8 AS delta_ads_spend,
+		       ams_orders_7d::float8 AS ams_orders_7d,
+		       ads_orders::float8 AS ads_orders,
+		       delta_ads_orders::float8 AS delta_ads_orders,
+		       ams_sales_7d::float8 AS ams_sales_7d,
+		       ads_sales::float8 AS ads_sales,
+		       delta_ads_sales::float8 AS delta_ads_sales,
+		       ams_last_update, ads_last_sync
+		FROM marketcloud_gold.v_ams_data_quality_score_v1
+		WHERE data_quality_status IN ('DIVERGENT','ADS_MISSING','LOW_CONFIDENCE')
+		   OR operator_action IN ('REQUEST_ADS_REPORT_REPROCESS','INVESTIGATE_DELTA_AND_REPROCESS_ADS_REPORT')
+		ORDER BY data_quality_score ASC, data_date DESC, ABS(delta_ads_spend) DESC NULLS LAST
+		LIMIT 30`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ams_quality_divergences_failed: "+err.Error())
+		return
+	}
+	qualityDivergences, err := pgx.CollectRows(divRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ams_quality_divergences_scan_failed: "+err.Error())
+		return
+	}
+
+	reprocessRows, err := h.db.Query(ctx, `
+		SELECT id, source, data_date, window_label, status, reason,
+		       requested_at, updated_at, completed_at, error_message, metadata_json
+		FROM marketcloud_ops.ads_reporting_reprocess_requests
+		ORDER BY data_date DESC, window_label
+		LIMIT 30`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ads_reprocess_requests_failed: "+err.Error())
+		return
+	}
+	reprocessRequests, err := pgx.CollectRows(reprocessRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ads_reprocess_requests_scan_failed: "+err.Error())
+		return
+	}
+
+	reprocessHealthRows, err := h.db.Query(ctx, `
+		SELECT id, data_date, window_label, window_status, grain, report_id,
+		       rows_ingested, grain_status, updated_at, completed_at, error_message
+		FROM marketcloud_gold.v_ads_reporting_reprocess_health_v1
+		ORDER BY data_date DESC,
+			CASE grain WHEN 'CAMPAIGN' THEN 0 WHEN 'AD_GROUP' THEN 1 WHEN 'KEYWORD' THEN 2 WHEN 'TARGET' THEN 3 ELSE 4 END`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ads_reprocess_health_failed: "+err.Error())
+		return
+	}
+	reprocessHealth, err := pgx.CollectRows(reprocessHealthRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ads_reprocess_health_scan_failed: "+err.Error())
+		return
+	}
+
+	trainingVolumeRows, err := h.db.Query(ctx, `
+		SELECT source, rows::float8 AS rows, min_date, max_date,
+		       campaigns::float8 AS campaigns,
+		       targets::float8 AS targets,
+		       clicks::float8 AS clicks,
+		       orders::float8 AS orders,
+		       sales::float8 AS sales,
+		       spend::float8 AS spend
+		FROM marketcloud_gold.v_ml_training_volume_reconciliation_v1
+		ORDER BY
+			CASE source
+				WHEN 'campaign_hour_gold' THEN 0
+				WHEN 'target_hour_reconciled' THEN 1
+				WHEN 'amc_daily_total_context' THEN 2
+				ELSE 3
+			END`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ml_training_volume_failed: "+err.Error())
+		return
+	}
+	trainingVolume, err := pgx.CollectRows(trainingVolumeRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ml_training_volume_scan_failed: "+err.Error())
+		return
+	}
+
+	targetQualityRows, err := h.db.Query(ctx, `
+		SELECT target_quality_status, ads_report_grain,
+		       COUNT(*) AS rows,
+		       ROUND(AVG(target_quality_score)::numeric, 2)::float8 AS avg_quality_score,
+		       SUM(ams_spend)::float8 AS ams_spend,
+		       SUM(ads_spend)::float8 AS ads_spend,
+		       SUM(delta_spend)::float8 AS delta_spend,
+		       SUM(ams_orders)::float8 AS ams_orders,
+		       SUM(ads_orders)::float8 AS ads_orders,
+		       SUM(delta_orders)::float8 AS delta_orders,
+		       MAX(ams_last_update) AS last_ams_update,
+		       MAX(ads_last_sync) AS last_ads_sync
+		FROM marketcloud_gold.v_ams_target_ads_reconciliation_daily_v1
+		GROUP BY target_quality_status, ads_report_grain
+		ORDER BY
+			CASE target_quality_status
+				WHEN 'DIVERGENT' THEN 0
+				WHEN 'ADS_TARGETING_MISSING' THEN 1
+				WHEN 'ATTRIBUTING' THEN 2
+				WHEN 'FRESH' THEN 3
+				WHEN 'MATCH' THEN 4
+				ELSE 5
+			END,
+			rows DESC`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ams_target_quality_summary_failed: "+err.Error())
+		return
+	}
+	targetQualitySummary, err := pgx.CollectRows(targetQualityRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ams_target_quality_summary_scan_failed: "+err.Error())
+		return
+	}
+
+	targetDivRows, err := h.db.Query(ctx, `
+		SELECT data_date, campaign_id, campaign_name, ad_group_id, ad_group_name,
+		       target_entity_key, target_text, match_type, ads_report_grain,
+		       target_quality_status, target_quality_score,
+		       ams_spend::float8 AS ams_spend,
+		       ads_spend::float8 AS ads_spend,
+		       delta_spend::float8 AS delta_spend,
+		       ams_orders::float8 AS ams_orders,
+		       ads_orders::float8 AS ads_orders,
+		       delta_orders::float8 AS delta_orders,
+		       ams_last_update, ads_last_sync
+		FROM marketcloud_gold.v_ams_target_ads_reconciliation_daily_v1
+		WHERE target_quality_status IN ('DIVERGENT','ADS_TARGETING_MISSING')
+		ORDER BY target_quality_score ASC, data_date DESC, ABS(delta_spend) DESC NULLS LAST
+		LIMIT 40`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ams_target_quality_divergences_failed: "+err.Error())
+		return
+	}
+	targetQualityDivergences, err := pgx.CollectRows(targetDivRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ams_target_quality_divergences_scan_failed: "+err.Error())
+		return
+	}
+
+	alertRows, err := h.db.Query(ctx, `
+		SELECT severity, alert_key, title, detail, entity_type, entity_id, observed_at
+		FROM marketcloud_gold.v_ams_ml_operational_alerts_v1
+		ORDER BY
+			CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+			observed_at DESC NULLS LAST,
+			alert_key
+		LIMIT 30`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ams_ml_operational_alerts_failed: "+err.Error())
+		return
+	}
+	operationalAlerts, err := pgx.CollectRows(alertRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ams_ml_operational_alerts_scan_failed: "+err.Error())
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"totals":                   totals,
-		"models":                   models,
-		"ml_runs":                  runs,
-		"ams_hours":                ams,
-		"learning_outcomes":        learning,
-		"learning_summary":         learningSummary,
-		"holdout":                  holdoutSummary,
-		"audit_360_summary":        auditSummary,
-		"audit_360":                audit360,
-		"full_control_360_summary": fc360Summary,
-		"full_control_360":         fc360,
+		"totals":                         totals,
+		"models":                         models,
+		"ml_runs":                        runs,
+		"ams_hours":                      ams,
+		"learning_outcomes":              learning,
+		"learning_summary":               learningSummary,
+		"holdout":                        holdoutSummary,
+		"audit_360_summary":              auditSummary,
+		"audit_360":                      audit360,
+		"full_control_360_summary":       fc360Summary,
+		"full_control_360":               fc360,
+		"ams_quality_summary":            qualitySummary,
+		"ams_quality_divergences":        qualityDivergences,
+		"ads_reprocess_requests":         reprocessRequests,
+		"ads_reprocess_health":           reprocessHealth,
+		"ml_training_volume":             trainingVolume,
+		"ams_target_quality_summary":     targetQualitySummary,
+		"ams_target_quality_divergences": targetQualityDivergences,
+		"operational_alerts":             operationalAlerts,
 	})
 }

@@ -70,10 +70,32 @@ def load(conn):
             ORDER BY campaign_id,
                 CASE status WHEN 'active' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
                 updated_at DESC
+        ), data_quality AS (
+            SELECT
+                campaign_id,
+                AVG(data_quality_score)::float AS avg_data_quality_score_30d,
+                COUNT(*) FILTER (WHERE data_quality_status = 'DIVERGENT')::float AS divergent_days_30d,
+                COUNT(*) FILTER (WHERE data_quality_status = 'ADS_MISSING')::float AS ads_missing_days_30d,
+                COUNT(*) FILTER (WHERE data_quality_status = 'ATTRIBUTING')::float AS attributing_days_30d,
+                COUNT(*) FILTER (WHERE data_quality_status = 'FRESH')::float AS fresh_days_30d,
+                COUNT(*) FILTER (WHERE data_quality_status = 'MATURE_RECONCILED')::float AS mature_reconciled_days_30d,
+                COUNT(*) FILTER (WHERE traffic_usable_for_ml)::float AS traffic_usable_days_30d,
+                COUNT(*) FILTER (WHERE conversion_usable_for_ml)::float AS conversion_usable_days_30d
+            FROM marketcloud_gold.v_ams_data_quality_score_v1
+            WHERE data_date >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY campaign_id
         )
         SELECT
             b.*,
             COALESCE(p.tenant_id::text, 'zanom') AS tenant_id,
+            COALESCE(dq.avg_data_quality_score_30d,50) AS avg_data_quality_score_30d,
+            COALESCE(dq.divergent_days_30d,0) AS divergent_days_30d,
+            COALESCE(dq.ads_missing_days_30d,0) AS ads_missing_days_30d,
+            COALESCE(dq.attributing_days_30d,0) AS attributing_days_30d,
+            COALESCE(dq.fresh_days_30d,0) AS fresh_days_30d,
+            COALESCE(dq.mature_reconciled_days_30d,0) AS mature_reconciled_days_30d,
+            COALESCE(dq.traffic_usable_days_30d,0) AS traffic_usable_days_30d,
+            COALESCE(dq.conversion_usable_days_30d,0) AS conversion_usable_days_30d,
             COALESCE(q.quality_orders_30d,0) AS quality_orders_30d,
             COALESCE(q.quality_units_sold_30d,0) AS quality_units_sold_30d,
             COALESCE(q.refund_total_30d,0) AS refund_total_30d,
@@ -89,9 +111,47 @@ def load(conn):
             COALESCE(q.review_source_confidence,0) AS review_source_confidence,
             COALESCE(q.low_rating_flag,0) AS low_rating_flag,
             COALESCE(q.high_return_flag,0) AS high_return_flag,
-            COALESCE(q.refund_flag,0) AS refund_flag
+            COALESCE(q.refund_flag,0) AS refund_flag,
+            COALESCE(cc.avg_day_of_week,0) AS avg_day_of_week,
+            COALESCE(cc.weekend_share,0) AS weekend_share,
+            COALESCE(cc.avg_day_of_month,0) AS avg_day_of_month,
+            COALESCE(cc.avg_week_of_month,0) AS avg_week_of_month,
+            COALESCE(cc.avg_month_of_year,0) AS avg_month_of_year,
+            COALESCE(cc.month_start_share,0) AS month_start_share,
+            COALESCE(cc.month_middle_share,0) AS month_middle_share,
+            COALESCE(cc.month_end_share,0) AS month_end_share,
+            COALESCE(cc.paycheck_window_share,0) AS paycheck_window_share,
+            COALESCE(cc.midmonth_window_share,0) AS midmonth_window_share,
+            COALESCE(cc.holiday_share,0) AS holiday_share,
+            COALESCE(cc.holiday_eve_share,0) AS holiday_eve_share,
+            COALESCE(cc.post_holiday_share,0) AS post_holiday_share,
+            COALESCE(cc.commercial_event_share,0) AS commercial_event_share,
+            COALESCE(cc.mothers_day_share,0) AS mothers_day_share,
+            COALESCE(cc.fathers_day_share,0) AS fathers_day_share,
+            COALESCE(cc.black_friday_share,0) AS black_friday_share,
+            COALESCE(cc.christmas_runup_share,0) AS christmas_runup_share,
+            COALESCE(cc.avg_days_to_nearest_event,31) AS avg_days_to_nearest_event,
+            COALESCE(cc.avg_abs_days_to_nearest_event,31) AS avg_abs_days_to_nearest_event,
+            COALESCE(cc.pre_event_30d_share,0) AS pre_event_30d_share,
+            COALESCE(cc.pre_event_14d_share,0) AS pre_event_14d_share,
+            COALESCE(cc.pre_event_7d_share,0) AS pre_event_7d_share,
+            COALESCE(cc.event_day_share,0) AS event_day_share,
+            COALESCE(cc.post_event_7d_share,0) AS post_event_7d_share,
+            COALESCE(cx.price_to_cost_ratio,0) AS price_to_cost_ratio,
+            COALESCE(cx.stock_days_of_cover,0) AS stock_days_of_cover,
+            COALESCE(cx.product_orders_30d,0) AS product_orders_30d,
+            COALESCE(cx.product_sales_30d,0) AS product_sales_30d,
+            COALESCE(cx.product_roas_30d,0) AS product_roas_30d,
+            COALESCE(cx.has_competitor_price,0) AS has_competitor_price,
+            COALESCE(cx.competitor_price_min_brl,0) AS competitor_price_min_brl,
+            COALESCE(cx.competitor_price_gap_pct,0) AS competitor_price_gap_pct,
+            COALESCE(cx.is_price_above_competitor,0) AS is_price_above_competitor,
+            COALESCE(cx.has_bsr,0) AS has_bsr,
+            COALESCE(cx.bsr_rank,0) AS bsr_rank,
+            COALESCE(cx.bsr_delta_7d,0) AS bsr_delta_7d
         FROM base b
         LEFT JOIN pilot p ON p.campaign_id = b.campaign_id
+        LEFT JOIN data_quality dq ON dq.campaign_id = b.campaign_id
         LEFT JOIN marketcloud_features.feature_product_quality_v1 q
           ON q.product_asin = COALESCE(NULLIF(p.product_asin,''), 'NO_ASIN')
          AND (
@@ -99,6 +159,11 @@ def load(conn):
               OR COALESCE(q.seller_sku,'') = ''
               OR COALESCE(p.seller_sku,'') = ''
          )
+        LEFT JOIN marketcloud_features.feature_campaign_calendar_context_v1 cc
+          ON cc.campaign_id = b.campaign_id
+         AND cc.event_hour = b.event_hour
+        LEFT JOIN marketcloud_features.feature_campaign_commercial_context_v1 cx
+          ON cx.campaign_id = b.campaign_id
     """
     with conn.cursor() as cur:
         cur.execute(sql)
@@ -118,6 +183,9 @@ def load(conn):
                     "max_top_of_search_pct", "max_product_page_pct", "max_rest_of_search_pct",
                     "spend_to_fc_daily_cap_ratio", "spend_to_stop_loss_ratio",
                     "is_full_control_pilot", "is_active_pilot", "can_control_flag",
+                    "avg_data_quality_score_30d", "divergent_days_30d", "ads_missing_days_30d",
+                    "attributing_days_30d", "fresh_days_30d", "mature_reconciled_days_30d",
+                    "traffic_usable_days_30d", "conversion_usable_days_30d",
                     "placement_spend_45d", "placement_clicks_45d", "placement_impressions_45d",
                     "top_search_spend_45d", "product_page_spend_45d", "rest_search_spend_45d",
                     "top_search_spend_share_45d", "product_page_spend_share_45d", "rest_search_spend_share_45d",
@@ -127,7 +195,22 @@ def load(conn):
                     "return_refund_amount_30d", "return_rate_30d",
                     "net_profit_after_quality_30d", "net_margin_after_quality_ratio_30d",
                     "product_rating_latest", "product_reviews_total_latest",
-                    "review_source_confidence", "low_rating_flag", "high_return_flag", "refund_flag"]
+                    "review_source_confidence", "low_rating_flag", "high_return_flag", "refund_flag",
+                    "avg_day_of_week", "weekend_share", "avg_day_of_month",
+                    "avg_week_of_month", "avg_month_of_year",
+                    "month_start_share", "month_middle_share", "month_end_share",
+                    "paycheck_window_share", "midmonth_window_share",
+                    "holiday_share", "holiday_eve_share", "post_holiday_share",
+                    "commercial_event_share", "mothers_day_share", "fathers_day_share",
+                    "black_friday_share", "christmas_runup_share",
+                    "avg_days_to_nearest_event", "avg_abs_days_to_nearest_event",
+                    "pre_event_30d_share", "pre_event_14d_share", "pre_event_7d_share",
+                    "event_day_share", "post_event_7d_share",
+                    "price_to_cost_ratio", "stock_days_of_cover",
+                    "product_orders_30d", "product_sales_30d", "product_roas_30d",
+                    "has_competitor_price", "competitor_price_min_brl",
+                    "competitor_price_gap_pct", "is_price_above_competitor",
+                    "has_bsr", "bsr_rank", "bsr_delta_7d"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
     df["ctr"] = np.where(df["impressions"] > 0, df["clicks"] / df["impressions"], 0.0)
@@ -159,6 +242,9 @@ def build_X(df):
                "max_top_of_search_pct", "max_product_page_pct", "max_rest_of_search_pct",
                "spend_to_fc_daily_cap_ratio", "spend_to_stop_loss_ratio",
                "is_full_control_pilot", "is_active_pilot", "can_control_flag",
+               "avg_data_quality_score_30d", "divergent_days_30d", "ads_missing_days_30d",
+               "attributing_days_30d", "fresh_days_30d", "mature_reconciled_days_30d",
+               "traffic_usable_days_30d", "conversion_usable_days_30d",
                "placement_spend_45d", "placement_clicks_45d", "placement_impressions_45d",
                "top_search_spend_share_45d", "product_page_spend_share_45d", "rest_search_spend_share_45d",
                "top_search_cpc_45d", "product_page_cpc_45d", "rest_search_cpc_45d",
@@ -167,7 +253,22 @@ def build_X(df):
                "return_refund_amount_30d", "return_rate_30d",
                "net_profit_after_quality_30d", "net_margin_after_quality_ratio_30d",
                "product_rating_latest", "product_reviews_total_latest",
-               "review_source_confidence", "low_rating_flag", "high_return_flag", "refund_flag"]].copy()
+               "review_source_confidence", "low_rating_flag", "high_return_flag", "refund_flag",
+               "avg_day_of_week", "weekend_share", "avg_day_of_month",
+               "avg_week_of_month", "avg_month_of_year",
+               "month_start_share", "month_middle_share", "month_end_share",
+               "paycheck_window_share", "midmonth_window_share",
+               "holiday_share", "holiday_eve_share", "post_holiday_share",
+               "commercial_event_share", "mothers_day_share", "fathers_day_share",
+               "black_friday_share", "christmas_runup_share",
+               "avg_days_to_nearest_event", "avg_abs_days_to_nearest_event",
+               "pre_event_30d_share", "pre_event_14d_share", "pre_event_7d_share",
+               "event_day_share", "post_event_7d_share",
+               "price_to_cost_ratio", "stock_days_of_cover",
+               "product_orders_30d", "product_sales_30d", "product_roas_30d",
+               "has_competitor_price", "competitor_price_min_brl",
+               "competitor_price_gap_pct", "is_price_above_competitor",
+               "has_bsr", "bsr_rank", "bsr_delta_7d"]].copy()
     camp = pd.get_dummies(df["campaign_norm"], prefix="c")
     X = pd.concat([base.reset_index(drop=True), camp.reset_index(drop=True)], axis=1)
     return X.astype(float), list(X.columns)

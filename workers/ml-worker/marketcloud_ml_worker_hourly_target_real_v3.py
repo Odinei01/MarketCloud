@@ -1,8 +1,8 @@
 ﻿"""
 MarketCloud ML Worker — HOURLY TARGET REAL v3
 
-Treina no dado AMS real em grao keyword/target x hora:
-  marketcloud_bronze.bronze_ams_hourly_target
+Treina no dado reconciliado real em grao keyword/target x hora:
+  marketcloud_gold.v_ml_target_hour_training_reconciled_v1
 
 Modelos registrados:
   HourlyTargetClickRealV3       target: has_click
@@ -10,7 +10,10 @@ Modelos registrados:
   HourlyTargetExpectedRoasRealV3 target: roas_capped
 
 HONESTIDADE:
-  - O dataset AMS target ainda pode ser pequeno e conter restatements/deltas.
+  - O dataset usa Ads Reporting v3 diario alocado por hora como backfill antes
+    do AMS estabilizado, e AMS target horario como fonte principal a partir de
+    2026-07-13. A feature source_confidence diferencia os dois sinais.
+  - O dataset AMS target ainda pode conter restatements/deltas.
   - Se nao houver volume minimo, registra INSUFFICIENT_DATA e nao inventa score.
   - Usa tambem a faixa de BID recomendada pela Amazon (lower/median/upper) e
     o BID atual/proposto do Robo como contexto de treino, nao como label.
@@ -62,7 +65,7 @@ def load(conn):
             SELECT
                 campaign_id,
                 MAX(campaign_name) AS campaign_name,
-                COALESCE(ad_group_id, '') AS ad_group_id_norm,
+                COALESCE(NULLIF(MAX(ad_group_id), ''), '') AS ad_group_id_norm,
                 NULLIF(MAX(ad_group_id), '') AS ad_group_id,
                 MAX(ad_group_name) AS ad_group_name,
                 target_entity_key,
@@ -76,11 +79,12 @@ def load(conn):
                 SUM(COALESCE(impressions, 0))::float AS impressions,
                 SUM(COALESCE(clicks, 0))::float AS clicks,
                 SUM(COALESCE(spend, 0))::float AS spend,
-                SUM(GREATEST(COALESCE(orders_14d, 0), COALESCE(orders_7d, 0), COALESCE(orders_1d, 0)))::float AS orders,
-                SUM(GREATEST(COALESCE(sales_14d, 0), COALESCE(sales_7d, 0), COALESCE(sales_1d, 0)))::float AS sales
-            FROM marketcloud_bronze.bronze_ams_hourly_target
+                SUM(COALESCE(orders, 0))::float AS orders,
+                SUM(COALESCE(sales, 0))::float AS sales,
+                AVG(COALESCE(source_confidence, 1.0))::float AS source_confidence
+            FROM marketcloud_gold.v_ml_target_hour_training_reconciled_v1
             WHERE NULLIF(TRIM(COALESCE(target_entity_key, '')), '') IS NOT NULL
-            GROUP BY campaign_id, COALESCE(ad_group_id, ''), target_entity_key, event_hour
+            GROUP BY campaign_id, target_entity_key, event_hour
         ), pilot AS (
             SELECT DISTINCT ON (campaign_id)
                 campaign_id,
@@ -127,6 +131,78 @@ def load(conn):
             , COALESCE(q.low_rating_flag,0)::float AS low_rating_flag
             , COALESCE(q.high_return_flag,0)::float AS high_return_flag
             , COALESCE(q.refund_flag,0)::float AS refund_flag
+            , COALESCE(tq.avg_target_quality_score_30d,50)::float AS avg_target_quality_score_30d
+            , COALESCE(tq.target_match_days_30d,0)::float AS target_match_days_30d
+            , COALESCE(tq.target_divergent_days_30d,0)::float AS target_divergent_days_30d
+            , COALESCE(tq.target_ads_missing_days_30d,0)::float AS target_ads_missing_days_30d
+            , COALESCE(tq.target_attributing_days_30d,0)::float AS target_attributing_days_30d
+            , COALESCE(tq.target_usable_days_30d,0)::float AS target_usable_days_30d
+            , COALESCE(tc.avg_day_of_week,0)::float AS avg_day_of_week
+            , COALESCE(tc.weekend_share,0)::float AS weekend_share
+            , COALESCE(tc.avg_day_of_month,0)::float AS avg_day_of_month
+            , COALESCE(tc.avg_week_of_month,0)::float AS avg_week_of_month
+            , COALESCE(tc.avg_month_of_year,0)::float AS avg_month_of_year
+            , COALESCE(tc.month_start_share,0)::float AS month_start_share
+            , COALESCE(tc.month_middle_share,0)::float AS month_middle_share
+            , COALESCE(tc.month_end_share,0)::float AS month_end_share
+            , COALESCE(tc.paycheck_window_share,0)::float AS paycheck_window_share
+            , COALESCE(tc.midmonth_window_share,0)::float AS midmonth_window_share
+            , COALESCE(tc.holiday_share,0)::float AS holiday_share
+            , COALESCE(tc.holiday_eve_share,0)::float AS holiday_eve_share
+            , COALESCE(tc.post_holiday_share,0)::float AS post_holiday_share
+            , COALESCE(tc.commercial_event_share,0)::float AS commercial_event_share
+            , COALESCE(tc.mothers_day_share,0)::float AS mothers_day_share
+            , COALESCE(tc.fathers_day_share,0)::float AS fathers_day_share
+            , COALESCE(tc.black_friday_share,0)::float AS black_friday_share
+            , COALESCE(tc.christmas_runup_share,0)::float AS christmas_runup_share
+            , COALESCE(tc.avg_days_to_nearest_event,31)::float AS avg_days_to_nearest_event
+            , COALESCE(tc.avg_abs_days_to_nearest_event,31)::float AS avg_abs_days_to_nearest_event
+            , COALESCE(tc.pre_event_30d_share,0)::float AS pre_event_30d_share
+            , COALESCE(tc.pre_event_14d_share,0)::float AS pre_event_14d_share
+            , COALESCE(tc.pre_event_7d_share,0)::float AS pre_event_7d_share
+            , COALESCE(tc.event_day_share,0)::float AS event_day_share
+            , COALESCE(tc.post_event_7d_share,0)::float AS post_event_7d_share
+            , COALESCE(hc.target_days_30d,0)::float AS target_days_30d
+            , COALESCE(hc.target_impressions_30d,0)::float AS target_impressions_30d
+            , COALESCE(hc.target_clicks_30d,0)::float AS target_clicks_30d
+            , COALESCE(hc.target_spend_30d,0)::float AS target_spend_30d
+            , COALESCE(hc.target_orders_30d,0)::float AS target_orders_30d
+            , COALESCE(hc.target_sales_30d,0)::float AS target_sales_30d
+            , COALESCE(hc.target_ctr_30d,0)::float AS target_ctr_30d
+            , COALESCE(hc.target_cvr_30d,0)::float AS target_cvr_30d
+            , COALESCE(hc.target_roas_30d,0)::float AS target_roas_30d
+            , COALESCE(hc.campaign_days_30d,0)::float AS campaign_days_30d
+            , COALESCE(hc.campaign_impressions_30d,0)::float AS campaign_impressions_30d
+            , COALESCE(hc.campaign_clicks_30d,0)::float AS campaign_clicks_30d
+            , COALESCE(hc.campaign_spend_30d,0)::float AS campaign_spend_30d
+            , COALESCE(hc.campaign_orders_30d,0)::float AS campaign_orders_30d
+            , COALESCE(hc.campaign_sales_30d,0)::float AS campaign_sales_30d
+            , COALESCE(hc.campaign_ctr_30d,0)::float AS campaign_ctr_30d
+            , COALESCE(hc.campaign_cvr_30d,0)::float AS campaign_cvr_30d
+            , COALESCE(hc.campaign_roas_30d,0)::float AS campaign_roas_30d
+            , COALESCE(hc.campaign_ml_conversion_probability,0)::float AS campaign_ml_conversion_probability
+            , COALESCE(hc.campaign_ml_expected_roas,0)::float AS campaign_ml_expected_roas
+            , COALESCE(hc.campaign_ml_good_hour,0)::float AS campaign_ml_good_hour
+            , COALESCE(cx.sale_price_brl,0)::float AS sale_price_brl
+            , COALESCE(cx.unit_cost_brl,0)::float AS unit_cost_brl
+            , COALESCE(cx.stock_available,0)::float AS stock_available
+            , COALESCE(cx.gross_margin_brl,0)::float AS gross_margin_brl
+            , COALESCE(cx.gross_margin_pct,0)::float AS gross_margin_pct
+            , COALESCE(cx.price_to_cost_ratio,0)::float AS price_to_cost_ratio
+            , COALESCE(cx.stock_days_of_cover,0)::float AS stock_days_of_cover
+            , COALESCE(cx.product_orders_30d,0)::float AS product_orders_30d
+            , COALESCE(cx.product_sales_30d,0)::float AS product_sales_30d
+            , COALESCE(cx.product_roas_30d,0)::float AS product_roas_30d
+            , COALESCE(cx.max_daily_budget_brl,0)::float AS max_daily_budget_brl
+            , COALESCE(cx.max_spend_without_order_brl,0)::float AS max_spend_without_order_brl
+            , COALESCE(cx.min_roas,0)::float AS min_roas
+            , COALESCE(cx.has_competitor_price,0)::float AS has_competitor_price
+            , COALESCE(cx.competitor_price_min_brl,0)::float AS competitor_price_min_brl
+            , COALESCE(cx.competitor_price_gap_pct,0)::float AS competitor_price_gap_pct
+            , COALESCE(cx.is_price_above_competitor,0)::float AS is_price_above_competitor
+            , COALESCE(cx.has_bsr,0)::float AS has_bsr
+            , COALESCE(cx.bsr_rank,0)::float AS bsr_rank
+            , COALESCE(cx.bsr_delta_7d,0)::float AS bsr_delta_7d
         FROM base b
         LEFT JOIN LATERAL (
             SELECT r.*
@@ -181,6 +257,22 @@ def load(conn):
               OR COALESCE(q.seller_sku,'') = ''
               OR COALESCE(p.seller_sku,'') = ''
          )
+        LEFT JOIN marketcloud_gold.v_ams_target_quality_features_v1 tq
+          ON tq.campaign_id = b.campaign_id
+         AND COALESCE(tq.ad_group_id,'') = b.ad_group_id_norm
+         AND tq.target_entity_key = b.target_entity_key
+        LEFT JOIN marketcloud_features.feature_target_calendar_context_v1 tc
+          ON tc.campaign_id = b.campaign_id
+         AND COALESCE(tc.ad_group_id,'') = b.ad_group_id_norm
+         AND tc.target_entity_key = b.target_entity_key
+         AND tc.event_hour = b.event_hour
+        LEFT JOIN marketcloud_features.feature_target_hierarchical_context_v1 hc
+          ON hc.campaign_id = b.campaign_id
+         AND COALESCE(hc.ad_group_id,'') = b.ad_group_id_norm
+         AND hc.target_entity_key = b.target_entity_key
+         AND hc.event_hour = b.event_hour
+        LEFT JOIN marketcloud_features.feature_campaign_commercial_context_v1 cx
+          ON cx.campaign_id = b.campaign_id
     """
     with conn.cursor() as cur:
         cur.execute(sql)
@@ -190,6 +282,7 @@ def load(conn):
 
     for col in [
         "impressions", "clicks", "spend", "orders", "sales",
+        "source_confidence",
         "current_bid", "amazon_rec_bid_lower", "amazon_rec_bid_median",
         "amazon_rec_bid_upper", "robot_proposed_bid", "robot_bid_delta_percent",
         "effective_min_bid", "effective_max_bid",
@@ -201,6 +294,35 @@ def load(conn):
         "net_profit_after_quality_30d", "net_margin_after_quality_ratio_30d",
         "product_rating_latest", "product_reviews_total_latest",
         "review_source_confidence", "low_rating_flag", "high_return_flag", "refund_flag",
+        "avg_target_quality_score_30d", "target_match_days_30d",
+        "target_divergent_days_30d", "target_ads_missing_days_30d",
+        "target_attributing_days_30d", "target_usable_days_30d",
+        "avg_day_of_week", "weekend_share", "avg_day_of_month",
+        "avg_week_of_month", "avg_month_of_year",
+        "month_start_share", "month_middle_share", "month_end_share",
+        "paycheck_window_share", "midmonth_window_share",
+        "holiday_share", "holiday_eve_share", "post_holiday_share",
+        "commercial_event_share", "mothers_day_share", "fathers_day_share",
+        "black_friday_share", "christmas_runup_share",
+        "avg_days_to_nearest_event", "avg_abs_days_to_nearest_event",
+        "pre_event_30d_share", "pre_event_14d_share", "pre_event_7d_share",
+        "event_day_share", "post_event_7d_share",
+        "target_days_30d", "target_impressions_30d", "target_clicks_30d",
+        "target_spend_30d", "target_orders_30d", "target_sales_30d",
+        "target_ctr_30d", "target_cvr_30d", "target_roas_30d",
+        "campaign_days_30d", "campaign_impressions_30d", "campaign_clicks_30d",
+        "campaign_spend_30d", "campaign_orders_30d", "campaign_sales_30d",
+        "campaign_ctr_30d", "campaign_cvr_30d", "campaign_roas_30d",
+        "campaign_ml_conversion_probability", "campaign_ml_expected_roas",
+        "campaign_ml_good_hour",
+        "sale_price_brl", "unit_cost_brl", "stock_available",
+        "gross_margin_brl", "gross_margin_pct", "price_to_cost_ratio",
+        "stock_days_of_cover", "product_orders_30d", "product_sales_30d",
+        "product_roas_30d", "max_daily_budget_brl",
+        "max_spend_without_order_brl", "min_roas",
+        "has_competitor_price", "competitor_price_min_brl",
+        "competitor_price_gap_pct", "is_price_above_competitor",
+        "has_bsr", "bsr_rank", "bsr_delta_7d",
     ]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
@@ -230,7 +352,7 @@ def load(conn):
 def build_X(df, target):
     cols = [
         "event_hour", "is_madrugada", "is_manha", "is_tarde", "is_noite",
-        "impr_per_day", "days_observed",
+        "impr_per_day", "days_observed", "source_confidence",
         "current_bid", "amazon_rec_bid_lower", "amazon_rec_bid_median",
         "amazon_rec_bid_upper", "robot_proposed_bid", "robot_bid_delta_percent",
         "effective_min_bid", "effective_max_bid",
@@ -242,11 +364,48 @@ def build_X(df, target):
         "net_profit_after_quality_30d", "net_margin_after_quality_ratio_30d",
         "product_rating_latest", "product_reviews_total_latest",
         "review_source_confidence", "low_rating_flag", "high_return_flag", "refund_flag",
+        "avg_target_quality_score_30d", "target_match_days_30d",
+        "target_divergent_days_30d", "target_ads_missing_days_30d",
+        "target_attributing_days_30d", "target_usable_days_30d",
+        "avg_day_of_week", "weekend_share", "avg_day_of_month",
+        "avg_week_of_month", "avg_month_of_year",
+        "month_start_share", "month_middle_share", "month_end_share",
+        "paycheck_window_share", "midmonth_window_share",
+        "holiday_share", "holiday_eve_share", "post_holiday_share",
+        "commercial_event_share", "mothers_day_share", "fathers_day_share",
+        "black_friday_share", "christmas_runup_share",
+        "avg_days_to_nearest_event", "avg_abs_days_to_nearest_event",
+        "pre_event_30d_share", "pre_event_14d_share", "pre_event_7d_share",
+        "event_day_share", "post_event_7d_share",
+        "target_days_30d", "target_impressions_30d",
+        "campaign_days_30d", "campaign_impressions_30d",
+        "campaign_ml_conversion_probability", "campaign_ml_expected_roas",
+        "campaign_ml_good_hour",
+        "sale_price_brl", "unit_cost_brl", "stock_available",
+        "gross_margin_brl", "gross_margin_pct", "price_to_cost_ratio",
+        "stock_days_of_cover", "max_daily_budget_brl",
+        "max_spend_without_order_brl", "min_roas",
+        "has_competitor_price", "competitor_price_min_brl",
+        "competitor_price_gap_pct", "is_price_above_competitor",
+        "has_bsr", "bsr_rank", "bsr_delta_7d",
     ]
-    # For conversion/ROAS after the hour closes, clicks/spend signals are allowed.
-    # For click propensity, do not include click-derived features.
+    # ANTI-LEAK (auditoria 18/07): os agregados 30d de pedido/venda/roas/cvr da
+    # MESMA entidade (target_orders_30d etc.), da campanha-mae e do produto
+    # continham o proprio label — a janela 30d cobre TODO o periodo de treino,
+    # entao "target_orders_30d>0" ~= "has_order=1". Prova: AUC saltou p/ 1.000 e
+    # top_features viraram exatamente essas colunas. Ficam FORA do X:
+    #   - has_order/roas: *_orders_30d, *_sales_30d, *_cvr_30d, *_roas_30d
+    #     (target, campaign e product) — derivados do label de pedido/venda.
+    #   - has_click: alem dos acima, *_clicks_30d, *_ctr_30d, *_spend_30d
+    #     (spend = cliques x cpc, deriva do label de clique).
+    # Traffic pre-clique (impressions/days) e o prior do modelo de campanha
+    # (campaign_ml_*) continuam — nao derivam do label.
     if target != "has_click":
-        cols.extend(["ctr", "cpc"])
+        # Pos-clique: sinais de clique/custo da PROPRIA linha sao permitidos
+        # (o funil clique->pedido e contexto legitimo), e trafego 30d tambem.
+        cols.extend(["ctr", "cpc",
+                     "target_clicks_30d", "target_spend_30d", "target_ctr_30d",
+                     "campaign_clicks_30d", "campaign_spend_30d", "campaign_ctr_30d"])
     base = df[cols].copy()
     match = pd.get_dummies(df["match_type_norm"], prefix="m")
     camp = pd.get_dummies(df["campaign_norm"], prefix="c")

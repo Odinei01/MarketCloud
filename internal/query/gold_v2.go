@@ -282,50 +282,53 @@ func (h *Handler) GoldKeywordHourlyReal(w http.ResponseWriter, r *http.Request) 
 			where = append(where, cond+"$"+strconv.Itoa(len(args)))
 		}
 	}
-	add("campaign_action_type = ", r.URL.Query().Get("action"))
-	add("confidence = ", r.URL.Query().Get("confidence"))
-	add("source_grain = ", r.URL.Query().Get("source"))
+	add("r.campaign_action_type = ", r.URL.Query().Get("action"))
+	add("r.confidence = ", r.URL.Query().Get("confidence"))
+	add("r.source_grain = ", r.URL.Query().Get("source"))
 
 	sql := `
-		SELECT keyword_hour_recommendation_id, campaign_id, campaign_name,
-			ad_group_id, ad_group_name, keyword_text, match_type, event_hour,
-			campaign_action_type, advisor_action, confidence, source_grain,
-			sample_guard, execution_hint,
-			base_bid::float8 AS base_bid,
-			current_hour_multiplier::float8 AS current_hour_multiplier,
-			suggested_hour_multiplier::float8 AS suggested_hour_multiplier,
-			current_effective_bid::float8 AS current_effective_bid,
-			suggested_effective_bid::float8 AS suggested_effective_bid,
-			effective_bid_delta::float8 AS effective_bid_delta,
-			effective_bid_delta_percent::float8 AS effective_bid_delta_percent,
-			spend::float8 AS spend, orders::int AS orders, sales::float8 AS sales,
-			roas::float8 AS roas, clicks::int AS clicks, impressions::int AS impressions,
-			days_observed::int AS days_observed, window_from, window_to,
-			ml_conversion_probability::float8 AS ml_conversion_probability,
-			ml_expected_roas::float8 AS ml_expected_roas,
-			ml_good_hour, ml_agrees,
-			target_ml_click_probability::float8 AS target_ml_click_probability,
-			target_ml_conversion_probability::float8 AS target_ml_conversion_probability,
-			target_ml_expected_roas::float8 AS target_ml_expected_roas,
-			target_ml_good_hour,
-			target_ml_label_caveat,
-			target_ml_computed_at,
-			priority_score::float8 AS priority_score,
-			target_hour_has_data,
-			target_impressions::float8 AS target_impressions,
-			target_clicks::float8 AS target_clicks,
-			target_spend::float8 AS target_spend,
-			target_orders::float8 AS target_orders,
-			target_sales::float8 AS target_sales,
-			current_multiplier_scope,
-			ml_target_roas::float8 AS ml_target_roas,
-			ml_roas_ancora::float8 AS ml_roas_ancora,
-			ml_roas_observado::float8 AS ml_roas_observado,
-			ml_gasto_observado::float8 AS ml_gasto_observado,
-			vetoed, veto_reason
-		FROM marketcloud_gold.gold_keyword_hourly_recommendations_v3
+		SELECT r.keyword_hour_recommendation_id, r.campaign_id, r.campaign_name,
+			r.ad_group_id, r.ad_group_name, r.keyword_text, r.match_type, r.event_hour,
+			r.campaign_action_type, r.advisor_action, r.confidence, r.source_grain,
+			r.sample_guard, r.execution_hint,
+			r.base_bid::float8 AS base_bid,
+			r.current_hour_multiplier::float8 AS current_hour_multiplier,
+			r.suggested_hour_multiplier::float8 AS suggested_hour_multiplier,
+			r.current_effective_bid::float8 AS current_effective_bid,
+			r.suggested_effective_bid::float8 AS suggested_effective_bid,
+			r.effective_bid_delta::float8 AS effective_bid_delta,
+			r.effective_bid_delta_percent::float8 AS effective_bid_delta_percent,
+			r.spend::float8 AS spend, r.orders::int AS orders, r.sales::float8 AS sales,
+			r.roas::float8 AS roas, r.clicks::int AS clicks, r.impressions::int AS impressions,
+			r.days_observed::int AS days_observed, r.window_from, r.window_to,
+			r.ml_conversion_probability::float8 AS ml_conversion_probability,
+			r.ml_expected_roas::float8 AS ml_expected_roas,
+			r.ml_good_hour, r.ml_agrees,
+			r.target_ml_click_probability::float8 AS target_ml_click_probability,
+			r.target_ml_conversion_probability::float8 AS target_ml_conversion_probability,
+			r.target_ml_expected_roas::float8 AS target_ml_expected_roas,
+			r.target_ml_good_hour,
+			r.target_ml_label_caveat,
+			r.target_ml_computed_at,
+			r.priority_score::float8 AS priority_score,
+			r.target_hour_has_data,
+			r.target_impressions::float8 AS target_impressions,
+			r.target_clicks::float8 AS target_clicks,
+			r.target_spend::float8 AS target_spend,
+			r.target_orders::float8 AS target_orders,
+			r.target_sales::float8 AS target_sales,
+			r.current_multiplier_scope,
+			r.ml_target_roas::float8 AS ml_target_roas,
+			r.ml_roas_ancora::float8 AS ml_roas_ancora,
+			r.ml_roas_observado::float8 AS ml_roas_observado,
+			r.ml_gasto_observado::float8 AS ml_gasto_observado,
+			r.vetoed, r.veto_reason,
+			ex.explanation_json::text AS explanation_json
+		FROM marketcloud_gold.gold_keyword_hourly_recommendations_v3 r
+		LEFT JOIN marketcloud_gold.v_keyword_hourly_recommendation_explain_v1 ex
+		  ON ex.keyword_hour_recommendation_id = r.keyword_hour_recommendation_id
 		WHERE ` + strings.Join(where, " AND ") + `
-		ORDER BY priority_score DESC, ABS(effective_bid_delta) DESC
+		ORDER BY r.priority_score DESC, ABS(r.effective_bid_delta) DESC
 		LIMIT ` + strconv.Itoa(limit)
 
 	rows, err := h.db.Query(r.Context(), sql, args...)
@@ -376,12 +379,106 @@ func (h *Handler) GoldKeywordApply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
-	if body.RecommendationID == "" || body.CampaignID == "" || body.KeywordText == "" {
-		writeError(w, http.StatusBadRequest, "recommendation_id_campaign_keyword_required")
+	if body.RecommendationID == "" {
+		writeError(w, http.StatusBadRequest, "recommendation_id_required")
 		return
 	}
 
-	// 1) Chama o Robo (SWARM) — mesma acao que a tela fazia direto.
+	// 1) Chama o Robo (SWARM) com snapshot canonico do banco. O frontend manda
+	// apenas o recommendation_id; campos criticos sao reconstruidos da v3.
+	rows, err := h.db.Query(r.Context(), `
+		SELECT keyword_hour_recommendation_id, campaign_id, campaign_name,
+			ad_group_id, keyword_text, match_type, event_hour::int,
+			campaign_action_type, confidence, source_grain,
+			base_bid::float8 AS base_bid,
+			current_hour_multiplier::float8 AS current_hour_multiplier,
+			suggested_hour_multiplier::float8 AS suggested_hour_multiplier,
+			current_effective_bid::float8 AS current_effective_bid,
+			suggested_effective_bid::float8 AS suggested_effective_bid,
+			impressions::float8 AS impressions, clicks::float8 AS clicks,
+			spend::float8 AS spend, orders::float8 AS orders,
+			sales::float8 AS sales, roas::float8 AS roas,
+			audit_reason
+		FROM marketcloud_gold.gold_keyword_hourly_recommendations_v3
+		WHERE keyword_hour_recommendation_id = $1
+		  AND audit_decision = 'APPROVED'
+		  AND campaign_action_type IN ('BID_UP','BID_DOWN','CUT_HOUR')
+		LIMIT 1
+	`, body.RecommendationID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "keyword_recommendation_lookup_failed: "+err.Error())
+		return
+	}
+	rec, err := pgx.CollectOneRow(rows, pgx.RowToMap)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusConflict, "keyword_recommendation_not_actionable")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "keyword_recommendation_scan_failed: "+err.Error())
+		return
+	}
+	asString := func(key string) string {
+		if v, ok := rec[key]; ok && v != nil {
+			if s, ok := v.(string); ok {
+				return strings.TrimSpace(s)
+			}
+		}
+		return ""
+	}
+	asFloat := func(key string) float64 {
+		if v, ok := rec[key]; ok && v != nil {
+			switch x := v.(type) {
+			case float64:
+				return x
+			case int64:
+				return float64(x)
+			case int32:
+				return float64(x)
+			case int:
+				return float64(x)
+			}
+		}
+		return 0
+	}
+	asInt := func(key string) int {
+		if v, ok := rec[key]; ok && v != nil {
+			switch x := v.(type) {
+			case int32:
+				return int(x)
+			case int64:
+				return int(x)
+			case int:
+				return x
+			case float64:
+				return int(x)
+			}
+		}
+		return 0
+	}
+
+	body.RecommendationID = asString("keyword_hour_recommendation_id")
+	body.CampaignID = asString("campaign_id")
+	body.CampaignName = asString("campaign_name")
+	body.AdGroupID = asString("ad_group_id")
+	body.KeywordText = asString("keyword_text")
+	body.MatchType = asString("match_type")
+	body.Hour = asInt("event_hour")
+	body.ActionType = asString("campaign_action_type")
+	body.SuggestedMultiplier = asFloat("suggested_hour_multiplier")
+	body.BaseBid = asFloat("base_bid")
+	body.SuggestedEffectiveBid = asFloat("suggested_effective_bid")
+	body.BaselineImpressions = asFloat("impressions")
+	body.BaselineClicks = asFloat("clicks")
+	body.BaselineSpend = asFloat("spend")
+	body.BaselineOrders = asFloat("orders")
+	body.BaselineSales = asFloat("sales")
+	body.BaselineRoas = asFloat("roas")
+	if body.RecommendationID == "" || body.CampaignID == "" || body.KeywordText == "" {
+		writeError(w, http.StatusConflict, "keyword_recommendation_missing_required_fields")
+		return
+	}
+
 	roboBase := strings.TrimRight(os.Getenv("BID_ROBOT_API_BASE"), "/")
 	if roboBase == "" {
 		roboBase = "http://host.docker.internal:8080"
@@ -409,7 +506,7 @@ func (h *Handler) GoldKeywordApply(w http.ResponseWriter, r *http.Request) {
 		if s, ok := roboBody["status"].(string); ok {
 			roboStatus = strings.ToUpper(s)
 		}
-		applied = resp.StatusCode < 300 && (roboStatus == "APPLIED" || roboStatus == "OK" || roboStatus == "PUBLISHED")
+		applied = resp.StatusCode < 300 && (roboStatus == "APPLIED" || roboStatus == "ALREADY_ALIGNED" || roboStatus == "OK" || roboStatus == "PUBLISHED")
 	}
 
 	// 2) Registra a decisao no MarketCloud, independente do resultado do Robo.
@@ -424,12 +521,15 @@ func (h *Handler) GoldKeywordApply(w http.ResponseWriter, r *http.Request) {
 	}
 	entityKey := body.KeywordText + ":" + strconv.Itoa(body.Hour)
 	evidence, _ := json.Marshal(map[string]interface{}{
-		"source": "keyword_hourly_apply_screen", "robot_status": roboStatus,
-		"base_bid": body.BaseBid, "suggested_effective_bid": body.SuggestedEffectiveBid,
+		"source": "keyword_hourly_apply_screen", "snapshot_source": "marketcloud_gold.gold_keyword_hourly_recommendations_v3",
+		"robot_status": roboStatus, "audit_reason": asString("audit_reason"),
+		"confidence": asString("confidence"), "source_grain": asString("source_grain"),
+		"base_bid": body.BaseBid, "current_hour_multiplier": asFloat("current_hour_multiplier"),
+		"current_effective_bid": asFloat("current_effective_bid"), "suggested_effective_bid": body.SuggestedEffectiveBid,
 		"baseline": map[string]float64{"impressions": body.BaselineImpressions, "clicks": body.BaselineClicks,
 			"spend": body.BaselineSpend, "orders": body.BaselineOrders, "sales": body.BaselineSales, "roas": body.BaselineRoas},
 	})
-	_, err := h.db.Exec(r.Context(), `
+	_, err = h.db.Exec(r.Context(), `
 		INSERT INTO marketcloud_recommendations.recommendation_decisions (
 			recommendation_id, tenant_id, amc_instance_id, ads_profile_id,
 			entity_type, entity_key, campaign_id, campaign_name, ad_product_type,
