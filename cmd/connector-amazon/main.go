@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
@@ -81,6 +80,8 @@ func main() {
 	r.Post("/internal/amc/ingest/e012/{execution_id}", s.ingestE012)
 	r.Post("/internal/amc/ingest/e013/{execution_id}", s.ingestE013)
 	r.Post("/internal/amazon/token/refresh", s.refreshTokenForStore)
+	r.Post("/internal/ads/reprocess/{request_id}/submit", s.submitAdsReprocessReport)
+	r.Post("/internal/ads/reprocess/{request_id}/poll", s.pollAdsReprocessReport)
 
 	addr := ":" + cfg.Port
 	log.Printf("marketcloud-connector-amazon listening on %s", addr)
@@ -99,8 +100,9 @@ func main() {
 // Body: {query_run_id, amc_instance_id, sql_template, parameters}
 //
 // AMC Reporting API is a 2-step flow:
-//   Step 1 — POST /workflows          → creates/saves the SQL query, returns workflowId
-//   Step 2 — POST /workflowExecutions → runs the workflow for a time window, returns workflowExecutionId
+//
+//	Step 1 — POST /workflows          → creates/saves the SQL query, returns workflowId
+//	Step 2 — POST /workflowExecutions → runs the workflow for a time window, returns workflowExecutionId
 func (s *connectorServer) submitAMCQuery(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		QueryRunID    string         `json:"query_run_id"`
@@ -400,11 +402,11 @@ func (s *connectorServer) getQueryStatus(w http.ResponseWriter, r *http.Request)
 // POST /internal/amc/download
 func (s *connectorServer) downloadResult(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		QueryRunID       string `json:"query_run_id"`
-		AMCInstanceID    string `json:"amc_instance_id"`
-		TenantID         string `json:"tenant_id"`
-		ExecutionID      string `json:"execution_id"`
-		ResultS3Path     string `json:"result_s3_path"`
+		QueryRunID    string `json:"query_run_id"`
+		AMCInstanceID string `json:"amc_instance_id"`
+		TenantID      string `json:"tenant_id"`
+		ExecutionID   string `json:"execution_id"`
+		ResultS3Path  string `json:"result_s3_path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json")
@@ -716,13 +718,13 @@ func substituteAMCParams(sqlTpl string, params map[string]any, periodStart, peri
 		pEndTS = pEndTS[:19]
 	}
 	raw := map[string]string{
-		"period_start_ts": pStartTS,
-		"period_end_ts":   pEndTS,
-		"min_spend":       "30.0",
-		"min_spend_hour":  "5.0",
-		"target_roas":     "5.0",
-		"min_clicks":      "8",
-		"min_impressions": "100",
+		"period_start_ts":  pStartTS,
+		"period_end_ts":    pEndTS,
+		"min_spend":        "30.0",
+		"min_spend_hour":   "5.0",
+		"target_roas":      "5.0",
+		"min_clicks":       "8",
+		"min_impressions":  "100",
 		"min_orders_exact": "1",
 		// Fragmentos de SQL (expressao/clausula) — raw, sem aspas (B: grouping/filtro custom)
 		"product_group_label":  "'TODOS'",

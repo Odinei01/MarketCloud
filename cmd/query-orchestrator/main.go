@@ -48,11 +48,12 @@ func main() {
 	// Start background workers
 	go o.runSubmitLoop(ctx)
 	go o.runStatusLoop(ctx)
-	go o.runDailyEnqueueLoop(ctx)     // enfileira E001..E009 1x/dia (janela deslizante)
-	go o.runIngestLoop(ctx)           // auto-ingest de runs SUCCEEDED -> bronze
-	go o.runSwarmSyncLoop(ctx)        // sync do estado SWARM/ZANOM -> bronze local
-	go o.runAmsHourlyRefreshLoop(ctx)  // reconcilia AMS -> hourly em janela movel D-14
-	go o.runPinOutcomeMeasureLoop(ctx) // mede cada pin no grao keyword x hora -> volta pro ML
+	go o.runDailyEnqueueLoop(ctx)          // enfileira E001..E009 1x/dia (janela deslizante)
+	go o.runIngestLoop(ctx)                // auto-ingest de runs SUCCEEDED -> bronze
+	go o.runSwarmSyncLoop(ctx)             // sync do estado SWARM/ZANOM -> bronze local
+	go o.runAmsHourlyRefreshLoop(ctx)      // reconcilia AMS -> hourly em janela movel D-14
+	go o.runPinOutcomeMeasureLoop(ctx)     // mede cada pin no grao keyword x hora -> volta pro ML
+	go o.runAdsReportingReprocessLoop(ctx) // registra D-1/D-3/D-7/D-14 para reconciliar AMS x Ads API
 
 	// HTTP for health + manual trigger
 	r := chi.NewRouter()
