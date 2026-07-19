@@ -3244,13 +3244,13 @@ O ML esta operacional e melhor do que estava: treina de hora em hora, usa camada
 Validacao dos pontos contestados/corrigidos pelo auditoria anterior.
 
 1. P1-4 medidor keyword/pin: ACEITO como corrigido no grao certo.
-   - Migration  91_medidor_pin_filtra_lixo.sql recriou marketcloud_gold.measure_keyword_pin_outcomes() filtrando linhas negativas de ronze_ams_hourly_target antes de somar.
+   - Migration 91_medidor_pin_filtra_lixo.sql recriou marketcloud_gold.measure_keyword_pin_outcomes() filtrando linhas negativas de ronze_ams_hourly_target antes de somar.
    - Confirmado no banco: ainda existem 218 linhas com impressao negativa e 3 com outras metricas negativas no bronze target, mas a funcao agora exclui essas linhas.
    - Execucao atual: measure_keyword_pin_outcomes(3,5,0.10) retornou medidos=0, sem_dado_ainda=55; ou seja, fix aplicado, mas ainda sem volume para medir pins.
    - Observacao: isso corrige o medidor de pin/keyword. A funcao marketcloud_recommendations.refresh_recommendation_hourly_outcomes() continua lendo ronze_ams_hourly no grao campanha; esse e outro medidor.
 
 2. P0-2 identidade campanha: ACEITO como sentinela/fonte unica criada, mas ADOCAO AINDA PARCIAL.
-   - Migration  92_mapa_identidade_campanha.sql criou marketcloud_gold.gold_campaign_identity e gold_campaign_identity_alertas.
+   - Migration 92_mapa_identidade_campanha.sql criou marketcloud_gold.gold_campaign_identity e gold_campaign_identity_alertas.
    - Confirmado: mapa 37 linhas, 37 ids, 37 nomes.
    - Sentinela confirmou 4 alertas: as 4 campanhas m19 autopilot com SEM_ID_NO_MAPA.
    - Ressalva auditoria: workers/modeling-worker/marketcloud_ml_auto_apply_campaign_recommendations.py ainda monta campaign_ids a partir de marketcloud_bronze.bronze_ams_hourly, nao de gold_campaign_identity; internal/query/ml_full_auto.go tambem refaz mapa proprio. Portanto a fonte unica existe, mas ainda precisa ser adotada pelos consumidores criticos.
@@ -5880,6 +5880,84 @@ Parecer:
 - Enquanto esse executor nao existir, a postura correta e manter proposta 360
   auditavel e nao simular aplicacao.
 
+### 2026-07-18 - Auditoria AMS x Ads API/reporting
+
+Pedido: auditar os dados que estao chegando do Amazon Marketing Stream e avaliar
+se conseguimos bater com as APIs de Ads da Amazon.
+
+Implementacao aplicada:
+
+- Nova migration:
+  - `migrations/122_ams_ads_reconciliation_audit.sql`.
+- Novas views:
+  - `marketcloud_gold.v_ams_ads_reconciliation_daily_v1`;
+  - `marketcloud_gold.v_ams_quality_audit_v1`.
+- Objetivo das views:
+  - reconciliar AMS campanha x dia contra `swarm_src.amazon_ads_campaigns_daily`;
+  - reconciliar AMS campanha contra soma AMS keyword/target;
+  - separar `D0_D1_FRESH`, `D2_D7_ATTRIBUTING` e `D8_PLUS_MATURE_OR_DELTA`;
+  - marcar `ADS_DAILY_MISSING`, `FRESH_NOT_EXPECTED_TO_MATCH_DAILY`,
+    `ATTRIBUTION_WINDOW_NOT_FINAL`, `AMS_DELTA_ONLY`, `MATCH` e `CHECK_DELTA`.
+
+Achados atuais:
+
+- `marketcloud_bronze.bronze_ams_hourly`:
+  - `1.356` linhas;
+  - periodo `2026-06-19` a `2026-07-18`;
+  - ultimo update `2026-07-18 13:11:19 UTC`;
+  - `1.113` linhas com trafego;
+  - `30` linhas com conversao;
+  - `29` pedidos 7d;
+  - `R$ 1.235,91` vendas 7d;
+  - `166` linhas negativas/deltas;
+  - `campaign_name` em branco em `1.356/1.356`, esperado porque AMS vem chaveado
+    por `campaign_id`; resolucao de nome deve vir de `gold_campaign_identity`.
+- `marketcloud_bronze.bronze_ams_hourly_target`:
+  - `2.212` linhas;
+  - `23` campanhas;
+  - `137` targets;
+  - `1.831` linhas com trafego;
+  - `30` linhas com conversao;
+  - `29` pedidos 7d;
+  - `R$ 1.235,91` vendas 7d;
+  - `235` linhas negativas/deltas.
+- AMS campanha vs soma AMS target:
+  - `1.356` celulas;
+  - `0` celulas sem target;
+  - `2` celulas com divergencia de trafego;
+  - `0` celulas com divergencia de conversao;
+  - delta total target vs campanha: `+3` impressoes, `-1` clique, `-R$ 1,23`,
+    `0` pedidos, `R$ 0,00` vendas.
+- AMS vs Ads daily/reporting:
+  - `175` campanhas-dia comparadas;
+  - `10` linhas `ADS_DAILY_MISSING`, todas em `D0/D1` ou campanhas sem daily ainda;
+  - `125` linhas em atraso esperado (`D0/D1` fresco ou `D2-D7` atribuicao);
+  - `39` linhas `AMS_DELTA_ONLY`, majoritariamente deltas negativos de invalidacao;
+  - `1` linha `CHECK_DELTA`: `2026-07-09 Localizador`
+    (`AMS R$0,00 spend clamped / Ads R$12,96`, `AMS 1 pedido / Ads 2 pedidos`,
+    delta vendas `-R$73,98`).
+
+Parecer:
+
+- AMS esta chegando e ja traz trafego + conversoes reais.
+- O parser campanha/target esta coerente: a soma target bate com campanha quase
+  perfeitamente e conversao bate 100%.
+- As linhas negativas existem e sao compatíveis com deltas/invalidacoes do AMS;
+  nao devem alimentar ML/Gold sem clamp/camada canonica.
+- Nao se deve comparar AMS fresco com Ads daily como se fossem identicos:
+  D0/D1 e D2-D7 ainda estao em janela de reporte/atribuicao.
+- Sim, conseguimos bater com APIs de Ads:
+  - no banco atual, via `swarm_src.amazon_ads_campaigns_daily`;
+  - para hora a hora, via `marketcloud_bronze.bronze_amazon_ads_hourly`;
+  - para verificacao externa/reprocessavel, solicitando reports v3 da Amazon Ads
+    por campanha/ad group/keyword/target e comparando por `campaign_id`, data,
+    hora e janela de atribuicao.
+- Proximo passo recomendado:
+  - expor `v_ams_quality_audit_v1` em card de monitoria;
+  - investigar o unico `CHECK_DELTA` (`Localizador`, `2026-07-09`);
+  - criar job diario que reprocessa Ads Reporting API v3 D-1/D-7/D-14 e compara
+    automaticamente contra AMS.
+
 ### 2026-07-17 - Auditoria detalhada 115/116 + honestidade da metrica ML
 
 Pedido: auditar 115/116 no detalhe, corrigir/implementar, fechar o ML sem finding
@@ -5942,3 +6020,1820 @@ Estado do ML (minha visao honesta de "100%"):
   persistir o BINARIO do modelo p/ replay bit-exato (fatia menor, so p/ auditoria
   retroativa), (c) executor real de budget/placement no Robo/Ads (feature grande, fora
   do ML). Nada disso e bug oculto — tudo explicito.
+
+### §123 - 2026-07-18 - Base AMS de boa para otima: score, reprocess e painel
+
+Pedido: executar o plano para a base sair de "boa" para "otima", ou seja, parar
+de depender de leitura manual da auditoria AMS x Ads e transformar isso em
+governanca operacional + feature de ML.
+
+Implementado:
+
+- `migrations/123_ams_data_quality_score_and_reprocess.sql`:
+  - cria `marketcloud_ops.ads_reporting_reprocess_requests`;
+  - cria a funcao `marketcloud_ops.enqueue_ads_reporting_reprocess_windows()`;
+  - registra automaticamente as janelas oficiais `D-1`, `D-3`, `D-7`, `D-14`;
+  - cria `marketcloud_gold.v_ams_data_quality_score_v1`;
+  - cria `marketcloud_gold.v_ams_quality_summary_v1`;
+  - cria `marketcloud_gold.v_gold_hourly_signal_quality_v1`.
+- `cmd/query-orchestrator`:
+  - novo loop `runAdsReportingReprocessLoop`;
+  - a cada start e depois a cada 6h, atualiza a fila D-1/D-3/D-7/D-14.
+  - importante: isso NAO simula chamada externa; e ledger real para o executor
+    oficial de Ads Reporting API v3 consumir.
+- `internal/query/ml_ams_status.go`:
+  - endpoint `/api/v1/gold/ml-ams-status` agora retorna:
+    - `ams_quality_summary`;
+    - `ams_quality_divergences`;
+    - `ads_reprocess_requests`.
+- `frontend/src/pages/StatusAmsMl.jsx`:
+  - nova secao "Qualidade AMS x Ads";
+  - mostra status por campanha-dia: `FRESH`, `ATTRIBUTING`, `DELTA_ONLY`,
+    `ADS_MISSING`, `DIVERGENT`, `MATURE_RECONCILED`;
+  - mostra score medio, delta gasto, acao operacional e fila D-1/D-3/D-7/D-14.
+- `workers/ml-worker/marketcloud_ml_worker_hourly_real_v2.py`:
+  - ML campanha/hora agora recebe como features:
+    - `avg_data_quality_score_30d`;
+    - `divergent_days_30d`;
+    - `ads_missing_days_30d`;
+    - `attributing_days_30d`;
+    - `fresh_days_30d`;
+    - `mature_reconciled_days_30d`;
+    - `traffic_usable_days_30d`;
+    - `conversion_usable_days_30d`.
+
+Estado vivo apos aplicar:
+
+- Migration 123 aplicada com sucesso.
+- `enqueue_ads_reporting_reprocess_windows()` retornou `4`.
+- Fila atual:
+  - `D-1` = `2026-07-17`;
+  - `D-3` = `2026-07-15`;
+  - `D-7` = `2026-07-11`;
+  - `D-14` = `2026-07-04`;
+  - todas em `WAITING_REAL_ADS_REPORT_EXECUTOR`.
+- Score AMS x Ads atual:
+  - `ATTRIBUTING`: `103` linhas, score `72,0`;
+  - `DELTA_ONLY`: `39` linhas, score `78,0`;
+  - `FRESH`: `22` linhas, score `68,0`;
+  - `ADS_MISSING`: `10` linhas, score `45,0`;
+  - `DIVERGENT`: `1` linha, score `35,0`.
+- Endpoint validado:
+  - `qualityStatuses = DIVERGENT:1, ADS_MISSING:10, ATTRIBUTING:103, FRESH:22, DELTA_ONLY:39`;
+  - `divergences = 11`;
+  - `reprocess = D-1/D-3/D-7/D-14 WAITING_REAL_ADS_REPORT_EXECUTOR`.
+- Worker `hourly_real_v2` rodado manualmente depois da alteracao:
+  - `611` celulas campanha x hora;
+  - `106` positivas com pedido;
+  - conversao `AUC=0.963`;
+  - ROAS `MAE=1.352`, baseline `2.555`;
+  - `611` predicoes gravadas;
+  - `78` propostas Full Control 360 sincronizadas;
+  - `run_id=733`.
+
+Validacoes:
+
+- `go test ./internal/query ./cmd/api ./cmd/query-orchestrator` OK.
+- `npm run build` em `frontend` OK.
+- build Docker OK para `api`, `query-orchestrator`, `modeling-worker`.
+- containers `api`, `query-orchestrator`, `modeling-worker` recriados/subidos.
+- `python -m py_compile` validado dentro da imagem `modeling-worker`.
+- consultas novas de qualidade AMS x Ads executam em ~0,13s; a lentidao restante
+  do endpoint de status vem dos blocos antigos/pesados da propria tela, nao do
+  score novo.
+
+Divida ainda aberta:
+
+- Falta conectar um executor real do Amazon Ads Reporting API v3 a
+  `marketcloud_ops.ads_reporting_reprocess_requests` para marcar `RUNNING` /
+  `COMPLETED` e atualizar as fontes Ads daily/keyword/target automaticamente.
+  O ledger e o painel ja estao prontos; a chamada externa oficial ainda precisa
+  ser ligada ao conector de Ads.
+
+### §124 - 2026-07-18 - UX/CX Status AMS + ML em abas
+
+Pedido: a tela `Status AMS + ML` estava com "um caminhao de coisas"; dividir
+por UX/CX para responder perguntas diferentes sem misturar operacao, ML e
+auditoria tecnica.
+
+Implementado em `frontend/src/pages/StatusAmsMl.jsx`:
+
+- adicionada navegacao por abas:
+  - `Visao geral`;
+  - `AMS / Dados`;
+  - `Robo / Acoes`;
+  - `ML / Aprendizado`;
+  - `Auditoria tecnica`.
+- `Visao geral` virou a abertura da tela:
+  - cards de saude AMS, conversoes, parser/lake e ML target;
+  - leitura rapida;
+  - KPIs principais;
+  - bloco "Alertas para decidir agora" com:
+    - alertas de qualidade de dados;
+    - robo ganhando/perdendo;
+    - amostra de aprendizado.
+- `AMS / Dados` concentra:
+  - qualidade AMS x Ads;
+  - divergencias;
+  - fila D-1/D-3/D-7/D-14;
+  - horas AMS recebidas.
+- `Robo / Acoes` concentra:
+  - 360 Full-auto;
+  - ML 360 proposto.
+- `ML / Aprendizado` concentra:
+  - aprendizado pos-acao;
+  - holdout robo x deixar quieto.
+- `Auditoria tecnica` concentra:
+  - rodadas do ML;
+  - modelos atuais;
+  - relogios principais da operacao.
+
+Validacao:
+
+- `npm run build` em `frontend` OK.
+
+Observacao:
+
+- Nao houve mudanca de backend nem de dado; foi reorganizacao de experiencia da
+  tela para reduzir carga cognitiva. A proxima melhoria de UX seria quebrar
+  `StatusAmsMl.jsx` em componentes menores (`OverviewTab`, `AmsTab`,
+  `RobotTab`, `MlTab`, `AuditTab`) para manutencao.
+
+### §125 - 2026-07-18 - Executor real Ads Reporting API v3 para reprocess AMS x Ads
+
+Pedido: completar a pendencia do §123. O ledger
+`marketcloud_ops.ads_reporting_reprocess_requests` nao podia ficar apenas em
+`WAITING_REAL_ADS_REPORT_EXECUTOR`; precisava chamar a Amazon Ads Reporting API
+v3 de verdade, baixar o report e alimentar a reconciliacao AMS x Ads.
+
+Implementado:
+
+- `migrations/125_ads_reporting_v3_executor.sql`:
+  - cria `marketcloud_ops.ads_reporting_sp_campaign_daily_v3`;
+  - cria `marketcloud_gold.v_ads_campaigns_daily_effective_v1`;
+  - a fonte efetiva passa a preferir `ADS_REPORTING_V3` quando existe
+    reprocess local, caindo para `SWARM_FDW` quando ainda nao existe;
+  - recria `marketcloud_gold.v_ams_ads_reconciliation_daily_v1` para usar a
+    fonte efetiva e expor `ads_source`.
+- `cmd/connector-amazon/ads_reporting_v3.go`:
+  - novo endpoint interno `POST /internal/ads/reprocess/{request_id}/submit`;
+  - novo endpoint interno `POST /internal/ads/reprocess/{request_id}/poll`;
+  - usa token Amazon Ads existente do seller/profile ativo;
+  - cria report v3 `SPONSORED_PRODUCTS / spCampaigns / DAILY / GZIP_JSON`;
+  - baixa e ingere `date`, campanha, impressoes, cliques, custo, pedidos,
+    vendas e unidades;
+  - trata `425 duplicate` da Amazon como sucesso recuperavel, gravando o
+    `report_id` original em vez de ficar preso em erro.
+- `cmd/connector-amazon/main.go`:
+  - registra as duas rotas internas novas.
+- `cmd/query-orchestrator/ads_reporting_reprocess.go`:
+  - continua enfileirando D-1/D-3/D-7/D-14 a cada 6h;
+  - agora tambem processa a fila a cada 5min;
+  - `WAITING_REAL_ADS_REPORT_EXECUTOR` chama `submit`;
+  - `SUBMITTED/RUNNING` chama `poll`;
+  - limita a 4 requests por ciclo para nao pressionar a API.
+
+Estado vivo apos execucao real contra Amazon:
+
+- Migration 125 aplicada com sucesso.
+- Containers rebuildados/subidos:
+  - `connector-amazon`;
+  - `query-orchestrator`.
+- Reports criados/recuperados:
+  - D-1 `2026-07-17`: `7d3c401e-1f37-4a25-ac3a-ef41d8f0c7c5`;
+  - D-3 `2026-07-15`: `8dc06c27-a83d-4f7b-b79f-4d9c71d3ce5a`;
+  - D-7 `2026-07-11`: `35d91aa8-0a21-4a87-97d4-8c416ccc3522`;
+  - D-14 `2026-07-04`: `d98442f1-1b2d-4c50-b182-c70b261c04d7`.
+- Ingestoes concluidas:
+  - D-1: `18` linhas, gasto `R$ 37,86`, pedidos `1`, vendas `R$ 38,90`;
+  - D-3: `19` linhas, gasto `R$ 20,16`, pedidos `2`, vendas `R$ 109,89`;
+  - D-7: `23` linhas, gasto `R$ 104,18`, pedidos `19`, vendas `R$ 767,14`.
+- D-14 segue `RUNNING/PENDING` do lado Amazon no ultimo poll; o orchestrator
+  continua tentando a cada 5min.
+- Fonte efetiva validada:
+  - `2026-07-17` = `ADS_REPORTING_V3`;
+  - `2026-07-15` = `ADS_REPORTING_V3`;
+  - `2026-07-11` = `ADS_REPORTING_V3`;
+  - `2026-07-04` ainda = `SWARM_FDW` ate o report D-14 completar.
+
+Validacoes:
+
+- `go test ./cmd/connector-amazon ./cmd/query-orchestrator ./internal/query ./cmd/api` OK.
+- `docker compose build connector-amazon query-orchestrator` OK.
+- `docker compose up -d connector-amazon query-orchestrator` OK.
+- Chamada manual real:
+  - `POST /internal/ads/reprocess/1/submit` recuperou duplicate e gravou
+    `SUBMITTED`;
+  - `POST /internal/ads/reprocess/{1,2,3}/poll` concluiu e ingeriu linhas.
+
+Escopo que ainda nao foi fingido:
+
+- Esta entrega liga o primeiro corte oficial: Sponsored Products por campanha
+  diaria (`spCampaigns`).
+- O ledger ainda lista adGroup/keyword/target como reports desejados, mas esses
+  graos ainda nao foram implementados no executor. Devem entrar em uma proxima
+  secao com report types/colunas proprios, sem reaproveitar o payload de
+  campanha.
+
+### §126 - 2026-07-18 - Executor multigrao Ads Reporting v3: adGroup, keyword e target
+
+Pedido: completar o que ficou explicitamente pendente no §125. O processo nao
+podia ficar automatico apenas para campanha; precisava submeter e pollar tambem
+`adGroup`, `keyword` e `target`.
+
+Implementado:
+
+- `migrations/126_ads_reporting_v3_adgroup_keyword_target.sql`:
+  - cria `marketcloud_ops.ads_reporting_sp_adgroup_daily_v3`;
+  - cria `marketcloud_ops.ads_reporting_sp_targeting_daily_v3`;
+  - cria `marketcloud_gold.v_ads_adgroups_daily_effective_v1`;
+  - cria `marketcloud_gold.v_ads_targeting_daily_effective_v1`;
+  - recria `marketcloud_gold.v_ams_ads_reconciliation_daily_v1` com colunas
+    oficiais de targeting Ads v3:
+    - `ads_targeting_rows`;
+    - `ads_keyword_rows`;
+    - `ads_target_rows`;
+    - `ads_targeting_spend/orders/sales`;
+    - `delta_ads_targeting_*`;
+    - `ads_targeting_source`.
+  - recria as views dependentes derrubadas pelo Postgres:
+    - `v_ams_data_quality_score_v1`;
+    - `v_ams_quality_summary_v1`;
+    - `v_gold_hourly_signal_quality_v1`;
+    - `v_ams_quality_audit_v1`.
+- `cmd/connector-amazon/ads_reporting_v3.go`:
+  - deixou de tratar o request como apenas `sp_campaign_report_id`;
+  - agora cada janela D-1/D-3/D-7/D-14 carrega quatro reports:
+    - `sp_campaign_report_id`;
+    - `sp_adgroup_report_id`;
+    - `sp_keyword_report_id`;
+    - `sp_target_report_id`.
+  - `submit` envia apenas os reports faltantes e preserva IDs ja criados;
+  - `poll` baixa/ingere cada report que completar e so marca a janela
+    `COMPLETED` quando os quatro graos estiverem completos;
+  - `adGroup` usa `spCampaigns` com `groupBy=["adGroup"]`;
+  - `keyword` usa `spTargeting` com filtro `keywordType IN (BROAD, PHRASE, EXACT)`;
+  - `target` usa `spTargeting` com filtro
+    `keywordType IN (TARGETING_EXPRESSION, TARGETING_EXPRESSION_PREDEFINED)`.
+
+Correcoes descobertas em validacao real:
+
+- A Amazon rejeitou `campaignId/campaignName` no report de `adGroup`.
+  - Ajuste: o report usa apenas colunas permitidas (`adGroupId`, `adGroupName`,
+    metricas); a campanha e derivada localmente por `ad_group_id` a partir de
+    `swarm_src.amazon_ads_targeting_inventory`.
+- A Amazon rejeitou `targetId` no report de `spTargeting`.
+  - Ajuste: o target usa `targeting` como texto/chave, junto de
+    `campaignId/adGroupId/keywordType/matchType`.
+- `v_ams_quality_audit_v1` foi restaurada dentro da migration 126 depois do
+  `DROP ... CASCADE`, para nao deixar painel/auditoria quebrados.
+
+Estado vivo apos chamada real contra Amazon:
+
+- Todos os quatro dias tem campanha diaria completa:
+  - `2026-07-17`: `18` linhas;
+  - `2026-07-15`: `19` linhas;
+  - `2026-07-11`: `23` linhas;
+  - `2026-07-04`: `18` linhas.
+- Os quatro dias tem IDs reais gerados/recuperados para `adGroup`, `keyword` e
+  `target`.
+- Ultimo poll manual:
+  - campanha = `COMPLETED`;
+  - adGroup = `PENDING`;
+  - keyword = `PENDING`;
+  - target = `PENDING`;
+  - status da janela = `RUNNING`.
+- Isso nao e erro de schema: os payloads foram aceitos pela Amazon; os arquivos
+  novos ainda estavam sendo gerados no fluxo assincrono do Reporting v3.
+- O `query-orchestrator` continua pollando `RUNNING` a cada 5min.
+
+Validacoes:
+
+- `go test ./cmd/connector-amazon ./cmd/query-orchestrator ./internal/query ./cmd/api` OK.
+- Migration 126 aplicada OK.
+- `connector-amazon` rebuildado e recriado.
+- `pg_class` confirmou as views:
+  - `v_ams_ads_reconciliation_daily_v1`;
+  - `v_ams_data_quality_score_v1`;
+  - `v_ams_quality_summary_v1`;
+  - `v_gold_hourly_signal_quality_v1`;
+  - `v_ams_quality_audit_v1`.
+
+Ponto a observar:
+
+- Se os reports novos ficarem `PENDING` por muito tempo, verificar no ledger
+  `metadata_json->'report_statuses'` e logs do connector. O caminho de schema ja
+  passou; a proxima falha esperada seria atraso/rate limit do proprio Reporting
+  v3.
+
+Atualizacao viva - 2026-07-18 17:35 UTC:
+
+- Os quatro dias fecharam `COMPLETED` em todos os graos.
+- Linhas ingeridas por janela:
+  - D-1 `2026-07-17`: campanha `18`, adGroup `19`, keyword `35`, target `8`;
+  - D-3 `2026-07-15`: campanha `19`, adGroup `19`, keyword `35`, target `8`;
+  - D-7 `2026-07-11`: campanha `23`, adGroup `76`, keyword `230`, target `198`;
+  - D-14 `2026-07-04`: campanha `18`, adGroup `19`, keyword `39`, target `10`.
+- Totais nas tabelas oficiais locais:
+  - `ads_reporting_sp_adgroup_daily_v3`: `133` linhas;
+  - `ads_reporting_sp_targeting_daily_v3` KEYWORD: `339` linhas;
+  - `ads_reporting_sp_targeting_daily_v3` TARGET: `224` linhas.
+- A pendencia de `PENDING` do §126 ficou resolvida pela propria rotina de poll
+  automatica do orchestrator.
+
+## 127. Fechamento do pacote AMS/Ads/ML - qualidade target e painel
+
+Data/hora: 2026-07-18 17:46 UTC.
+
+Objetivo desta etapa:
+
+- completar o que faltava depois do Ads Reporting v3 multigrao:
+  - status operacional por grao no painel;
+  - reconciliacao fina AMS keyword/target x Ads Reporting v3 targeting;
+  - features de qualidade target no ML V3;
+  - rodada real do ML apos a base nova.
+
+Implementado:
+
+- Migration `127_ads_reporting_target_quality_and_status.sql`:
+  - `marketcloud_gold.v_ads_reporting_reprocess_health_v1`;
+  - `marketcloud_gold.v_ams_target_ads_reconciliation_daily_v1`;
+  - `marketcloud_gold.v_ams_target_quality_features_v1`.
+  - `marketcloud_gold.v_ams_ml_operational_alerts_v1`.
+- API `GET /api/v1/gold/ml-ams-status`:
+  - agora retorna `ads_reprocess_health`;
+  - agora retorna `ams_target_quality_summary`;
+  - agora retorna `ams_target_quality_divergences`.
+  - agora retorna `operational_alerts`.
+- Tela `Status AMS + ML`:
+  - ganhou o bloco `Alertas operacionais`, com alertas acionaveis antes das
+    tabelas tecnicas;
+  - aba AMS ganhou o bloco `Reports oficiais por grao`;
+  - ganhou o bloco `Qualidade keyword/target`;
+  - o operador passa a ver, na mesma tela, se campanha/adGroup/keyword/target
+    fecharam no Reporting v3 e onde AMS target diverge ou ainda nao casa com Ads.
+- Worker `marketcloud_ml_worker_hourly_target_real_v3.py`:
+  - passou a treinar com as features de qualidade target:
+    - `avg_target_quality_score_30d`;
+    - `target_match_days_30d`;
+    - `target_divergent_days_30d`;
+    - `target_ads_missing_days_30d`;
+    - `target_attributing_days_30d`;
+    - `target_usable_days_30d`.
+
+Validacao executada:
+
+- `npm run build` em `frontend`: OK.
+- `go test ./internal/query ./cmd/api`: OK.
+- `py -3 -m py_compile workers/ml-worker/marketcloud_ml_worker_hourly_target_real_v3.py`: OK.
+- `docker compose build api modeling-worker`: OK.
+- `docker compose up -d api modeling-worker`: OK.
+- `docker compose build api` apos alertas operacionais: OK.
+- `docker compose up -d api` apos alertas operacionais: OK.
+- `GET /api/v1/gold/ml-ams-status` autenticado pelo frontend voltou HTTP 200
+  nos logs do API depois do restart. Chamada direta sem token retorna 401,
+  esperado.
+
+Estado do reprocessamento oficial:
+
+- `v_ads_reporting_reprocess_health_v1`:
+  - `AD_GROUP`: 4 janelas, 133 linhas;
+  - `CAMPAIGN`: 4 janelas, 78 linhas;
+  - `KEYWORD`: 4 janelas, 339 linhas;
+  - `TARGET`: 4 janelas, 224 linhas.
+
+Estado da qualidade target:
+
+- `v_ams_target_ads_reconciliation_daily_v1`:
+  - `ADS_TARGETING_MISSING`: 335 linhas, score medio 45.0;
+  - `ATTRIBUTING`: 66 linhas, score medio 72.0;
+  - `DIVERGENT`: 1 linha, score medio 35.0;
+  - `FRESH`: 41 linhas, score medio 68.0.
+
+Alertas operacionais ativos na view canonica:
+
+- `critical`: `ams_target_quality_divergent` com 1 linha / score medio 35.0;
+- `warning`: `ams_target_quality_ads_targeting_missing` com 335 linhas / score
+  medio 45.0.
+
+Rodada ML target V3 manual:
+
+- `run_id=741`;
+- status `COMPLETED`;
+- treino `895` celulas target x hora;
+- positivos de clique `128`;
+- positivos de pedido `28`;
+- predicoes gravadas `895`;
+- modelos treinados com feature de qualidade target:
+  - `HourlyTargetClickRealV3`: `TRAINED`;
+  - `HourlyTargetConversionRealV3`: `TRAINED`;
+  - `HourlyTargetExpectedRoasRealV3`: `TRAINED`.
+
+Metricas observadas na rodada:
+
+- clique target:
+  - AUC `0.869`;
+  - baseline `0.609`;
+  - positivos `128`.
+- conversao target:
+  - AUC `0.917`;
+  - baseline `0.730`;
+  - positivos `28`.
+- ROAS target:
+  - MAE `0.512`;
+  - nonzero `21`.
+
+Parecer:
+
+- A base saiu de "boa" para "mais auditavel": agora existe lastro oficial por
+  grao e o ML recebe uma nocao de confianca do proprio dado target.
+- Ainda nao e perfeito no grão fino: 335 linhas aparecem como
+  `ADS_TARGETING_MISSING`. Isso deve ser tratado como backlog de identidade
+  keyword/target/adGroup, nao como falha de ingestao. O painel novo torna esse
+  problema visivel e priorizavel.
+- O V3 target melhorou materialmente em volume e passou a treinar conversao,
+  mas 28 positivos ainda pedem prudencia para auto-apply fino. Campanha-hora
+  segue sendo o caminho mais seguro para automacao ampla; target V3 deve entrar
+  primeiro como explicacao, score de risco e teste controlado.
+
+## 128. Fechamento 110% da conciliacao target AMS x Ads v3
+
+Data/hora: 2026-07-18 18:03 UTC.
+
+Pedido do operador:
+
+- fechar a conciliacao fina sem `ADS_TARGETING_MISSING` e sem `DIVERGENT`.
+
+Problema encontrado:
+
+- A contagem anterior de 335 `ADS_TARGETING_MISSING` misturava tres coisas
+  diferentes:
+  - data sem Ads Reporting v3 targeting baixado ainda;
+  - linha conversion-only da AMS sem texto/ID suficiente para casar pelo caminho
+    normal;
+  - delta/restatement negativo da AMS antigo sendo tratado como divergencia.
+- Isso fazia a tela parecer que havia falha real de matching quando, em boa
+  parte, faltava report oficial da Amazon para aquela data.
+
+Correcao implementada na migration `127_ads_reporting_target_quality_and_status.sql`:
+
+- `v_ams_target_ads_reconciliation_daily_v1`:
+  - separa `ADS_REPORT_MISSING` de `ADS_TARGETING_MISSING`;
+  - classifica hoje/ontem como `FRESH` antes de exigir report diario oficial;
+  - classifica delta negativo sem clique/gasto/pedido como `RESTATEMENT_DELTA`;
+  - permite casar conversion-only por `ad_group_id` + pedido/venda quando a AMS
+    nao traz target text/ID suficiente;
+  - relaxa o match de `campaign_id` quando `ad_group_id` e o restante da chave
+    sao mais fortes.
+- `v_ads_reporting_reprocess_health_v1`:
+  - agora deriva `report_id`, `rows_ingested` e `grain_status` das tabelas
+    oficiais locais quando o `metadata_json` do ledger estiver incompleto.
+  - Isso protege contra perda/ausencia de metadata no ledger.
+- `marketcloud_ops.enqueue_ads_reporting_reprocess_windows()`:
+  - passou a enfileirar automaticamente datas AMS target sem Ads Reporting v3
+    targeting oficial nos ultimos 60 dias;
+  - preserva `metadata_json` quando a janela ja esta `COMPLETED`, `RUNNING` ou
+    `SUBMITTED`, para nao apagar report IDs/contagens ja conhecidas.
+- `v_ams_ml_operational_alerts_v1`:
+  - deixou de tratar backfill recem-enfileirado como incidente;
+  - alerta apenas erro real/falha ou `RUNNING/SUBMITTED` travado por mais de 2h.
+
+Validacao apos correcao:
+
+- `ADS_TARGETING_MISSING`: `0`;
+- `DIVERGENT`: `0`;
+- `operational_alerts`: `0`;
+- `ADS_REPORT_MISSING`: `179` linhas, agora corretamente classificadas como
+  "sem report oficial ainda", nao como erro de matching.
+
+Backfill oficial disparado:
+
+- `SELECT marketcloud_ops.enqueue_ads_reporting_reprocess_windows()` retornou
+  `26`.
+- Foram submetidos manualmente os 22 requests que ainda nao estavam completos:
+  - todos aceitos pela Amazon Ads Reporting API v3;
+  - nenhum rate limit;
+  - status atual do ledger: `4 COMPLETED`, `22 RUNNING`.
+- Poll manual retornou `PENDING` para os novos reports; isso e comportamento
+  normal do Reporting v3 enquanto a Amazon gera os arquivos.
+- O `query-orchestrator` segue pollando automaticamente a cada 5 minutos.
+
+Rodada ML apos conciliacao corrigida:
+
+- `run_id=744`;
+- status `COMPLETED`;
+- treino `896` celulas target x hora;
+- positivos de clique `128`;
+- positivos de pedido `28`;
+- predicoes gravadas `896`.
+
+Metricas da rodada:
+
+- clique target:
+  - AUC `0.867`;
+  - baseline `0.609`.
+- conversao target:
+  - AUC `0.926`;
+  - baseline `0.730`.
+- ROAS target:
+  - MAE `0.550`;
+  - nonzero `21`.
+
+Parecer:
+
+- Matching real target ficou zerado para erro: `ADS_TARGETING_MISSING=0` e
+  `DIVERGENT=0`.
+- O que ainda existe e fila operacional de backfill (`ADS_REPORT_MISSING`) em
+  processamento pela Amazon, nao falha de conciliacao.
+- Quando os 22 requests `RUNNING` fecharem, a expectativa e o
+  `ADS_REPORT_MISSING` cair naturalmente. Se algum request ficar `RUNNING` por
+  mais de 2h, a view de alertas volta a acender.
+
+## 129. Camada 2 e 3 do ML: contexto comercial + calendario
+
+Data/hora: 2026-07-18 18:16 UTC.
+
+Pedido do operador:
+
+- manter o modelo base horario existente;
+- adicionar camada 2 com contexto comercial real;
+- adicionar camada 3 com calendario/sazonalidade;
+- avaliar concorrente, pricing, BSR, dia da semana, dia do mes e datas
+  comerciais.
+
+Implementado sem mock:
+
+- Migration `129_ml_commercial_calendar_features.sql`.
+- Views criadas:
+  - `marketcloud_features.feature_calendar_day_v1`;
+  - `marketcloud_features.feature_campaign_calendar_context_v1`;
+  - `marketcloud_features.feature_target_calendar_context_v1`;
+  - `marketcloud_features.feature_campaign_commercial_context_v1`.
+
+Features de calendario/sazonalidade:
+
+- dia da semana;
+- fim de semana;
+- dia do mes;
+- semana do mes;
+- mes/trimestre;
+- inicio/meio/fim de mes;
+- janela de pagamento;
+- meio do mes;
+- feriado BR;
+- vespera/pos-feriado;
+- Dia das Maes;
+- Dia dos Pais;
+- Black Friday;
+- corrida de Natal;
+- evento comercial.
+
+Features comerciais reais:
+
+- preco Zanom (`sale_price_brl`);
+- custo unitario (`unit_cost_brl`);
+- estoque disponivel (`stock_available`);
+- margem bruta em R$;
+- margem bruta percentual;
+- relacao preco/custo;
+- dias de cobertura de estoque;
+- pedidos/vendas/ROAS 30d do produto;
+- budget maximo;
+- stop-loss por gasto sem pedido;
+- ROAS minimo.
+
+Concorrente e BSR:
+
+- Nao foi encontrada fonte local validada de preco concorrente ou BSR no
+  MarketCloud/SWARM atual.
+- Para nao contaminar o modelo com mock, os campos foram expostos como cobertura:
+  - `has_competitor_price=0`;
+  - `has_bsr=0`;
+  - valores numericos de concorrente/BSR permanecem `0` enquanto a fonte real
+    nao existir.
+- Isso deixa o schema pronto para plugar a fonte real depois, sem ensinar dado
+  falso ao modelo.
+
+Workers alterados:
+
+- `marketcloud_ml_worker_hourly_real_v2.py`:
+  - passou a treinar com calendario + contexto comercial.
+- `marketcloud_ml_worker_hourly_target_real_v3.py`:
+  - passou a treinar com calendario target-hora + contexto comercial da campanha.
+
+Validacao das views:
+
+- `feature_calendar_day_v1`:
+  - `120` dias calculados;
+  - janela `2026-06-19` ate `2026-10-16`;
+  - `34` dias de fim de semana;
+  - `1` evento comercial na janela.
+- `feature_campaign_calendar_context_v1`:
+  - `379` celulas campanha x hora;
+  - `23` campanhas;
+  - `weekend_share` medio `0.198`.
+- `feature_target_calendar_context_v1`:
+  - `896` celulas target x hora;
+  - `23` campanhas;
+  - `140` targets;
+  - `weekend_share` medio `0.201`.
+- `feature_campaign_commercial_context_v1`:
+  - `9` campanhas com contexto comercial;
+  - `9` com preco;
+  - `9` com estoque;
+  - `0` com concorrente;
+  - `0` com BSR.
+
+Rodadas ML apos implementacao:
+
+- Campanha/hora `hourly_real_v2`:
+  - `run_id=746`;
+  - status `COMPLETED`;
+  - treino `611` celulas campanha x hora;
+  - positivos de pedido `107`;
+  - predicoes `611`;
+  - recomendacoes Full Control 360 sincronizadas `77`;
+  - Conversao AUC `0.959` vs baseline `0.721`;
+  - ROAS MAE `1.412` vs baseline MAE `2.558`;
+  - ambos bateram baseline.
+- Target/hora `hourly_target_real_v3`:
+  - `run_id=748`;
+  - status `COMPLETED`;
+  - treino `897` celulas target x hora;
+  - positivos de clique `128`;
+  - positivos de pedido `28`;
+  - predicoes `897`;
+  - Click AUC `0.883` vs baseline `0.609`;
+  - Conversao AUC `0.902` vs baseline `0.729`;
+  - ROAS MAE `0.530`.
+
+Validacao tecnica:
+
+- `py -3 -m py_compile` dos dois workers: OK.
+- `go test ./internal/query ./cmd/api ./cmd/query-orchestrator ./cmd/connector-amazon`: OK.
+- `docker compose build modeling-worker`: OK.
+- `docker compose up -d modeling-worker`: OK.
+- `model_registry` confirmou `has_calendar=true` e `has_commercial=true` para:
+  - `HourlyConversionRealV2`;
+  - `HourlyExpectedRoasRealV2`;
+  - `HourlyTargetClickRealV3`;
+  - `HourlyTargetConversionRealV3`;
+  - `HourlyTargetExpectedRoasRealV3`.
+
+Parecer:
+
+- O modelo campanha/hora ficou mais forte e mais estrategico: agora considera
+  economia do produto e calendario.
+- O target V3 tambem ganhou contexto, mas segue limitado por apenas `28`
+  positivos de pedido; bom para explicar/testar, ainda prudente para auto-apply
+  fino amplo.
+- Proximo salto real: ingerir fonte validada de concorrente/Buy Box/BSR. Sem
+  isso, o modelo ja sabe quando nao tem esse dado, mas ainda nao consegue usar
+  pressao competitiva real.
+
+## 130. Fechamento dos pontos 3/4/5/6 - ML contextual, teste controlado e explicacao
+
+Data: 2026-07-18
+
+Pedido do operador:
+
+- Nao existe fonte confiavel atual de preco concorrente/BSR pela Amazon.
+- Nao usar mock.
+- Atacar os pontos:
+  - 3. mais sinal real no Target V3;
+  - 4. calendario por proximidade de eventos;
+  - 5. politica de experimento controlado;
+  - 6. explicabilidade operacional na tela.
+
+Entregue:
+
+- `migrations/130_ml_context_experiments_explainability.sql`
+  - criou `feature_calendar_event_distance_v1`;
+  - recriou `feature_campaign_calendar_context_v1` com distancia ate evento e janelas pre/pos-evento;
+  - recriou `feature_target_calendar_context_v1` com o mesmo contexto no grao target x hora;
+  - criou `feature_target_hierarchical_context_v1`, ligando target/hora ao historico do proprio target, campanha/hora e previsao campanha/hora via `gold_campaign_identity`;
+  - criou `v_keyword_hourly_experiment_candidates_v1`;
+  - criou `v_keyword_hourly_recommendation_explain_v1`.
+- `migrations/131_ml_explain_ascii_text.sql`
+  - normalizou textos da explicacao em ASCII para evitar mojibake no dashboard.
+- `workers/ml-worker/marketcloud_ml_worker_hourly_real_v2.py`
+  - passou a treinar com distancia ate evento e janelas pre/pos-evento.
+- `workers/ml-worker/marketcloud_ml_worker_hourly_target_real_v3.py`
+  - passou a treinar com distancia ate evento;
+  - passou a treinar com contexto hierarquico target 30d, campanha 30d e previsao campanha/hora.
+- `internal/query/gold_v2.go`
+  - endpoint `GET /api/v1/gold/keyword-hourly-real` agora devolve `explanation_json`.
+- `frontend/src/pages/KeywordHorarios.jsx`
+  - modal de detalhes agora mostra contexto comercial, disponibilidade de concorrente/BSR, calendario/evento, politica de teste controlado e motivo da politica.
+
+Validacao banco:
+
+- `feature_campaign_calendar_context_v1`: `379` linhas, `pre_event_30d_share` medio `0.9764`, `avg_abs_days_to_nearest_event` medio `25.32`.
+- `feature_target_calendar_context_v1`: `897` linhas, `pre_event_30d_share` medio `0.9780`, `avg_abs_days_to_nearest_event` medio `25.32`.
+- `feature_target_hierarchical_context_v1`: `897` linhas, `129` com clique no target, `636` com previsao campanha/hora herdada.
+- `v_keyword_hourly_experiment_candidates_v1`: `16` `OBSERVE_MORE`, `5` `STANDARD`, `1` `PROTECT_HOLDOUT`.
+- `v_keyword_hourly_recommendation_explain_v1`: `22` explicacoes, todas com blocos `commercial`, `calendar` e `experiment`.
+
+Rodadas ML apos a mudanca:
+
+- `hourly_real_v2`: `run_id=750`, `COMPLETED`, treino `611`, pedidos positivos `107`, predicoes `611`, propostas Full Control 360 sincronizadas `78`, Conversao AUC `0.959` vs baseline `0.721`, ROAS MAE `1.415` vs baseline `2.558`.
+- `hourly_target_real_v3`: `run_id=752`, `COMPLETED`, treino `897`, cliques positivos `129`, pedidos positivos `28`, predicoes `897`, Click AUC `1.000` vs baseline `0.609`, Conversao AUC `1.000` vs baseline `0.729`, ROAS MAE `0.035`.
+
+Nota de auditoria:
+
+- O AUC `1.000` no Target V3 deve ser tratado com cautela, nao como prova de perfeicao.
+- A base target ainda tem apenas `28` positivos de pedido.
+- O ganho tecnico real e separar campanha boa, target bom, target que so herda sinal da campanha e recomendacao que deve virar teste controlado.
+
+Validacao tecnica:
+
+- `py -3 -m py_compile workers/ml-worker/marketcloud_ml_worker_hourly_real_v2.py workers/ml-worker/marketcloud_ml_worker_hourly_target_real_v3.py`: OK.
+- `go test ./internal/query ./cmd/api ./cmd/query-orchestrator ./cmd/connector-amazon`: OK.
+- `npm run build` em `frontend`: OK.
+- `docker compose build api modeling-worker`: OK.
+- `docker compose up -d api modeling-worker`: OK.
+- `docker compose restart frontend`: OK.
+- Chamada autenticada de `GET /api/v1/gold/keyword-hourly-real?limit=1`: OK, retornando `explanation_json` sem mojibake.
+
+## 131. Correcao dos alertas AMS target DIVERGENT / ADS_TARGETING_MISSING
+
+Data: 2026-07-18
+
+Sintoma visto na tela Status AMS + ML:
+
+- `critical` `AMS target DIVERGENT`: 4 linhas / score medio 35.0.
+- `warning` `AMS target ADS_TARGETING_MISSING`: 1 linha / score medio 45.0.
+
+Diagnostico:
+
+- Os 4 `DIVERGENT` nao eram quebra real de entrega AMS.
+- Eram linhas de delta/restatement tardio do AMS:
+  - `2026-07-06` e `2026-07-09`, campanha `122134581461928`, keyword `146896707092851`, `seladora a vacuo para alimentos`;
+  - `2026-07-07` e `2026-07-09`, campanha `81327329849491`, keyword `42786116647278`, `tag rastreador android` / `smart tag`.
+- A regra anterior so reconhecia `RESTATEMENT_DELTA` quando `impressions < 0` e todo o resto era zero.
+- A Amazon enviou restatement com outros campos negativos ou linha conversion-only, entao a view classificava como `DIVERGENT`.
+- O `ADS_TARGETING_MISSING` era:
+  - `2026-07-12`, campanha `179355356411697`, ad group `381811761527014`, `kwid:383813534577248`.
+  - AMS trouxe conversao-only sem texto/match_type.
+  - Ads Reporting v3 tinha uma unica linha oficial no mesmo campaign/adgroup/dia: `close-match`, com 2 pedidos e R$147,96.
+  - Portanto era inferivel com seguranca como parte daquele target, nao target ausente.
+
+Correcao implementada:
+
+- `migrations/132_ams_target_quality_delta_and_inferred_match.sql`
+  - recria `marketcloud_gold.v_ams_target_ads_reconciliation_daily_v1`;
+  - classifica qualquer metrica AMS negativa como `RESTATEMENT_DELTA`;
+  - classifica linha AMS sem trafego e com pedido/venda como `CONVERSION_DELTA`;
+  - classifica linha AMS zerada como `ZERO_DELTA`;
+  - usa maior janela de atribuicao disponivel para pedido/venda target:
+    - `GREATEST(orders_14d, orders_7d, orders_1d, 0)`;
+    - `GREATEST(sales_14d, sales_7d, sales_1d, 0)`;
+  - infere target oficial quando AMS conversion-only sem texto encontra uma unica linha Ads Reporting no mesmo campaign/adgroup/dia que cobre os pedidos/vendas AMS;
+  - recria `marketcloud_gold.v_ams_target_quality_features_v1`;
+  - recria `marketcloud_gold.v_ams_ml_operational_alerts_v1` com texto ASCII.
+
+Validacao apos aplicar:
+
+- Status AMS target:
+  - `ATTRIBUTING`: 204 linhas / score medio 72.0;
+  - `RESTATEMENT_DELTA`: 143 linhas / score medio 88.0;
+  - `FRESH`: 83 linhas / score medio 68.0;
+  - `ZERO_DELTA`: 11 linhas / score medio 78.0;
+  - `CONVERSION_DELTA`: 9 linhas / score medio 82.0.
+- Alertas ativos em `v_ams_ml_operational_alerts_v1`: `0`.
+- Os 5 registros que geravam alerta foram reclassificados:
+  - 2 `RESTATEMENT_DELTA` para Seladora;
+  - 2 `CONVERSION_DELTA` para Localizador/tag rastreador android;
+  - 1 `CONVERSION_DELTA` inferido para `close-match`.
+
+Parecer:
+
+- O dado AMS nao estava necessariamente ruim.
+- A regra de qualidade estava estreita demais para o comportamento real do AMS, principalmente deltas tardios e conversao-only.
+- Com a correcao, a tela passa a alertar apenas divergencia estrutural real, e nao restatement/atribuição tardia esperada.
+
+## 132. Alertas executivos: campanha-dia AMS e leitura do robô
+
+Data: 2026-07-18
+
+Sintoma visto na tela:
+
+- `Dados Amazon`: `Revisar divergencias`, 2 campanha-dias precisam de reprocessamento/investigacao.
+- `Robo`: `1 ganhando / 6 perdendo`.
+- `Aprendizado`: `INCONCLUSIVO`, 14 medicoes conclusivas em 24h.
+
+Diagnostico dos 2 campanha-dias:
+
+- Ambos eram campanha `81327329849491` / `Localizador`:
+  - `2026-07-09`: AMS campanha tinha trafego clamped zero, 1 pedido/R$36,99; Ads Reporting tinha R$12,96, 2 pedidos/R$110,97.
+  - `2026-07-07`: AMS campanha tinha trafego clamped zero; Ads Reporting tinha R$30,24, 3 pedidos/R$119,70.
+- Isso era o mesmo padrao ja corrigido no target: delta/conversao tardia da AMS sendo classificada como divergencia estrutural.
+- A view diaria de campanha ainda transformava qualquer `CHECK_DELTA` em `DIVERGENT`.
+
+Correcao implementada:
+
+- `migrations/133_ams_campaign_quality_delta_classification.sql`
+  - recria `marketcloud_gold.v_ams_data_quality_score_v1`;
+  - `CHECK_DELTA` com trafego clamped zero e pedido/venda vira `CONVERSION_DELTA`;
+  - `CHECK_DELTA` com trafego clamped zero e linhas AMS/target/delta vira `DELTA_ONLY`;
+  - somente `CHECK_DELTA` com divergencia real de trafego continua `DIVERGENT`;
+  - `operator_action` passa a diferenciar:
+    - `KEEP_AS_AMS_CONVERSION_DELTA`;
+    - `KEEP_AS_AMS_DELTA_WITH_CLAMPED_CANONICAL_SIGNAL`;
+    - `INVESTIGATE_DELTA_AND_REPROCESS_ADS_REPORT`.
+
+Validacao:
+
+- `v_ams_data_quality_score_v1` apos correcao:
+  - `ATTRIBUTING`: 103;
+  - `DELTA_ONLY`: 44;
+  - `FRESH`: 36;
+  - `CONVERSION_DELTA`: 1;
+  - `DIVERGENT`: 0;
+  - `ADS_MISSING`: 0;
+  - `LOW_CONFIDENCE`: 0.
+- API `GET /api/v1/gold/ml-ams-status`:
+  - `operational_alerts=0`;
+  - `quality_divergences=0`;
+  - `target_divergences=0`.
+
+Leitura atual do robô:
+
+- `audit_360_summary`:
+  - total `9` ações;
+  - `1` ganhando;
+  - `6` perdendo;
+  - `2` neutras;
+  - `0` pendentes;
+  - `model_right=1`;
+  - `model_wrong=6`.
+- `learning_summary`:
+  - `37` medições 24h totais;
+  - `14` conclusivas;
+  - `5` melhoraram;
+  - `9` pioraram;
+  - `21` neutras;
+  - `2` sem dado;
+  - delta venda liquido `-417`;
+  - delta gasto liquido `-21,43`;
+  - amostra marcada como `PEQUENA`, veredito `INCONCLUSIVO`.
+
+Parecer operacional:
+
+- O bloco de dados Amazon foi corrigido: nao ha mais divergencia ativa para decidir agora.
+- O alerta que merece acao e o do robô: as ultimas ações automáticas estao majoritariamente perdendo.
+- Recomendacao operacional: manter ou apertar trava de auto-apply amplo ate acumular mais amostra e investigar os 6 casos `LOSING`, principalmente ações `BID_UP` que reduziram ROAS/pedidos.
+
+## 133. Investigacao dos 6 `LOSING` do robô
+
+Data: 2026-07-18
+
+Pedido:
+
+- Investigar os 6 `LOSING` mostrados na tela Status AMS + ML.
+
+Achado inicial:
+
+- Os 6 `LOSING` eram todos ações `BID_UP` para `1.00x`.
+- As campanhas/horas eram:
+  - Abridor de Vinho 11h;
+  - Abridor de Vinho 13h;
+  - Localizador 13h;
+  - Seladora 8h;
+  - Seladora 9h;
+  - Seladora 20h.
+- Em 4 das 6 ações antigas, `campaign_id` estava vazio no ledger e a medição dependia de `campaign_name`.
+- Todas tinham `amazon_write=false` no retorno do robô:
+  - a tela atualizou a agenda;
+  - quem publicaria/aplicaria na Amazon seria o Cycle B na próxima execução horária.
+
+Causa raiz na medição:
+
+- A função `marketcloud_recommendations.refresh_recommendation_hourly_outcomes()` media a campanha inteira dentro da janela 24h.
+- Para uma ação que mexeu apenas uma hora, por exemplo `Seladora 9h`, a janela 24h somava outras horas da campanha.
+- Isso podia culpar uma alteração horária por queda ocorrida fora da hora alterada.
+- Além disso, a função aceitava amostra mínima demais como conclusiva:
+  - uma única compra no baseline contra zero no eval virava `WORSENED`;
+  - mesmo com 1h/3h neutros, o 24h virava `LOSING`.
+
+Recalculo manual por hora alterada:
+
+- Restringindo a análise ao `event_hour` impactado:
+  - Abridor de Vinho 11h virou neutro;
+  - Seladora 20h virou neutro;
+  - os outros 4 ainda pareciam negativos, mas com apenas 1 ocorrência baseline vs 1 ocorrência eval.
+- Exemplo de ruído:
+  - Localizador 13h comparava sábado 13h com domingo 13h;
+  - baseline tinha 1 pedido com baixo gasto, ROAS `93,32`;
+  - eval tinha 0 pedido;
+  - isso é amostra pequena, não prova robusta de erro do modelo.
+
+Correção implementada:
+
+- `migrations/134_audit360_hour_scoped_min_evidence.sql`
+  - recria `marketcloud_recommendations.refresh_recommendation_hourly_outcomes()`;
+  - mede somente a hora alterada (`h.event_hour = measured_hour`);
+  - mantém janelas `1h`, `3h`, `24h`, mas dentro do escopo da hora impactada;
+  - usa `orders_7d/sales_7d` reais da camada `gold_hourly_signal_unified`;
+  - evita classificar `IMPROVED/WORSENED` quando:
+    - não existe baseline;
+    - não existe eval;
+    - total de pedidos é menor que 2;
+    - total de gasto é menor que R$20.
+- Casos pequenos passam a `NEUTRAL/INCONCLUSIVE`.
+
+Validação após recalcular:
+
+- `SELECT marketcloud_recommendations.refresh_recommendation_hourly_outcomes()`:
+  - `133` outcomes recalculados.
+- `audit_360_summary` pela API:
+  - total `9`;
+  - winning `0`;
+  - losing `0`;
+  - neutral `9`;
+  - pending `0`;
+  - model_right `0`;
+  - model_wrong `0`.
+- `learning_summary` pela API:
+  - measured `37`;
+  - conclusive `0`;
+  - improved `0`;
+  - worsened `0`;
+  - neutral `35`;
+  - no_data `2`;
+  - sample `PEQUENA`;
+  - verdict `INCONCLUSIVO`;
+  - net_delta_sales `-263,49`;
+  - net_delta_spend `-10,11`.
+
+Parecer:
+
+- Os 6 `LOSING` nao eram evidência confiável de que o modelo errou.
+- Eram principalmente artefato de medição:
+  - janela 24h ampla demais para ação horária;
+  - amostra pequena demais;
+  - baseline de um dia/hora comparado contra outro dia/hora sem controle robusto.
+- O diagnóstico correto agora é:
+  - o modelo ainda nao provou ganho;
+  - tambem nao ha perda conclusiva;
+  - o loop deve acumular mais ações/medidas antes de liberar auto-apply amplo.
+
+---
+
+## 134. Diagnóstico de volume AMS/ML e régua de maturidade do modelo
+
+Data: 2026-07-18
+
+Pergunta operacional:
+
+- Quantos dados temos hoje?
+- A partir de que volume o modelo começa a ficar bom para operar com mais autonomia?
+
+Medição atual no banco:
+
+- `marketcloud_bronze.bronze_ams_hourly` (campanha/hora):
+  - 1.476 linhas;
+  - 27 dias entre 2026-06-19 e 2026-07-18;
+  - 23 campanhas;
+  - 185 linhas com clique;
+  - 36 linhas com pedido;
+  - 300 cliques;
+  - 36 pedidos;
+  - R$300,98 de gasto.
+- `marketcloud_bronze.bronze_ams_hourly_target` (keyword/target/hora):
+  - 2.432 linhas;
+  - 27 dias entre 2026-06-19 e 2026-07-18;
+  - 23 campanhas;
+  - 140 targets;
+  - 217 linhas com clique;
+  - 36 linhas com pedido;
+  - 301 cliques;
+  - 36 pedidos;
+  - R$302,21 de gasto.
+
+Modelos atuais:
+
+- `HourlyConversionRealV2`:
+  - TRAINED;
+  - 611 linhas de treino;
+  - 108 sinais positivos;
+  - ROC AUC `0,958`;
+  - balanced accuracy `0,864`;
+  - bom para leitura campanha/hora, ainda com cautela para decisões amplas.
+- `HourlyExpectedRoasRealV2`:
+  - TRAINED;
+  - 611 linhas de treino;
+  - MAE `1,44`;
+  - baseline MAE `2,62`;
+  - bate o baseline, mas ainda precisa mais semanas para sazonalidade.
+- `HourlyTargetClickRealV3`:
+  - TRAINED;
+  - 905 linhas de treino;
+  - 130 positivos de clique;
+  - suficiente para usar como sinal de clique por keyword/target.
+- `HourlyTargetConversionRealV3`:
+  - TRAINED;
+  - 905 linhas de treino;
+  - 30 positivos de pedido;
+  - ainda fraco para conversão no grão keyword/target.
+- `HourlyTargetExpectedRoasRealV3`:
+  - TRAINED;
+  - 905 linhas de treino;
+  - 23 sinais positivos/nonzero;
+  - ainda deve ser interpretado como ranking auxiliar, nao como verdade final.
+
+Predições e recomendações atuais nas views operacionais:
+
+- `marketcloud_gold.hourly_ml_predictions_v2`: 611 linhas;
+- `marketcloud_gold.hourly_target_ml_predictions_v3`: 905 linhas;
+- `marketcloud_gold.gold_keyword_hourly_recommendations_v3`: 23 linhas;
+- `marketcloud_gold.gold_recommendation_unified_v2`: 2.255 linhas.
+
+Loop pós-ação medido:
+
+- `recommendation_hourly_outcomes`:
+  - 1h: 42 `NEUTRAL`, 6 `NO_DATA`;
+  - 3h: 42 `NEUTRAL`, 6 `NO_DATA`;
+  - 24h: 35 `NEUTRAL`, 2 `NO_DATA`;
+  - 0 conclusivos (`IMPROVED/WORSENED`) após a correção de evidência mínima.
+
+Régua de maturidade:
+
+- Campanha/hora:
+  - mínimo útil: 50-100 horas com pedido;
+  - bom: 200-300 horas com pedido;
+  - forte: 500+ horas com pedido, cobrindo várias campanhas e semanas.
+- Keyword/target clique:
+  - mínimo útil: 100-200 linhas com clique;
+  - bom: 500+ linhas com clique;
+  - forte: 1.000+ linhas com clique.
+- Keyword/target conversão:
+  - mínimo útil: 100 pedidos positivos no grão keyword/target;
+  - bom: 300-500 pedidos positivos;
+  - forte: 1.000+ pedidos positivos.
+- Aprendizado de ações do robô:
+  - mínimo para primeira leitura: 30-50 outcomes conclusivos;
+  - bom para política operacional: 100+ outcomes conclusivos;
+  - forte para auto-apply amplo: 300+ outcomes conclusivos, com holdout/controle.
+- Sazonalidade:
+  - mínimo: 4-6 semanas;
+  - bom: 8-12 semanas;
+  - forte: vários meses, incluindo dia da semana, começo/meio/fim de mês e eventos comerciais.
+
+Parecer:
+
+- O modelo de campanha/hora já está em estágio utilizável para recomendação assistida.
+- O modelo de keyword/target já consegue ajudar a priorizar clique, mas ainda nao tem conversão suficiente para autonomia plena.
+- O loop de aprendizado operacional ainda nao tem evidência conclusiva suficiente para dizer que o robô aprendeu ganho/perda das ações aplicadas.
+- O caminho correto é manter auto-apply restrito a campanhas piloto, com guardrails e holdout, enquanto acumula mais pedidos positivos e outcomes conclusivos.
+
+---
+
+## 135. Correção de leitura: pedidos totais da loja vs pedidos atribuídos Ads/AMS
+
+Data: 2026-07-18
+
+Contexto:
+
+- A leitura da seção 134 mostrou apenas `36` pedidos no AMS.
+- Isso nao deve ser comparado com os pedidos totais da loja.
+- AMS/Ads/AMC medem pedidos atribuídos a mídia, nao todos os pedidos orgânicos + pagos do seller.
+
+Comparativo desde 2026-05-31:
+
+- `bronze_amazon_ads_hourly`:
+  - 10.901 linhas;
+  - 293 pedidos atribuídos Ads;
+  - R$11.630,25 em vendas atribuídas;
+  - R$3.719,67 de gasto.
+- `bronze_amc_conversions_daily_total`:
+  - 50 linhas;
+  - 313 pedidos;
+  - R$12.801,84 em vendas.
+- `bronze_ams_hourly`:
+  - começa a ter sinal operacional útil mais tarde;
+  - nao cobre 31/05 em diante como fonte cheia.
+
+Comparativo no mesmo intervalo do AMS, desde 2026-06-19:
+
+- AMS campanha:
+  - 36 pedidos;
+  - R$1.566,57 em vendas;
+  - R$300,98 de gasto.
+- Ads hourly report:
+  - 160 pedidos;
+  - R$6.773,41 em vendas;
+  - R$1.492,93 de gasto.
+- AMC conversions total:
+  - 183 pedidos;
+  - R$8.001,70 em vendas.
+
+Achado decisivo:
+
+- A partir de 2026-07-13, AMS e Ads hourly report conciliam exatamente:
+  - AMS: 26 pedidos / R$303,99 de gasto;
+  - Ads report: 26 pedidos / R$303,99 de gasto.
+
+Interpretação:
+
+- O número `36` nao significa que a loja vendeu só 36 pedidos.
+- Significa que o AMS tem 36 pedidos atribuídos no recorte atualmente carregado.
+- O AMS parece estar confiável a partir de 2026-07-13.
+- Antes de 2026-07-13, o histórico para ML deve preferir Ads hourly report/AMC como backfill, e AMS deve entrar como fonte horária canônica somente após a data em que passou a conciliar.
+
+Impacto no ML:
+
+- Para maturidade do modelo, a régua deve contar:
+  - Ads/AMC como histórico de treino/backfill desde 31/05;
+  - AMS como fonte de feedback horário real a partir de 13/07;
+  - pedidos totais do seller apenas para contexto de produto/estoque/demanda, nao como substituto direto de conversão atribuída a Ads.
+
+---
+
+## 136. Correção aplicada: treino ML com fonte reconciliada Ads/AMS/AMC
+
+Data: 2026-07-18
+
+Pedido:
+
+- Corrigir a reconciliação para que o ML use o histórico completo confiável.
+- Usar Ads/API antes de 2026-07-13, pois o AMS só ficou confiável a partir dessa data.
+
+Implementação:
+
+- Nova migration:
+  - `migrations/135_ml_reconciled_training_signals.sql`.
+- Nova view:
+  - `marketcloud_gold.v_ml_target_hour_training_reconciled_v1`.
+- Nova view de auditoria de volume:
+  - `marketcloud_gold.v_ml_training_volume_reconciliation_v1`.
+- Worker alterado:
+  - `workers/ml-worker/marketcloud_ml_worker_hourly_target_real_v3.py`.
+
+Regra da fonte target/keyword:
+
+- Antes de `2026-07-13`:
+  - usa `marketcloud_gold.v_ads_targeting_daily_effective_v1`, que vem do Ads Reporting API v3;
+  - como o dado é diário, distribui para as horas observadas da campanha no mesmo dia, proporcional ao tráfego horário;
+  - marca `training_source='ADS_REPORTING_V3_DAILY_ALLOCATED'`;
+  - marca `source_confidence=0.70`.
+- A partir de `2026-07-13`:
+  - usa `marketcloud_bronze.bronze_ams_hourly_target`;
+  - marca `training_source='AMS_STREAM_TARGET'`;
+  - marca `source_confidence=1.00`.
+
+Regra da fonte campanha/hora:
+
+- Continua usando `marketcloud_gold.gold_hourly_signal_unified/gold_hourly_signal_amc`.
+- Essa camada já carrega o Ads hourly report reconciliado e é a fonte correta para campanha/hora.
+
+Limite honesto:
+
+- `bronze_amc_conversions_daily_total` tem `313` pedidos, mas é total diário.
+- Esses `313` nao podem virar label direto por campanha/hora/keyword sem inventar atribuição.
+- O uso correto é:
+  - campanha/hora: `293` pedidos atribuídos via Gold/Ads hourly;
+  - target/hora: `169` pedidos atribuídos via Ads targeting + AMS target;
+  - AMC daily total: contexto/calibração diária, nao label granular.
+
+Validação de volume após migration:
+
+- `marketcloud_gold.v_ml_training_volume_reconciliation_v1`:
+  - `campaign_hour_gold`:
+    - 10.901 linhas;
+    - 40 campanhas;
+    - 3.092 cliques;
+    - 293 pedidos;
+    - R$11.630,25 vendas;
+    - R$3.719,67 gasto.
+  - `target_hour_reconciled`:
+    - 28.329 linhas antes de agregação no grão do modelo;
+    - 25 campanhas;
+    - 666 targets;
+    - 1.482 cliques;
+    - 169 pedidos;
+    - R$7.127,17 vendas;
+    - R$1.501,90 gasto.
+  - `amc_daily_total_context`:
+    - 50 dias/linhas;
+    - 313 pedidos;
+    - R$12.801,84 vendas.
+
+Treino executado:
+
+- Rebuild do serviço:
+  - `docker compose build modeling-worker`.
+- Target V3:
+  - `docker compose run --rm modeling-worker python /app/marketcloud_ml_worker_hourly_target_real_v3.py`;
+  - `run_id=762`;
+  - status `COMPLETED`;
+  - 11.042 células target x hora no grão final;
+  - 941 células com clique;
+  - 249 células com pedido;
+  - 11.042 predições gravadas em `marketcloud_gold.hourly_target_ml_predictions_v3`.
+- Campanha V2:
+  - `docker compose run --rm modeling-worker python /app/marketcloud_ml_worker_hourly_real_v2.py`;
+  - `run_id=763`;
+  - status `COMPLETED`;
+  - 611 células campanha x hora;
+  - 108 células com pedido;
+  - 611 predições gravadas em `marketcloud_gold.hourly_ml_predictions_v2`;
+  - 74 propostas Full Control 360 sincronizadas.
+
+Métricas finais no `model_registry`:
+
+- `HourlyConversionRealV2`:
+  - TRAINED;
+  - 611 linhas;
+  - 108 positivos;
+  - AUC `0.9581`;
+  - baseline `0.7184`.
+- `HourlyExpectedRoasRealV2`:
+  - TRAINED;
+  - 611 linhas;
+  - MAE `1.4435`;
+  - baseline MAE `2.6182`.
+- `HourlyTargetClickRealV3`:
+  - TRAINED;
+  - 11.042 linhas;
+  - 941 positivos;
+  - AUC `0.9166`;
+  - baseline `0.6134`.
+- `HourlyTargetConversionRealV3`:
+  - TRAINED;
+  - 11.042 linhas;
+  - 249 positivos;
+  - AUC `0.9904`;
+  - baseline `0.6310`.
+- `HourlyTargetExpectedRoasRealV3`:
+  - TRAINED;
+  - 11.042 linhas;
+  - 247 nonzero;
+  - MAE `0.3021`;
+  - baseline MAE `0.6290`.
+
+Observação importante:
+
+- `positive_order_rows=249` no target V3 significa células target x hora com pedido positivo após alocação/AMS.
+- Nao é a mesma coisa que número total de pedidos.
+- O total atribuível granular usado no target é `169` pedidos, distribuído nas células de treino.
+
+Parecer:
+
+- Corrigido o buraco principal do V3 target: ele deixou de treinar quase só no AMS target cru.
+- O V3 agora treina com Ads Reporting v3 antes de 13/07 e AMS target a partir de 13/07.
+- O modelo de campanha/hora continua corretamente treinado no Gold reconciliado.
+- Ainda nao é correto forçar os 313 pedidos AMC total como label granular; eles ficam como controle/contexto, porque nao carregam campanha/hora/keyword suficiente.
+
+---
+
+## 137. UX Status AMS + ML revisada para a fonte reconciliada
+
+Data: 2026-07-18
+
+Motivo:
+
+- Depois da seção 136, a tela `Status AMS + ML` ficou conceitualmente atrasada.
+- Ela ainda destacava `AMS cru` como se fosse a maturidade do ML.
+- Com a reconciliação nova, a pergunta principal virou:
+  - o que o ML treinou de verdade?
+  - o que é AMS fresco?
+  - o que é Ads Reporting v3 backfill?
+  - o que é AMC diário apenas como contexto?
+
+Implementado:
+
+- `internal/query/ml_ams_status.go`:
+  - endpoint `/api/v1/gold/ml-ams-status` agora retorna `ml_training_volume`;
+  - fonte: `marketcloud_gold.v_ml_training_volume_reconciliation_v1`.
+- `frontend/src/pages/StatusAmsMl.jsx`:
+  - visão geral deixou de abrir com `Pedidos AMS 7d` como sinal principal;
+  - adicionados cards:
+    - `Treino target V3`;
+    - `Campanha/hora Gold`;
+    - `Target/hora reconciliado`;
+    - `ML Target V3`.
+  - adicionada seção `Base que o ML esta usando`;
+  - adicionada seção `Confianca dos modelos`;
+  - a leitura rápida agora explica que:
+    - antes de 13/07 usa Ads Reporting v3 como backfill;
+    - depois de 13/07 usa AMS target horário;
+    - AMC total entra como contexto/calibração, não como label granular.
+
+Validação viva:
+
+- `marketcloud_gold.v_ml_training_volume_reconciliation_v1`:
+  - `campaign_hour_gold`:
+    - 10.908 linhas;
+    - 40 campanhas;
+    - 293 pedidos;
+    - R$11.630,25 vendas;
+    - R$3.719,67 gasto.
+  - `target_hour_reconciled`:
+    - 28.338 linhas antes de agregação final;
+    - 25 campanhas;
+    - 666 targets;
+    - 169 pedidos;
+    - R$7.127,17 vendas;
+    - R$1.501,90 gasto.
+  - `amc_daily_total_context`:
+    - 50 linhas/dias;
+    - 313 pedidos;
+    - R$12.801,84 vendas.
+
+Validações técnicas:
+
+- `npm run build` em `frontend`: OK.
+- `go test ./internal/query`: OK.
+
+Parecer:
+
+- A tela agora está alinhada com a arquitetura real:
+  - AMS cru continua visível nas abas técnicas;
+  - a abertura passa a mostrar a base efetiva do ML;
+  - fica explícito que `313 pedidos AMC` não é igual a `313 labels keyword/hora`.
+
+Atualização de runtime:
+
+- Após a alteração, a tela ainda mostrou `- pedidos` nos cards `Campanha/hora Gold`
+  e `Target/hora reconciliado`.
+- Causa:
+  - `frontend` já estava com o JSX novo via bind/HMR;
+  - `api` ainda rodava imagem antiga, sem retornar `ml_training_volume`.
+- Correção operacional executada:
+  - `docker compose build api`;
+  - `docker compose up -d api`;
+  - `docker compose restart frontend`.
+- Validação autenticada:
+  - `GET /api/v1/gold/ml-ams-status` passou a retornar `ml_training_volume`;
+  - payload validado:
+    - `campaign_hour_gold`: 293 pedidos, 10.912 linhas, 40 campanhas;
+    - `target_hour_reconciled`: 169 pedidos, 28.348 linhas, 666 targets;
+    - `amc_daily_total_context`: 313 pedidos, 50 dias.
+
+Atualizacao das demais abas:
+
+- A revisao da UX nao ficou apenas na `Visao geral`.
+- `frontend/src/pages/StatusAmsMl.jsx` agora mostra blocos de leitura tambem em:
+  - `AMS / Dados`:
+    - AMS bruto recebido;
+    - Gold campanha/hora;
+    - Gold target/hora;
+    - alertas de qualidade/reprocessamento.
+  - `Robo / Acoes`:
+    - bid auto aplicado;
+    - Full Control 360;
+    - fonte reconciliada usada para medir efeito;
+    - regra de leitura por janela 1h/3h/24h.
+  - `ML / Aprendizado`:
+    - volume real do treino target V3;
+    - AUC de pedido target;
+    - MAE de ROAS target;
+    - resumo de aprendizado pos-acao e holdout.
+  - `Auditoria tecnica`:
+    - ultima rodada target V3;
+    - ultima rodada campanha V2;
+    - metricas atuais dos modelos;
+    - volume reconciliado de campanha/hora, target/hora e AMC contexto.
+- Validação:
+  - `npm run build` em `frontend`: OK.
+  - `docker compose restart frontend`: executado.
+
+---
+
+## 138. Full Control 360 ligado para piloto real monitorado
+
+Data: 2026-07-19
+
+Pedido:
+
+- Ligar o Full Control para monitorar os pilotos reais.
+- Manter o escopo restrito para nao colocar as demais campanhas em risco.
+
+Escopo ativo validado:
+
+- `Forma Silicone`
+  - campaign_id: `140196475614872`;
+  - modo: `full_control`;
+  - status: `active`;
+  - `can_control=true`;
+  - `gate_reason=READY`.
+- `Kit Kadukli Manga`
+  - campaign_id: `128894883801654`;
+  - modo: `full_control`;
+  - status: `active`;
+  - `can_control=true`;
+  - `gate_reason=READY`.
+- Pilotos antigos em `completed` nao entram no executor:
+  - `Abridor de Vinho`;
+  - `Suporte de Celular`.
+
+Flags alteradas:
+
+- `C:\dev\estudo-cloud-native\mercado-data-app\.env`
+  - `FULL_CONTROL_360_EXECUTE_ENABLED=true`;
+  - `AMAZON_ADS_AUTOMATION_ALLOWLIST_CAMPAIGN_IDS` passou a incluir:
+    - `140196475614872`;
+    - `128894883801654`.
+- `C:\dev\estudo-cloud-native\marketcloud\.env`
+  - `FULL_CONTROL_360_APPLY_ENABLED=true`;
+  - `FULL_CONTROL_360_APPLY_DRY_RUN=false`.
+
+Servicos reiniciados:
+
+- `mercado-data-app`:
+  - `docker compose up -d go-backend`.
+- `marketcloud`:
+  - `docker compose up -d modeling-worker`.
+
+Validação operacional:
+
+- Variaveis confirmadas dentro dos containers:
+  - MarketCloud modeling-worker:
+    - `FULL_CONTROL_360_APPLY_ENABLED=true`;
+    - `FULL_CONTROL_360_APPLY_DRY_RUN=false`;
+    - `BID_ROBOT_API_BASE=http://host.docker.internal:8080`.
+  - SWARM go-backend:
+    - `FULL_CONTROL_360_EXECUTE_ENABLED=true`;
+    - allowlist com `81327329849491`, `140196475614872`, `128894883801654`.
+- Executor disparado manualmente:
+  - comando:
+    - `docker compose exec -T modeling-worker python -u /app/marketcloud_full_control_360_executor.py`.
+  - resultado:
+    - 10 acoes 360 candidatas;
+    - 1 aplicada;
+    - 9 nao aplicadas por `FAILED_POST_WRITE_CONFIRMATION`.
+
+Mudanca aplicada:
+
+- `Forma Silicone`
+  - recommendation_id: `fc360_140196475614872_20_reduce_daily_budget`;
+  - acao: `REDUCE_DAILY_BUDGET`;
+  - status no MarketCloud: `EXECUTED`;
+  - executor: `FULL_CONTROL_360_EXECUTOR`;
+  - executed_at: `2026-07-19 02:23:02 UTC`.
+
+Estado de monitoramento depois do disparo:
+
+- `marketcloud_gold.v_full_control_monitoring_v1`
+  - `Forma Silicone`:
+    - 29 propostas 360;
+    - 29 propostas a aplicar;
+    - 0 bloqueadas;
+    - 1 acao 360 executada.
+  - `Kit Kadukli Manga`:
+    - 19 propostas 360;
+    - 19 propostas a aplicar;
+    - 0 bloqueadas;
+    - 0 acoes 360 executadas.
+
+Ponto de atencao:
+
+- O MarketCloud marcou 1 acao como `EXECUTED`, baseado na resposta
+  `APPLIED_REAL_CONFIRMED` do executor SWARM.
+- A auditoria no banco do SWARM (`amazon_ads_automation_executions` /
+  `amazon_ads_automation_execution_items`) nao mostrou linhas `FULL_CONTROL_360`
+  no caminho esperado.
+- Tratar como lacuna de auditoria/persistencia do SWARM:
+  - antes de escalar o volume, revisar se o binario do SWARM em producao esta
+    persistindo as execucoes Full Control 360;
+  - garantir que falhas de `FAILED_POST_WRITE_CONFIRMATION` fiquem gravadas para
+    nao repetir indefinidamente sem diagnostico.
+
+Hardening adicional depois da ativacao:
+
+- Identificado que o endpoint Full Control 360 do SWARM usava a allowlist geral
+  `AMAZON_ADS_AUTOMATION_ALLOWLIST_CAMPAIGN_IDS`.
+- Para cumprir o escopo "somente campanhas piloto Full Control", foi criada uma
+  allowlist especifica no SWARM:
+  - `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS`.
+- Arquivos alterados no `mercado-data-app`:
+  - `internal/services/amazon_ads_full_control_executor.go`;
+  - `docker-compose.yml`;
+  - `.env`.
+- Valor configurado:
+  - `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS=140196475614872,128894883801654`.
+- Validações:
+  - `go test ./internal/services -run FullControl -count=1`: OK.
+  - `docker compose build go-backend`: OK.
+  - `docker compose up -d go-backend`: OK.
+  - `go-backend` com:
+    - `FULL_CONTROL_360_EXECUTE_ENABLED=true`;
+    - `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS=140196475614872,128894883801654`.
+  - Probe em campanha da allowlist geral antiga (`81327329849491`) retornou:
+    - `status=DRY_RUN`;
+    - `blockers=[CAMPAIGN_NOT_ALLOWLISTED]`;
+    - `real_write=false`.
+  - Probe em `Forma Silicone` com `dry_run=true` retornou:
+    - `status=DRY_RUN`;
+    - `blockers=[]`;
+    - `real_write=false`.
+
+Correcao da auditoria SWARM:
+
+- Causa raiz da lacuna:
+  - o executor SWARM tentava inserir `rule_id='FULL_CONTROL_360'`;
+  - `amazon_ads_automation_executions.rule_id` tem FK para
+    `amazon_ads_automation_rules`;
+  - como a rule nao existia, o insert falhava;
+  - o codigo usava `_ = db.ExecContext(...)`, entao o erro era engolido.
+- Correção em `mercado-data-app/internal/services/amazon_ads_full_control_executor.go`:
+  - criado `amazonAdsFullControlEnsureRule`;
+  - a rule `FULL_CONTROL_360` agora é criada/atualizada antes da execucao;
+  - insert de `amazon_ads_automation_executions` e
+    `amazon_ads_automation_execution_items` deixou de ser silencioso;
+  - se a auditoria nao persistir, o endpoint retorna
+    `AUDIT_PERSIST_FAILED` e nao chama a Amazon;
+  - execucao agora fecha `COMPLETED` ou `FAILED_POST_WRITE_CONFIRMATION`
+    com contadores `applied_count/failed_count`.
+- Validação:
+  - `go test ./internal/services -run FullControl -count=1`: OK;
+  - `docker compose build go-backend`: OK;
+  - `docker compose up -d go-backend`: OK.
+- Probe real idempotente em `Forma Silicone`:
+  - payload: `REDUCE_DAILY_BUDGET`, `8.00 -> 8.00`;
+  - retorno: `APPLIED_REAL_CONFIRMED`;
+  - `execution_id`: `fc3-fd949a942e20`;
+  - `execution_item_id`: `fci-b289ef2b321d`.
+- Auditoria confirmada no banco SWARM:
+  - `amazon_ads_automation_rules`:
+    - `FULL_CONTROL_360`, status `ATIVA`, mode `EXECUCAO`.
+  - `amazon_ads_automation_executions`:
+    - `fc3-fd949a942e20`, status `COMPLETED`, `applied_count=1`,
+      `failed_count=0`.
+  - `amazon_ads_automation_execution_items`:
+    - `fci-b289ef2b321d`, campanha `Forma Silicone`,
+      action `REDUCE_DAILY_BUDGET`, status `APPLIED_REAL_CONFIRMED`,
+      post-write `APPLIED_REAL_CONFIRMED`.
+
+Correcao adicional da aba `ML / Aprendizado`:
+
+- A aba ainda parecia pouco alterada porque continuava exibindo as 36 medições
+  brutas na tabela principal.
+- Problema de UX/operacao:
+  - as 36 linhas atuais tinham gasto/pedido insuficiente;
+  - isso aparecia como "aprendizado", mas na pratica era ruido/sem sinal.
+- Implementado em `frontend/src/pages/StatusAmsMl.jsx`:
+  - separacao entre `medicao util` e `evento sem sinal economico`;
+  - tabela principal agora mostra apenas janelas com gasto, pedido ou delta de
+    ROAS material;
+  - quando nao existe medicao util, a tela mostra explicitamente
+    `Nenhuma medicao conclusiva ainda`;
+  - eventos sem sinal ficam recolhidos em um bloco expansivel.
+- Validação:
+  - `npm run build` em `frontend`: OK.
+  - `docker compose restart frontend`: executado.
+
+## 139. Avaliação Risk Console — STOP LOSS / STOP GAIN
+
+Data: 2026-07-19
+
+Pedido:
+
+- Avaliar `http://localhost:3000/#/amazon/ads/risk` para aperfeiçoar
+  STOP LOSS/GAIN.
+
+Estado encontrado:
+
+- O endpoint/tela existe no `mercado-data-app` como Risk Console:
+  - `frontend/src/features/amazon/AmazonAdsRiskConsolePage.jsx`;
+  - `internal/services/amazon_ads_risk_routes.go`;
+  - `internal/services/amazon_ads_risk_config.go`;
+  - `internal/services/amazon_ads_risk_worker.go`.
+- O worker horario esta ativo e exposto em:
+  - `GET /api/amazon/ads/risk/worker/status`;
+  - `POST /api/amazon/ads/risk/worker/run-now`.
+- O banco possui configuracao de risco seedada para 22 campanhas.
+- Problema operacional encontrado:
+  - as configs seedadas estavam com `auto_actions_enabled=true` para todas;
+  - isso conflita com a governanca atual, onde escrita real deve ficar
+    restrita aos pilotos Full Control 360;
+  - antes da correcao, STOP LOSS/GAIN poderia tentar escrever em campanha fora
+    da allowlist especifica do Full Control.
+
+Correcao aplicada:
+
+- Arquivo alterado:
+  - `mercado-data-app/internal/services/amazon_ads_risk_worker.go`.
+- Escrita real do Risk Worker agora passa por uma trava adicional:
+  - `auto_actions_enabled=true`;
+  - `FULL_CONTROL_360_EXECUTE_ENABLED=true`;
+  - campanha presente em `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS`.
+- Com a configuracao atual, apenas:
+  - `140196475614872` (`Forma Silicone`);
+  - `128894883801654` (`Kit Kadukli Manga`);
+  podem receber escrita real do Risk Worker.
+- Campanhas fora dessa allowlist continuam podendo ser monitoradas/simuladas,
+  mas nao escrevem de verdade na Amazon via Risk.
+- Corrigido bug no STOP GAIN:
+  - o codigo gravava `LastStopGainAt` antes de testar se deveria aplicar;
+  - por isso a condicao `state.LastStopGainAt == nil` impedia a primeira
+    aplicacao real;
+  - agora o estado anterior e capturado antes de atualizar o timestamp.
+- Corrigida ambiguidade visual/operacional:
+  - quando o Risk calcula uma recomendacao mas nao tem permissao para escrever,
+    `current_bid` deixa de ser alterado como se tivesse aplicado;
+  - apenas `recommended_bid`/evento registram a sugestao.
+
+Validacoes:
+
+- `go test ./internal/services -run "Risk|FullControl" -count=1`: OK.
+- `docker compose build go-backend`: OK.
+- `docker compose up -d go-backend`: OK.
+- `GET /api/amazon/ads/risk/worker/status` apos restart:
+  - `worker_started=true`;
+  - heartbeat recente.
+- `POST /api/amazon/ads/risk/worker/run-now`:
+  - status `COMPLETED`;
+  - 22 campanhas configuradas;
+  - 145 targets avaliados;
+  - 0 erros;
+  - 0 stop loss;
+  - 0 stop gain;
+  - 0 warnings.
+
+Parecer técnico:
+
+- A tela ja e util como console operacional de risco, mas ainda nao esta no
+  nivel "camisa 10" para Full Control.
+- Fortaleza:
+  - possui configuracao por campanha;
+  - possui estado por keyword/target;
+  - possui eventos e snapshot;
+  - possui worker horario;
+  - possui acoes manuais de lock/unlock/restore.
+- Fraqueza principal:
+  - as metricas atuais do Risk ainda leem fontes diarias
+    (`amazon_ads_campaigns_daily` e `amazon_ads_search_terms_daily`);
+  - para STOP LOSS/GAIN horario, o ideal e preferir a fonte canônica/AMS
+    reconciliada quando disponivel, e usar diario apenas como fallback.
+- Proximo aperfeicoamento recomendado:
+  - migrar `adsRiskQueryCampaignMetricsToday`,
+    `adsRiskQueryTargetMetricsToday` e `adsRiskQueryRecentMetrics` para a fonte
+    reconciliada/horaria usada pelo ML;
+  - separar explicitamente na UI:
+    - monitoramento;
+    - simulacao/dry-run;
+    - escrita real permitida;
+    - motivo de bloqueio por governanca;
+  - adicionar STOP GAIN de budget/placement, nao apenas bid;
+  - incluir custo real do produto/margem no limite economico de stop loss.
+
+Correcao de arquitetura apos alinhamento:
+
+- Decisao do produto:
+  - Risk Console nao faz parte do Full Control 360;
+  - ele e uma camada apartada de decisao de risco/freio de emergencia;
+  - o ML recomenda/cresce, mas o Risk deve "parar o sangramento" em qualquer
+    campanha configurada, mesmo fora do piloto Full Control.
+- Ajuste aplicado no `mercado-data-app`:
+  - removida a dependencia do Risk em `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS`;
+  - criado kill-switch proprio:
+    - `AMAZON_ADS_RISK_WRITE_ENABLED=true`.
+- Regra atual de escrita real do Risk:
+  - campanha precisa estar em `ads_risk_campaign_config`;
+  - `enabled=true`;
+  - `auto_actions_enabled=true`;
+  - `AMAZON_ADS_RISK_WRITE_ENABLED=true`.
+- O que o STOP LOSS faz de verdade hoje:
+  - altera BID de keyword via `PUT /sp/keywords`;
+  - altera BID de target via `PUT /sp/targets`;
+  - usa `protection_bid` como lance protegido;
+  - nao pausa campanha e nao reduz budget de campanha.
+- O que STOP GAIN faz hoje:
+  - aumenta BID em 5% ou 10% quando ROAS/pedidos passam o gatilho;
+  - nao mexe em budget ou placement nesta tela.
+- Validações apos ajuste:
+  - `go test ./internal/services -run "Risk|FullControl" -count=1`: OK.
+  - `docker compose build go-backend`: OK.
+  - `docker compose up -d go-backend`: OK.
+  - container `go-backend` com `AMAZON_ADS_RISK_WRITE_ENABLED=true`.
+  - `POST /api/amazon/ads/risk/worker/run-now`:
+    - status `COMPLETED`;
+    - 22 campanhas;
+    - 145 targets avaliados;
+    - 0 erros;
+    - 0 stop loss;
+    - 0 stop gain;
+    - 0 warnings.
+
+Correcao de data operacional do Risk:
+
+- Incidente observado:
+  - campanha `Abridor de Vinho` ultrapassou limite de gasto percebido pelo
+    operador e nao acionou STOP LOSS/REDUCE.
+- Evidencia no banco:
+  - `ads_risk_campaign_config`:
+    - `campaign_id=243188188856118`;
+    - `daily_budget=40`;
+    - `campaign_stop_loss_amount=12`;
+    - `campaign_stop_loss_pct_budget=0.30`;
+    - `protection_bid=0.15`;
+    - `enabled=true`;
+    - `auto_actions_enabled=true`.
+  - `amazon_ads_campaigns_daily` em `2026-07-18`:
+    - gasto `R$ 21,83`;
+    - vendas `R$ 43,50`;
+    - pedidos `1`;
+    - ROAS aproximado `1,99`.
+- Interpretacao:
+  - isso nao e STOP LOSS puro, porque STOP LOSS de campanha exige
+    `orders_today=0`;
+  - deveria, porem, ser candidato a `REDUCE_BID`, porque teve pedido, mas ROAS
+    ficou abaixo do minimo configurado (`2,50`).
+- Causa raiz tecnica:
+  - o Risk usava `CURRENT_DATE` do Postgres nas consultas;
+  - o banco esta em UTC;
+  - entre 21h e 23h59 BRT, `CURRENT_DATE` ja vira o dia seguinte em UTC;
+  - nesse periodo o Risk consultava a data errada e via custo/pedidos zerados.
+- Correcao aplicada em `mercado-data-app/internal/services/amazon_ads_risk_worker.go`:
+  - criada `adsRiskBusinessDate()`;
+  - queries de campanha, target e janela recente passaram a usar data
+    `America/Sao_Paulo` calculada no Go;
+  - removido `CURRENT_DATE` dessas consultas de decisao.
+- Validação:
+  - `go test ./internal/services -run "Risk|FullControl" -count=1`: OK.
+  - `docker compose build go-backend`: OK.
+  - `docker compose up -d go-backend`: OK.
+  - `POST /api/amazon/ads/risk/worker/run-now`:
+    - status `COMPLETED`;
+    - 22 campanhas;
+    - 145 targets;
+    - 0 erros.
+- Observacao:
+  - como a validacao foi executada apos virar `2026-07-19` em BRT, o worker
+    nao retroagiu automaticamente o dia `2026-07-18`;
+  - daqui para frente, o buraco das 21h-23h59 BRT fica fechado.
+
+Regra refinada do contador de STOP LOSS:
+
+- Problema de regra levantado:
+  - se o primeiro pedido ocorre cedo com gasto baixo, a campanha nao pode ficar
+    liberada para gastar indefinidamente depois disso;
+  - o pedido deve zerar o contador de gasto de risco.
+- Implementado:
+  - `adsRiskQueryCampaignMetricsToday` calcula `CostSinceOrder`;
+  - por padrao, `CostSinceOrder = cost_today`;
+  - se `amazon_ads_campaigns_hourly` tiver linhas da campanha/data:
+    - encontra a ultima `event_hour` com `purchases > 0`;
+    - se nao houve pedido, conta o custo do dia;
+    - se houve pedido, conta somente o custo das horas posteriores ao ultimo
+      pedido;
+    - marca `DataFreshness=HOURLY_RESET`.
+- Observacao importante:
+  - no momento da validacao, `amazon_ads_campaigns_hourly` estava vazia no
+    `mercado-data-app`;
+  - portanto a regra esta pronta para o reset horario, mas enquanto a tabela
+    nao popular, o fallback continua sendo o consolidado diario.
+
+Sincronismo das configuracoes Risk com campanhas:
+
+- Pedido:
+  - atualizar custos/budgets defasados;
+  - adotar padrao:
+    - STOP LOSS `30%`;
+    - BID defesa `0,15`;
+    - ROAS minimo `3`;
+    - ROAS alvo `6`;
+    - ROAS Stop Gain `10`;
+    - ACOS maximo `20%`.
+- Implementado em `adsRiskSeedCampaignDefaults`:
+  - deixou de inserir apenas campanhas novas;
+  - agora sincroniza configs existentes a partir de
+    `amazon_ads_campaigns_daily.budget_amount`;
+  - insere campanhas ENABLED novas;
+  - tambem atualiza campanhas ja configuradas no Risk mesmo se a fonte atual
+    estiver PAUSED, para nao deixar configuracao velha presa.
+- Validacao de banco:
+  - `POST /api/amazon/ads/risk/config/campaigns/seed` retornou:
+    - `status=SYNCED`;
+    - `updated=22`;
+    - `inserted=0`.
+  - Conferencia agregada:
+    - `22` configs;
+    - `22` dentro do padrao.
+- Exemplos apos sync:
+  - `Abridor de Vinho`:
+    - budget `20,00`;
+    - stop loss `6,00`;
+    - protection bid `0,15`;
+    - ROAS min/alvo/gain `3/6/10`;
+    - ACOS max `20%`.
+  - `Forma Silicone`:
+    - budget `8,00`;
+    - stop loss `2,40`.
+  - `Localizador`:
+    - budget `40,00`;
+    - stop loss `12,00`.
+- Validacoes finais:
+  - `go test ./internal/services -run "Risk|FullControl" -count=1`: OK.
+  - `docker compose build go-backend`: OK.
+  - `docker compose up -d go-backend`: OK.
+  - `POST /api/amazon/ads/risk/worker/run-now`:
+    - status `COMPLETED`;
+    - 22 campanhas;
+    - 145 targets;
+    - 0 erros;
+    - 0 stop loss;
+    - 0 stop gain;
+    - 0 warnings.
