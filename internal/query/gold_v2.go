@@ -322,11 +322,8 @@ func (h *Handler) GoldKeywordHourlyReal(w http.ResponseWriter, r *http.Request) 
 			r.ml_roas_ancora::float8 AS ml_roas_ancora,
 			r.ml_roas_observado::float8 AS ml_roas_observado,
 			r.ml_gasto_observado::float8 AS ml_gasto_observado,
-			r.vetoed, r.veto_reason,
-			ex.explanation_json::text AS explanation_json
+			r.vetoed, r.veto_reason
 		FROM marketcloud_gold.gold_keyword_hourly_recommendations_v3 r
-		LEFT JOIN marketcloud_gold.v_keyword_hourly_recommendation_explain_v1 ex
-		  ON ex.keyword_hour_recommendation_id = r.keyword_hour_recommendation_id
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY r.priority_score DESC, ABS(r.effective_bid_delta) DESC
 		LIMIT ` + strconv.Itoa(limit)
@@ -342,6 +339,42 @@ func (h *Handler) GoldKeywordHourlyReal(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+// GET /api/v1/gold/keyword-hourly-real/{id}/explain
+// JSON pesado do modal de detalhe. Fica separado da lista porque a view de
+// explicacao recalcula contexto comercial/calendario e deixava a tela presa.
+func (h *Handler) GoldKeywordHourlyExplain(w http.ResponseWriter, r *http.Request) {
+	recID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if recID == "" {
+		writeError(w, http.StatusBadRequest, "recommendation_id_required")
+		return
+	}
+	// Le do matview (keyword_hourly_recommendation_explain_mv, migration 139):
+	// a view crua custa ~15s/id (filtro nao empurrado), o matview e sub-ms.
+	// Refresh periodico no runAmsHourlyRefreshLoop do query-orchestrator.
+	rows, err := h.db.Query(r.Context(), `
+		SELECT COALESCE(mv.explanation_json::text, '{}') AS explanation_json
+		FROM marketcloud_gold.gold_keyword_hourly_recommendations_v3 r
+		LEFT JOIN marketcloud_gold.keyword_hourly_recommendation_explain_mv mv
+			USING (keyword_hour_recommendation_id)
+		WHERE r.keyword_hour_recommendation_id = $1
+		LIMIT 1
+	`, recID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "keyword_hourly_explain_failed: "+err.Error())
+		return
+	}
+	item, err := pgx.CollectOneRow(rows, pgx.RowToMap)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "keyword_hourly_explain_not_found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 // POST /api/v1/gold/review-queue/{id}/decision

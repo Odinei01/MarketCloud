@@ -115,4 +115,19 @@ func (o *orchestrator) refreshAmsHourly(ctx context.Context, lookbackDays int) {
 		return
 	}
 	log.Printf("[ams-hourly-refresh] refresh complete lookback_days=%d rows_upserted=%d rows_unresolved=%d marker=%s", lookbackDays, rowsUpserted, rowsUnresolved, amsHourlyRefreshMarker)
+
+	o.refreshKeywordExplainMatview(ctx)
+}
+
+// refreshKeywordExplainMatview atualiza o matview do JSON de explicacao do modal
+// Keywords x hora (migration 139). A view crua custa ~15s/id; o modal le o
+// matview em sub-ms. Refresh CONCURRENTLY nao bloqueia leituras do modal.
+func (o *orchestrator) refreshKeywordExplainMatview(ctx context.Context) {
+	refreshCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	if _, err := o.db.Exec(refreshCtx, `REFRESH MATERIALIZED VIEW CONCURRENTLY marketcloud_gold.keyword_hourly_recommendation_explain_mv`); err != nil {
+		log.Printf("[keyword-explain-mv] refresh failed: %v", err)
+		return
+	}
+	log.Printf("[keyword-explain-mv] refresh complete")
 }

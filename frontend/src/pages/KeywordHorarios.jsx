@@ -82,6 +82,8 @@ export default function KeywordHorarios({ ctx }) {
   const [selected, setSelected] = useState(() => new Set())
   const [progress, setProgress] = useState(null) // {done, total} enquanto aplica
   const [detailItem, setDetailItem] = useState(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState('')
 
   // So acao de lance da pra aplicar; KEEP_STRONG nao muda nada.
   const isApplicable = (item) => ['BID_UP', 'BID_DOWN', 'CUT_HOUR'].includes(item.campaign_action_type)
@@ -163,6 +165,27 @@ export default function KeywordHorarios({ ctx }) {
       await load()
     }
     setProgress(null)
+  }
+
+  const openDetail = async (item) => {
+    setDetailItem(item)
+    setDetailError('')
+    if (item.explanation_json) return
+    setDetailLoading(true)
+    try {
+      const res = await api.goldKeywordHourlyExplain(tenantID, item.keyword_hour_recommendation_id)
+      if (res.ok) {
+        setDetailItem(current => current?.keyword_hour_recommendation_id === item.keyword_hour_recommendation_id
+          ? { ...current, explanation_json: res.data.explanation_json }
+          : current)
+      } else {
+        setDetailError(res.data?.error || `Falha ao carregar detalhe (${res.status})`)
+      }
+    } catch (e) {
+      setDetailError(e?.message || 'Falha de rede ao carregar detalhe')
+    } finally {
+      setDetailLoading(false)
+    }
   }
 
   const upCount = items.filter(x => x.campaign_action_type === 'BID_UP').length
@@ -354,7 +377,7 @@ export default function KeywordHorarios({ ctx }) {
                       {item.target_ml_expected_roas !== null && item.target_ml_expected_roas !== undefined && item.ml_target_roas !== null && Number(item.target_ml_expected_roas) < Number(item.ml_target_roas) * 0.75 && (
                         <div className="target-warning">Target alerta ROAS {fmt(item.target_ml_expected_roas, 1)}</div>
                       )}
-                      <button className="detail-btn" type="button" onClick={() => setDetailItem(item)}>Detalhes</button>
+                      <button className="detail-btn" type="button" onClick={() => openDetail(item)}>Detalhes</button>
                     </td>
                     <td className="num">{fmt(item.priority_score, 0)}</td>
                     <td className="sel-col">
@@ -396,6 +419,12 @@ export default function KeywordHorarios({ ctx }) {
                   : `O alvo sugerido e ${fmt(detailItem.suggested_hour_multiplier, 2)}x. A leitura atual combina o ROAS real da hora, o ROAS previsto pelo ML e a ancora da propria campanha. A projecao abaixo e uma estimativa, nao uma promessa.`}
               </span>
             </div>
+
+            {(detailLoading || detailError) && (
+              <div className={`modal-note ${detailError ? 'warning-note' : ''}`}>
+                {detailError || 'Carregando contexto detalhado...'}
+              </div>
+            )}
 
             <div className="detail-grid">
               <div className="detail-card">
@@ -449,7 +478,7 @@ export default function KeywordHorarios({ ctx }) {
                 <h4>Contexto comercial</h4>
                 <dl>
                   <div><dt>Preco / custo</dt><dd>{money(detail?.commercial.sale_price_brl)} / {money(detail?.commercial.unit_cost_brl)}</dd></div>
-                  <div><dt>Margem bruta</dt><dd>{fmt(detail?.commercial.gross_margin_pct, 1)}%</dd></div>
+                  <div><dt>Margem bruta</dt><dd>{detail?.commercial.gross_margin_pct != null ? `${fmt(detail.commercial.gross_margin_pct * 100, 1)}%` : '-'}</dd></div>
                   <div><dt>Estoque / cobertura</dt><dd>{fmt(detail?.commercial.stock_available)} un. / {fmt(detail?.commercial.stock_days_of_cover, 1)} dias</dd></div>
                   <div><dt>Preco concorrente</dt><dd>{detail?.coverage.competitor_price_available ? 'Disponivel' : 'Nao disponivel'}</dd></div>
                   <div><dt>BSR</dt><dd>{detail?.coverage.bsr_available ? 'Disponivel' : 'Nao disponivel'}</dd></div>
