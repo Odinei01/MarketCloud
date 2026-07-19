@@ -575,12 +575,25 @@ def main():
                     cls_metrics["roc_auc_cross_campaign"] = float(roc_auc_score(y_cls, gproba))
             except Exception as exc:
                 cls_metrics["roc_auc_cross_campaign_error"] = str(exc)[:120]
+            # AUC CONDICIONAL A CLIQUE (auditoria 19/07): so celulas com trafego
+            # real (clicks>0), onde a decisao de bid importa. Remove o gate
+            # trivial "sem clique => sem pedido" que infla o AUC global.
+            try:
+                clicked = df["clicks"].fillna(0).values > 0
+                nclk = int(clicked.sum())
+                cls_metrics["clicked_cells"] = nclk
+                if nclk > 0 and len(np.unique(y_cls[clicked])) == 2:
+                    cls_metrics["roc_auc_clicked_only"] = float(roc_auc_score(y_cls[clicked], proba[clicked]))
+            except Exception as exc:
+                cls_metrics["roc_auc_clicked_only_error"] = str(exc)[:120]
             cls.fit(X, y_cls)
             proba_full = cls.predict_proba(X)[:, 1]
             imp = sorted(zip(feat_cols, cls.feature_importances_), key=lambda t: -t[1])[:8]
             cls_metrics["top_features"] = [{"f": f, "imp": float(i)} for f, i in imp]
             register(conn, "HourlyConversionRealV2", "classifier:rf", "has_order", "TRAINED", n, cls_metrics)
             log.info(f"Conversao: AUC={cls_metrics['roc_auc']:.3f} "
+                     f"AUC_xcamp={cls_metrics.get('roc_auc_cross_campaign')} "
+                     f"AUC_clicked={cls_metrics.get('roc_auc_clicked_only')} "
                      f"baseline={cls_metrics['baseline_hourrate_auc']:.3f} "
                      f"beats={cls_metrics['beats_baseline']}")
         else:
@@ -619,6 +632,15 @@ def main():
                     reg_metrics["mae_cross_campaign"] = float(mean_absolute_error(y_roas, goof))
             except Exception as exc:
                 reg_metrics["mae_cross_campaign_error"] = str(exc)[:120]
+            # MAE condicional a clique: erro so nas celulas com trafego real.
+            try:
+                clicked = df["clicks"].fillna(0).values > 0
+                nclk = int(clicked.sum())
+                reg_metrics["clicked_cells"] = nclk
+                if nclk > 0:
+                    reg_metrics["mae_clicked_only"] = float(mean_absolute_error(y_roas[clicked], oof[clicked]))
+            except Exception as exc:
+                reg_metrics["mae_clicked_only_error"] = str(exc)[:120]
             reg.fit(X, y_roas)
             roas_full = np.clip(reg.predict(X), 0, ROAS_CAP)
             imp = sorted(zip(feat_cols, reg.feature_importances_), key=lambda t: -t[1])[:8]
