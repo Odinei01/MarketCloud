@@ -7837,3 +7837,38 @@ Sincronismo das configuracoes Risk com campanhas:
     - 0 stop loss;
     - 0 stop gain;
     - 0 warnings.
+
+Sincronismo diario automatico do Risk:
+
+- Pedido:
+  - a sincronizacao de configuracoes do Risk precisa rodar todos os dias para
+    manter budget, stop loss e parametros padrao alinhados com o dado mais
+    recente de campanhas.
+- Implementado:
+  - o `adsRiskRunHourlyTick` agora chama
+    `adsRiskMaybeSyncCampaignConfigsDaily` antes de carregar campanhas e
+    avaliar STOP LOSS/STOP GAIN;
+  - a chave de controle usa a data operacional BRT (`America/Sao_Paulo`);
+  - no primeiro ciclo Risk do dia, executa `adsRiskSeedCampaignDefaults`;
+  - nos ciclos seguintes do mesmo dia, retorna
+    `SKIPPED_ALREADY_SYNCED_TODAY`, evitando reprocessamento repetido;
+  - se a sincronizacao falhar com `ERROR`/`NO_DB`, a trava diaria e liberada
+    para tentar de novo no proximo ciclo.
+- Validacao em `2026-07-19`:
+  - primeira chamada `POST /api/amazon/ads/risk/worker/run-now`:
+    - `status=COMPLETED`;
+    - `config_sync.status=SYNCED`;
+    - `config_sync.updated=22`;
+    - `campaigns=22`;
+    - `evaluated=145`;
+    - `errors=0`.
+  - segunda chamada no mesmo dia:
+    - `status=COMPLETED`;
+    - `config_sync.status=SKIPPED_ALREADY_SYNCED_TODAY`;
+    - `campaigns=22`;
+    - `evaluated=145`;
+    - `errors=0`.
+- Resultado:
+  - budget/stop-loss do Risk fica atualizado automaticamente uma vez por dia;
+  - a tela/worker continuam podendo executar avaliacoes horarias sem travar o
+    banco com ressincronismo completo a cada ciclo.
