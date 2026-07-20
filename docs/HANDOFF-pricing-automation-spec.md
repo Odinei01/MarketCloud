@@ -1,8 +1,14 @@
-# HANDOFF — Pricing Automation Engine (ZANOM) — Especificacao Tecnica v1
+# HANDOFF — Pricing Automation Engine (ZANOM) — Especificacao Tecnica v1.1
 
-Data: 2026-07-19
+Data: 2026-07-19 (v1.1: escala ~30 SKUs e expandindo -> tiering + near-term recalibrado)
 Status: SPEC (nada construido ainda)
 Marker: `zanom-pricing-automation-spec-v1`
+
+**Escala real:** ~30 SKUs hoje, com intencao de EXPANDIR (100+). Isso justifica
+construir a FUNDACAO escalavel agora (ledger, policy por SKU, executor Approval,
+painel) — mas NAO o ML pesado, e SEM tratar os 30 SKUs como iguais (ver §5B
+Tiering). A 30-e-crescendo a decisao vira "comecar a construir a fundacao", nao
+"esperar" — mudanca vs a leitura inicial de 10 SKUs.
 
 Robo de precificacao/promocao baseado em ML + aprendizado continuo, IRMAO do
 MktAutomation (Ads) e coordenado por um orquestrador comercial. Este documento e
@@ -20,11 +26,18 @@ estoque, margem, concorrencia e risco de ruptura — e mede o **efeito
 INCREMENTAL**, nao a correlacao.
 
 **Restricao dominante (aprendida nesta operacao):** o gargalo NAO e modelo, e
-VOLUME DE DADO. Hoje: ~10 SKUs, ~170 pedidos atribuidos no total, 1-2 pedidos/
-dia/produto, e cada mudanca de preco "descansa" 48-72h pra medir efeito. Isso
-GATEIA as fases: elasticidade causal e bandit por-SKU estao a 6-18 MESES de dado,
-nao de codigo. Ver §10. Nao repetir o erro do V3 (construir ML sofisticado sobre
-dado que nao existe).
+VOLUME DE DADO POR SKU. Hoje: ~30 SKUs, ~170 pedidos atribuidos no total =
+**~5-6 pedidos por SKU na historia inteira**, e cada mudanca de preco "descansa"
+48-72h pra medir efeito. CONTRAINTUITIVO: mais SKUs SEM mais trafego deixa o dado
+por-SKU MAIS fino, nao menos. Isso GATEIA as fases: elasticidade causal e bandit
+por-SKU estao a 6-18 MESES de dado, nao de codigo. Ver §10. Nao repetir o erro do
+V3 (construir ML sofisticado sobre dado que nao existe).
+
+**O que a escala de 30-e-expandindo muda vs 10 estatico:** justifica construir a
+FUNDACAO escalavel agora (a 100+ SKUs a mao e inviavel) e da poder ao pooling
+hierarquico. NAO muda a regra de que ML por-SKU e gateado por dado. Sintese: pode
+COMECAR a construir; comece pela fundacao e pelo roteador de tier (§5B), nao pelo
+ML.
 
 ---
 
@@ -117,7 +130,9 @@ min_price NUMERIC, max_price NUMERIC, min_contribution_margin NUMERIC,
 max_daily_change_pct NUMERIC, cooldown_hours INT,
 min_promo_duration_hours INT, max_promo_duration_days INT,
 minimum_stock_cover_days INT,
-allowed_actions TEXT[],          -- filtrado pelo mapa da Fase 0
+allowed_actions TEXT[],          -- filtrado pelo mapa da Fase 0 E pelo tier
+tier CHAR(1),                     -- A|B|C|D recomputado diario (§5B) -> decide estrategia
+tier_reason TEXT, tier_updated_at TIMESTAMPTZ,
 mode TEXT,                        -- observe|approval|controlled_auto|full_auto
 status TEXT,                      -- active|paused|draft
 created_by/updated_by/created_at/updated_at
@@ -170,6 +185,39 @@ O que REALMENTE falta construir e o **historico de preco/promocao** e a
 **Distincao critica que o AMC habilita:** separar "sem venda por PRECO ruim" de
 "sem venda por FALTA DE TRAFEGO" de "sem venda por OFERTA/anuncio ruim". Sem essa
 separacao, o robo baixa preco quando o problema era trafego.
+
+---
+
+## 5B. Tiering / roteador por SKU (a espinha dorsal que faz escalar de 30 -> 300)
+
+**Regra central:** NAO tratar os 30 SKUs (nem os 300 futuros) como iguais. O
+motor primeiro CLASSIFICA cada SKU e ROTEIA para uma estrategia diferente por
+riqueza de dado e estagio de vida. Sem isso, escalar vira caos e o ML faminto
+contamina o SKU cauda-longa.
+
+### Dimensoes de classificacao (calculadas, nao digitadas)
+- **Riqueza de dado:** pedidos/dia, nº de faixas de preco ja observadas,
+  meses de historico. Define se ha sinal pra ML ou so pra regra.
+- **Estagio de vida:** lancamento | crescimento | maturidade | liquidacao
+  (deriva de idade do ASIN + tendencia de velocidade + cobertura de estoque).
+- **Estoque:** cobertura em dias vs lead-time (empurra defesa vs pressao promo).
+
+### Tiers e estrategia roteada
+| Tier | Criterio | Estrategia de preco | ML? |
+|---|---|---|---|
+| **A — Volumoso/maduro** | pedidos/dia altos, historico com variacao de preco | experimentos de preco + modelo proprio | sim, dado proprio |
+| **B — Crescimento** | subindo, dado moderado | pooling (prior de categoria) + regras + cupom-teste | pooled |
+| **C — Cauda-longa/novo** | poucos pedidos, sem variacao de preco | SO regras deterministicas + herda elasticidade da CATEGORIA | nao (so prior) |
+| **D — Liquidacao** | cobertura > 90d ou fim de ciclo | peso alto no custo de estoque, desconto agressivo dentro do guardrail | regra + heuristica |
+
+- O `tier` e um campo recomputado (diario) em `pricing.policy_sku`, e ele decide
+  `allowed_actions` efetivo, frequencia e SE o SKU entra em experimento.
+- **Pooling hierarquico opera SOBRE os tiers:** a elasticidade aprendida nos
+  Tier A/B da categoria vira PRIOR Bayesiano pros Tier C da mesma categoria. E
+  como 30 SKUs magros geram sinal util — o que bandit por-SKU nunca faria.
+- Ao expandir (novos SKUs entram como Tier C), eles ja nascem cobertos por regra
+  + prior de categoria, sem precisar de ML proprio. Isso e o que faz 30 -> 300
+  sem reescrever o motor.
 
 ---
 
@@ -304,14 +352,19 @@ executam direto sem passar por aqui quando a acao de um afeta o outro.
 | Fase | Escopo | Esforco | Depende |
 |---|---|---|---|
 | 0 Feasibility | write de preco+cupom SP-API | 2-4 dias | — |
-| 1 MVP | coleta+regras+margem+ledger+snapshot+tela+simulador | 3-5 semanas | 0 |
+| 1 MVP | coleta+regras+margem+ledger+snapshot+**tier classifier (§5B)**+tela+simulador | 3-5 semanas | 0 |
 | Executor | preco/cupom modo Observe->Approval (espelha Full Control) | 2-3 semanas | 1 |
-| 2 ML preditivo | conversao/unidades pooled + simulador de cenario | 3-4 semanas | dado da 1 |
+| 2 ML preditivo | conversao/unidades POOLED por categoria + simulador | 3-4 semanas | dado da 1 |
 | 3 Causal | incremental lift, testes controlados (reusa holdout) | 2-3 sem codigo | MESES dado |
-| 4 Bandit/hier. | Thompson/LinUCB com guardrail | semanas codigo | 6-18m dado |
+| 4 Bandit/hier. | Thompson/LinUCB com guardrail, so Tier A | semanas codigo | 6-18m dado |
 
-**Near-term (0+1+executor Approval): ~6-9 semanas** -> robo de preco em
-recomendacao+aprovacao, margem real, outcome medido. NAO construir 3/4 agora.
+**Recomendacao recalibrada (30 SKUs e expandindo):** a 30-e-crescendo, COMECAR a
+construir a fundacao ja se justifica (a 100+ SKUs a mao e inviavel). Near-term
+(0+1+executor Approval): **~6-9 semanas** -> robo de preco em recomendacao+
+aprovacao, margem real, outcome medido, **roteado por tier**. **Cupom-first**
+(mais seguro/rapido de aprender que mexer no preco). Segurar 3/4 atras do dado;
+NUNCA Full-Auto de preco cedo (raio de estrago > bid: e publico e visto pelo
+concorrente).
 
 ---
 
