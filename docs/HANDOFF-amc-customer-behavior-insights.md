@@ -76,3 +76,12 @@ cliente novo agora.
 - Reescrever Q007-Q020 corrigidas no runner AMC (coarse, tabela certa) pra popular
   as tabelas em vez de 1 linha. Q016 (cross-sell) fica vazia de verdade ate ter
   volume/cross-sell; confirmar nome de coluna `tracked_asin` com a Amazon.
+
+## Evolucao futura (pedido do dono, 2026-07-20) — auto-criacao de campanha
+Quando o robo detectar um search term que VENDE na campanha Automatica (catch-all)
+e que NAO tem campanha de produto manual/dedicada, ele proprio deve **criar a
+campanha manual** com configuracoes pre-estabelecidas e guardrails ja acionados
+(budget, min_roas, max_spend_without_order, allowlist/kill-switch). Ou seja: a
+descoberta na auto vira campanha dedicada automaticamente, ja governada. E o
+passo seguinte ao executor de negativo — fecha o ciclo "auto descobre -> negativa
+na auto -> cria dedicada -> governa". Gated aos pilotos como todo o resto.
