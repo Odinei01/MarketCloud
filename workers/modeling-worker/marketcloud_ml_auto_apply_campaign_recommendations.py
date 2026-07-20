@@ -339,9 +339,14 @@ def post_apply(payload):
         raise RuntimeError(f"bid robot HTTP {exc.code}: {body[:300]}") from exc
 
 
-def record_decision(conn, row, response):
-    if int(response.get("updated_count") or 0) <= 0:
+def record_decision(conn, row, response, shadow=False):
+    # shadow=True: campanha em modo aprendizado (advisor). Grava o que o robo
+    # FARIA, sem executar (execution_status=SHADOW, executed_at NULL). A funcao
+    # refresh_recommendation_hourly_outcomes() mede SHADOW ancorando em decided_at.
+    if not shadow and int(response.get("updated_count") or 0) <= 0:
         return
+    exec_status = "SHADOW" if shadow else "EXECUTED"
+    executed_at_expr = "NULL" if shadow else "NOW()"
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -360,7 +365,7 @@ def record_decision(conn, row, response):
                 %s, %s, %s, %s,
                 %s::jsonb, %s::jsonb, %s::jsonb,
                 'APPROVED', %s, %s, 'ML_AUTO_APPLY', %s,
-                NOW(), 'EXECUTED', NOW()
+                NOW(), '{exec_status}', {executed_at_expr}
             )
             ON CONFLICT (recommendation_id) DO UPDATE SET
                 recommended_bid_multiplier=EXCLUDED.recommended_bid_multiplier,
@@ -375,10 +380,10 @@ def record_decision(conn, row, response):
                 decided_by='ML_AUTO_APPLY',
                 decision_notes=EXCLUDED.decision_notes,
                 decided_at=NOW(),
-                execution_status='EXECUTED',
-                executed_at=NOW(),
+                execution_status='{exec_status}',
+                executed_at={executed_at_expr},
                 updated_at=NOW()
-            """,
+            """.format(exec_status=exec_status, executed_at_expr=executed_at_expr),
             (
                 row["recommendation_id"], row["tenant_id"], row["amc_instance_id"], row["ads_profile_id"],
                 f"{row.get('campaign_name','')}:{row.get('event_hour')}", row.get("campaign_id") or "", row.get("campaign_name"),
@@ -402,6 +407,7 @@ def main():
         return
     applied = 0
     considered = 0
+    shadow_recorded = 0
     with get_conn() as conn:
         db_campaign_ids, db_campaign_names = load_db_allowlist(conn)
         total_ids = len(FULL_AUTO_CAMPAIGN_IDS | db_campaign_ids)
@@ -424,7 +430,12 @@ def main():
         risk_cache = {}
         for row in candidates:
             if not campaign_allowed(row, db_campaign_ids, db_campaign_names):
-                log.info("skip %s campanha fora do full-auto: %s", row.get("recommendation_id"), row.get("campaign_name"))
+                # SHADOW: campanha em modo aprendizado (advisor). Grava o que o
+                # robo FARIA, sem executar nem tocar a Amazon. Medido pela funcao
+                # de outcome. So os 2 pilotos (full_auto) escrevem bid real.
+                record_decision(conn, row, {}, shadow=True)
+                shadow_recorded += 1
+                log.info("shadow %s %s: registrado sem executar", row.get("recommendation_id"), row.get("campaign_name"))
                 continue
             tenant_id = str(row.get("tenant_id") or "").strip()
             if tenant_id not in settings_cache:
@@ -470,7 +481,7 @@ def main():
             record_decision(conn, row, response)
             applied += updated_count
             risk_cache[tenant_id] = risk_cache.get(tenant_id, 0.0) + float(row.get("spend") or 0)
-    log.info("auto apply concluido considered=%s applied_profiles=%s at=%s", considered, applied, datetime.now(timezone.utc).isoformat())
+    log.info("auto apply concluido considered=%s applied_profiles=%s shadow_recorded=%s at=%s", considered, applied, shadow_recorded, datetime.now(timezone.utc).isoformat())
 
 
 if __name__ == "__main__":
