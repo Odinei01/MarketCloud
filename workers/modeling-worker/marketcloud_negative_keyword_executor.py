@@ -69,6 +69,23 @@ def load_decisions(conn):
         return cur.fetchall()
 
 
+def send_telegram(text):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat:
+        log.info("telegram nao configurado (TELEGRAM_BOT_TOKEN/CHAT_ID vazio); pulando")
+        return
+    try:
+        req = urllib.request.Request(
+            "https://api.telegram.org/bot%s/sendMessage" % token,
+            data=json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            r.read()
+    except Exception as exc:
+        log.warning("falha ao enviar telegram: %s", exc)
+
+
 def post_negative(campaign_id, search_term, decision, dry_run):
     payload = {
         "campaign_id": str(campaign_id),
@@ -93,6 +110,7 @@ def main():
         log.warning("BID_ROBOT_API_BASE vazio; abortando")
         return
     real, shadow = 0, 0
+    real_terms = []
     with get_conn() as conn:
         pilots = load_pilot_ids(conn)
         decisions = load_decisions(conn)
@@ -105,6 +123,7 @@ def main():
                 status = res.get("status")
                 if is_pilot and status == "APPLIED_REAL_CONFIRMED":
                     real += 1
+                    real_terms.append("%s: <b>%s</b> (R$ %s sem venda)" % (d["campaign_name"], d["search_term"], d["spend"]))
                 else:
                     shadow += 1
                 log.info("neg %s '%s' pilot=%s dry=%s -> %s",
@@ -112,6 +131,10 @@ def main():
             except Exception as exc:
                 log.warning("falha ao negativar '%s': %s", d["search_term"], exc)
     log.info("negativacao concluida real=%s shadow=%s", real, shadow)
+    # Telegram: so avisa quando negativou de verdade (nos pilotos).
+    if real > 0:
+        send_telegram("\U0001F6AB <b>Robo de negativacao</b>\n%s termo(s) negativado(s) hoje:\n%s\n(%s em shadow/dry-run nas demais campanhas)"
+                      % (real, "\n".join(real_terms), shadow))
 
 
 if __name__ == "__main__":

@@ -177,6 +177,12 @@ services:
       FULL_CONTROL_360_APPLY_ENABLED: "${FULL_CONTROL_360_APPLY_ENABLED:-false}"
       FULL_CONTROL_360_APPLY_DRY_RUN: "${FULL_CONTROL_360_APPLY_DRY_RUN:-true}"
       BID_ROBOT_API_BASE: "${BID_ROBOT_API_BASE:-http://host.docker.internal:8080}"
+      # Robo de negativacao (search term por CPA-alvo). Roda 1x/dia. Default OFF.
+      NEGATIVE_KEYWORD_APPLY_ENABLED: "${NEGATIVE_KEYWORD_APPLY_ENABLED:-false}"
+      NEGATIVE_KEYWORD_MAX_PER_RUN: "${NEGATIVE_KEYWORD_MAX_PER_RUN:-25}"
+      # Telegram (auditoria/notificacao das acoes executadas).
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
     depends_on:
       postgres:
         condition: service_healthy

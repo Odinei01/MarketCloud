@@ -90,6 +90,36 @@ def apply_full_control_360():
         log.exception("fc360-executor scheduler error: %s", exc)
 
 
+_last_neg_kw_run_date = None
+
+
+def run_negative_keyword_daily():
+    # Robo de negativacao por CPA-alvo: roda 1x/dia (marcador de data BRT). So age
+    # se NEGATIVE_KEYWORD_APPLY_ENABLED=true (worker) + NEGATIVE_KEYWORD_EXECUTE_
+    # ENABLED=true (executor SWARM) + allowlist. Auditoria e Telegram no proprio
+    # fluxo. Agendar aqui e seguro: dorme ate o dono armar.
+    global _last_neg_kw_run_date
+    if os.environ.get("NEGATIVE_KEYWORD_APPLY_ENABLED", "false").lower() != "true":
+        return
+    from datetime import datetime, timezone, timedelta
+    today = (datetime.now(timezone.utc) - timedelta(hours=3)).date()  # BRT
+    if _last_neg_kw_run_date == today:
+        return
+    _last_neg_kw_run_date = today
+    script = os.path.join(os.path.dirname(__file__), "marketcloud_negative_keyword_executor.py")
+    if not os.path.exists(script):
+        return
+    try:
+        result = subprocess.run([sys.executable, script], check=False, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.stdout:
+            log.info("[neg-kw-executor]\n%s", result.stdout.strip())
+        if result.returncode != 0:
+            log.error("neg-kw-executor failed rc=%s", result.returncode)
+    except Exception as exc:
+        log.exception("neg-kw-executor scheduler error: %s", exc)
+
+
 def hourly_real_ml_loop():
     if not HOURLY_REAL_ML_ENABLED:
         log.info("Hourly real ML scheduler disabled")
@@ -130,6 +160,7 @@ def hourly_real_ml_loop():
                 log.exception("%s scheduler error: %s", name, exc)
         auto_apply_ml_campaign_recommendations()
         apply_full_control_360()
+        run_negative_keyword_daily()
         refresh_learning_outcomes()
 
 
