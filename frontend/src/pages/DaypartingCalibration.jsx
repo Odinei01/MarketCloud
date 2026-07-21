@@ -16,12 +16,16 @@ function bucketColor(pct) {
   return { bg: 'rgba(34,197,94,.24)', bd: 'rgba(34,197,94,.55)' }
 }
 
+const PILOTS = new Set(['42786116647278', '63928923350381', '146896707092851'])
+
 export default function DaypartingCalibration({ ctx }) {
   const { tenantID } = ctx
   const [data, setData] = useState({ recommendations: [], keywords: 0, kw_com_rec: 0 })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [sel, setSel] = useState('')
+  const [applyRes, setApplyRes] = useState(null)
+  const [applying, setApplying] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -35,6 +39,19 @@ export default function DaypartingCalibration({ ctx }) {
   }, [tenantID])
   useEffect(() => { load() }, [load])
 
+  const doApply = useCallback(async (dry) => {
+    if (!kwId) return
+    setApplying(true); setApplyRes(null)
+    try {
+      const res = await api.goldDaypartingApply(tenantID, kwId, dry)
+      setApplyRes(res?.data || { error: 'falha' })
+      if (res?.data?.applied) load()
+    } catch (e) {
+      setApplyRes({ error: e?.message || 'falha' })
+    } finally { setApplying(false) }
+  }, [kwId, tenantID, load])
+  useEffect(() => { setApplyRes(null) }, [sel])
+
   const byKw = useMemo(() => {
     const g = {}
     ;(data.recommendations || []).forEach(r => { (g[r.keyword_text] = g[r.keyword_text] || {})[r.event_hour] = r })
@@ -45,6 +62,8 @@ export default function DaypartingCalibration({ ctx }) {
 
   const curve = byKw[sel] || {}
   const nChanges = Object.values(curve).filter(r => r.action !== 'HOLD').length
+  const kwId = String((Object.values(curve)[0] || {}).keyword_id || '')
+  const isPilot = PILOTS.has(kwId)
   const baseScope = (Object.values(curve)[0] || {}).baseline_scope || ''
   const scopeTxt = { ENTITY: 'schedule proprio', CAMPAIGN: 'herda da campanha', GLOBAL: 'herda do global', AD_GROUP: 'herda do grupo', HARDCODED: 'padrao' }[baseScope] || baseScope
   const candidates = data.candidates || []
@@ -122,6 +141,33 @@ export default function DaypartingCalibration({ ctx }) {
             ))}
             <span>· borda grossa = mudanca sugerida (passe o mouse p/ a prova)</span>
           </div>
+
+          {sel && (
+            <div style={{ marginTop: 16, border: `1px solid ${isPilot ? 'var(--accent,#3b82f6)' : 'var(--border,#2a3550)'}`, borderRadius: 10, padding: '12px 14px' }}>
+              {isPilot ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <b>Aplicar no schedule (piloto)</b>
+                    <span style={{ ...muted, fontSize: 12 }}>{nChanges} hora(s) mudam · escreve a curva recomendada na sua Agenda de BIDs</span>
+                    <div style={{ flex: 1 }} />
+                    <button className="btn" disabled={applying || nChanges === 0} onClick={() => doApply(true)} style={{ fontSize: 13 }}>Ver o que aplicaria</button>
+                    <button className="btn" disabled={applying || nChanges === 0} onClick={() => doApply(false)}
+                      style={{ fontSize: 13, borderColor: 'var(--accent,#3b82f6)', color: 'var(--accent,#93c5fd)' }}>Aprovar e aplicar</button>
+                  </div>
+                  {applyRes && (
+                    <div style={{ marginTop: 10, fontSize: 13 }}>
+                      {applyRes.error && <span style={{ color: '#fca5a5' }}>Erro: {applyRes.error}</span>}
+                      {applyRes.status === 'DRY_RUN' && <span style={muted}>Dry-run: aplicaria <b style={{ color: 'var(--fg)' }}>{applyRes.hours_changed}</b> hora(s). Kill-switch <b style={{ color: applyRes.kill_switch ? '#86efac' : '#fca5a5' }}>{applyRes.kill_switch ? 'ON' : 'OFF'}</b> — {applyRes.kill_switch ? 'clique "Aprovar e aplicar" p/ escrever' : 'escrita travada (nao aplicou nada)'}.</span>}
+                      {applyRes.status === 'APPLIED' && <span style={{ color: '#86efac' }}>✅ Aplicado: {applyRes.hours_changed} hora(s) escritas no schedule.</span>}
+                      {applyRes.status && !['DRY_RUN', 'APPLIED'].includes(applyRes.status) && <span style={{ color: '#fca5a5' }}>Status: {applyRes.status}</span>}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <span style={{ ...muted, fontSize: 13 }}>Esta keyword nao e piloto de dayparting. Aplicacao habilitada so para os 3 pilotos (tag rastreador android, abridor de vinho, seladora a vacuo para alimentos).</span>
+              )}
+            </div>
+          )}
 
           <div style={{ marginTop: 18, border: '1px solid var(--border,#2a3550)', borderRadius: 10, padding: '10px 14px' }}>
             <h3 style={{ margin: '0 0 6px' }}>Candidatas a schedule proprio <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(sem schedule proprio, mas ja com dado)</span></h3>

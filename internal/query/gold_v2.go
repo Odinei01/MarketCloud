@@ -741,3 +741,114 @@ func (h *Handler) GoldDaypartingCalibration(w http.ResponseWriter, r *http.Reque
 		"keywords": kws, "kw_com_rec": recCount,
 	})
 }
+
+// daypartingApplyAllowlist: os 3 pilotos de dayparting (por keyword_id). SO essas 3
+// podem ter o schedule escrito pelo apply. Hardcoded de proposito (nao ampliavel por
+// env sem querer).
+var daypartingApplyAllowlist = map[string]string{
+	"42786116647278":  "tag rastreador android",
+	"63928923350381":  "abridor de vinho",
+	"146896707092851": "seladora a vacuo para alimentos",
+}
+
+// POST /api/v1/gold/dayparting-calibration/apply  body {keyword_id, dry_run}
+// Aplica a curva RECOMENDADA no schedule publicado da keyword piloto. Gated:
+//   - allowlist: so os 3 pilotos.
+//   - kill-switch DAYPARTING_APPLY_ENABLED (default OFF) — sem ele, sempre dry-run.
+// Dry-run retorna o plano (atual->sugerido) sem escrever. Audit ANTES de escrever.
+func (h *Handler) GoldDaypartingApply(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var body struct {
+		KeywordID string `json:"keyword_id"`
+		DryRun    *bool  `json:"dry_run"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "payload invalido")
+		return
+	}
+	kwText, allowed := daypartingApplyAllowlist[body.KeywordID]
+	if !allowed {
+		writeError(w, http.StatusForbidden, "keyword fora da allowlist de pilotos de dayparting")
+		return
+	}
+	killSwitch := strings.EqualFold(os.Getenv("DAYPARTING_APPLY_ENABLED"), "true")
+	dryRun := true
+	if body.DryRun != nil {
+		dryRun = *body.DryRun
+	}
+	realWrite := killSwitch && !dryRun
+
+	planRows, err := h.db.Query(ctx, `
+		SELECT event_hour,
+			(published_multiplier*100)::int AS atual_pct,
+			(recommended_multiplier*100)::int AS sugerido_pct,
+			action
+		FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1
+		WHERE keyword_id=$1 ORDER BY event_hour`, body.KeywordID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "plan_failed: "+err.Error())
+		return
+	}
+	plan, err := pgx.CollectRows(planRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+	hoursChanged := 0
+	for _, p := range plan {
+		if a, _ := p["action"].(string); a == "UP" || a == "DOWN" {
+			hoursChanged++
+		}
+	}
+
+	var profileID string
+	_ = h.db.QueryRow(ctx, `
+		SELECT id FROM swarm_src.zanom_ads_bid_schedule_profiles
+		WHERE status='PUBLISHED' AND scope='ENTITY' AND entity_id=$1 LIMIT 1`, body.KeywordID).Scan(&profileID)
+
+	planJSON, _ := json.Marshal(plan)
+	var auditID int64
+	_ = h.db.QueryRow(ctx, `
+		INSERT INTO marketcloud_gold.dayparting_apply_audit
+			(keyword_id, keyword_text, profile_id, dry_run, hours_changed, plan_json, actor)
+		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7) RETURNING id`,
+		body.KeywordID, kwText, profileID, !realWrite, hoursChanged, string(planJSON),
+		middleware.TenantIDFromCtx(ctx).String()).Scan(&auditID)
+
+	result := "DRY_RUN"
+	applied := false
+	if realWrite {
+		if profileID == "" {
+			result = "NO_PROFILE"
+		} else {
+			tx, txErr := h.db.Begin(ctx)
+			if txErr != nil {
+				result = "TX_FAILED"
+			} else {
+				_, e1 := tx.Exec(ctx, `DELETE FROM swarm_src.zanom_ads_bid_schedule_rules WHERE profile_id_ref=$1`, profileID)
+				_, e2 := tx.Exec(ctx, `
+					INSERT INTO swarm_src.zanom_ads_bid_schedule_rules
+						(id, profile_id_ref, hour_start, hour_end, multiplier, created_at)
+					SELECT gen_random_uuid()::text, $1, event_hour, event_hour+1, recommended_multiplier, now()
+					FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1 WHERE keyword_id=$2`,
+					profileID, body.KeywordID)
+				if e1 != nil || e2 != nil {
+					_ = tx.Rollback(ctx)
+					result = "WRITE_FAILED"
+				} else if cErr := tx.Commit(ctx); cErr != nil {
+					result = "COMMIT_FAILED"
+				} else {
+					applied = true
+					result = "APPLIED"
+				}
+			}
+		}
+	}
+	_, _ = h.db.Exec(ctx, `UPDATE marketcloud_gold.dayparting_apply_audit SET applied=$2, result=$3 WHERE id=$1`, auditID, applied, result)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": result, "applied": applied, "dry_run": !realWrite,
+		"kill_switch": killSwitch, "keyword_text": kwText, "profile_id": profileID,
+		"hours_changed": hoursChanged, "plan": plan,
+	})
+}

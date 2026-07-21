@@ -65,6 +65,9 @@ services:
       JWT_SECRET: change-me-in-production-32chars!!
       PORT: "8090"
       ENV: development
+      # Apply da calibracao de dayparting no schedule (so os 3 pilotos). Default OFF:
+      # sem isso, o botao "Aprovar e aplicar" so faz dry-run (nao escreve).
+      DAYPARTING_APPLY_ENABLED: "${DAYPARTING_APPLY_ENABLED:-false}"
       # Robo/SWARM p/ apply de keyword-hora (grava decisao no MarketCloud + chama o Robo)
       BID_ROBOT_API_BASE: "${BID_ROBOT_API_BASE:-http://host.docker.internal:8080}"
       # LWA token refresh for Ads subscription setup
