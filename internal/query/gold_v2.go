@@ -839,11 +839,18 @@ func (h *Handler) GoldDaypartingApply(w http.ResponseWriter, r *http.Request) {
 				result = "TX_FAILED"
 			} else {
 				_, e1 := tx.Exec(ctx, `DELETE FROM swarm_src.zanom_ads_bid_schedule_rules WHERE profile_id_ref=$1`, profileID)
+				// agrupa horas consecutivas de mesmo multiplicador em JANELAS (preserva
+				// a estrutura de programacao do dono, nao 24 regras soltas)
 				_, e2 := tx.Exec(ctx, `
 					INSERT INTO swarm_src.zanom_ads_bid_schedule_rules
 						(id, profile_id_ref, hour_start, hour_end, multiplier, created_at, updated_at)
-					SELECT gen_random_uuid()::text, $1, event_hour, event_hour+1, recommended_multiplier, now(), now()
-					FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1 WHERE keyword_id=$2`,
+					SELECT gen_random_uuid()::text, $1, hs, he, mult, now(), now()
+					FROM (
+					  WITH c AS (SELECT event_hour hr, recommended_multiplier mult
+					             FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1 WHERE keyword_id=$2),
+					  isl AS (SELECT hr, mult, hr - row_number() OVER (PARTITION BY mult ORDER BY hr) AS g FROM c)
+					  SELECT mult, min(hr) hs, max(hr)+1 he FROM isl GROUP BY mult, g
+					) w`,
 					profileID, body.KeywordID)
 				// mantem PUBLISHED+is_active e bumpa version/published_at para o app
 				// enxergar como recem-publicado (o automator horario aplica na Amazon).
