@@ -70,39 +70,33 @@ def load_summary(conn):
         # aplicador automatico; para revisao humana, o alvo e o que interessa.)
         cur.execute("""
             SELECT
-                count(DISTINCT keyword_id)                               AS keywords,
-                count(DISTINCT keyword_id) FILTER (WHERE scope='ENTITY') AS kw_entity,
-                count(DISTINCT keyword_id) FILTER (
-                    WHERE gate='OK' AND target_multiplier
-                          <> marketcloud_gold._dp_hardcoded_band(event_hour::int)) AS kw_com_rec,
-                count(*) FILTER (WHERE gate='OK' AND target_multiplier
-                          > marketcloud_gold._dp_hardcoded_band(event_hour::int))  AS boosts,
-                count(*) FILTER (WHERE gate='OK' AND target_multiplier
-                          < marketcloud_gold._dp_hardcoded_band(event_hour::int))  AS cuts
+                count(DISTINCT keyword_id)                                      AS keywords,
+                count(DISTINCT keyword_id) FILTER (WHERE gate='OK' AND action<>'HOLD') AS kw_com_rec,
+                count(*) FILTER (WHERE gate='OK' AND action='UP')               AS boosts,
+                count(*) FILTER (WHERE gate='OK' AND action='DOWN')             AS cuts,
+                count(*) FILTER (WHERE gate<>'OK' OR action='HOLD')             AS held
             FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1
         """)
         summary = cur.fetchone()
-        # Curva GLOBAL (aplica as keywords sem dado proprio): horas cujo ALVO muda vs hardcoded.
+        # Recomendacoes com PROVA FORTE (gate OK). Agrupa por hora+scope+direcao pois o
+        # sinal (global/campanha) aplica a varias keywords contra o % publicado de cada.
         cur.execute("""
-            SELECT event_hour,
-                   round(avg(hour_roas),1)          AS roas,
-                   round(avg(target_multiplier),2)  AS mult,
-                   marketcloud_gold._dp_hardcoded_band(event_hour::int) AS hardcoded
+            SELECT event_hour, scope, action,
+                   round(avg(hour_roas),1) roas, round(avg(scope_avg_roas),1) media,
+                   max(weeks_of_data) sem, round(max(spend)) gasto,
+                   count(DISTINCT keyword_id) kws
             FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1
-            WHERE scope='GLOBAL' AND gate='OK'
-            GROUP BY event_hour
-            HAVING round(avg(target_multiplier),2)
-                   <> marketcloud_gold._dp_hardcoded_band(event_hour::int)
+            WHERE gate='OK' AND action<>'HOLD'
+            GROUP BY event_hour, scope, action
             ORDER BY event_hour
         """)
         global_changes = cur.fetchall()
-        # Keywords com CURVA PROPRIA (ENTITY): horas cujo ALVO muda vs hardcoded, por keyword.
+        # Recomendacoes por keyword com CURVA PROPRIA (ENTITY) — mudanca individual.
         cur.execute("""
-            SELECT keyword_text, event_hour, target_multiplier AS mult,
-                   marketcloud_gold._dp_hardcoded_band(event_hour::int) AS hardcoded
+            SELECT keyword_text, event_hour,
+                   (published_multiplier*100)::int de, (recommended_multiplier*100)::int para
             FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1
-            WHERE scope='ENTITY'
-              AND target_multiplier <> marketcloud_gold._dp_hardcoded_band(event_hour::int)
+            WHERE scope='ENTITY' AND gate='OK' AND action<>'HOLD'
             ORDER BY keyword_text, event_hour
         """)
         entity_changes = cur.fetchall()
@@ -111,32 +105,30 @@ def load_summary(conn):
 
 def build_digest(summary, global_changes, entity_changes, applied):
     head = "🕐 <b>Calibracao Dayparting (keyword x hora)</b> — trailing %sd\n" % WINDOW_DAYS
-    head += "%s keywords · %s com curva propria (ENTITY) · <b>%s com recomendacao</b> (↑%s ↓%s celulas)\n" % (
-        summary["keywords"], summary["kw_entity"], summary["kw_com_rec"],
-        summary["boosts"], summary["cuts"])
+    head += "%s keywords · <b>%s com recomendacao</b> (prova forte: ≥2 sem, ≥R$20) · ↑%s ↓%s\n" % (
+        summary["keywords"], summary["kw_com_rec"], summary["boosts"], summary["cuts"])
+    head += "Baseline = <b>sua curva publicada</b>. So mexe com prova; senao mantem seu %.\n"
     head += "Modo: <b>%s</b>\n" % ("APLICANDO (pilotos)" if applied else "ADVISORY — nao aplica")
 
     if global_changes:
-        head += "\n📌 <b>Curva GLOBAL</b> (aplica as keywords sem dado proprio) — horas que mudam:\n"
+        head += "\n📌 <b>Ajustes com prova</b> (hora: ROAS vs media da hora, em N semanas → direcao):\n"
         for g in global_changes:
-            arrow = "🔺" if g["mult"] > g["hardcoded"] else "🔻"
-            head += "%s %02dh — ROAS %.1f → <b>%.2f</b> (era %.2f)\n" % (
-                arrow, g["event_hour"], g["roas"] or 0, g["mult"], g["hardcoded"])
+            arrow = "🔺" if g["action"] == "UP" else "🔻"
+            head += "%s %02dh [%s] ROAS %.1f vs media %.1f · %s sem → <b>%s</b> em %s kw\n" % (
+                arrow, g["event_hour"], g["scope"], g["roas"] or 0, g["media"] or 0,
+                g["sem"], "subir" if g["action"] == "UP" else "cortar", g["kws"])
 
     if entity_changes:
-        head += "\n🎯 <b>Keywords com curva PROPRIA</b> (recomendacao individual):\n"
+        head += "\n🎯 <b>Keywords com curva PROPRIA</b> (individual):\n"
         by_kw = {}
         for e in entity_changes:
             kw = e["keyword_text"] or "(sem texto)"
-            by_kw.setdefault(kw, []).append(
-                "%02dh→%.2f" % (e["event_hour"], e["mult"]))
-        for kw, chgs in list(by_kw.items())[:15]:
-            head += "• <b>%s</b>: %s\n" % (kw[:30], ", ".join(chgs[:8]))
-    else:
-        head += "\n(nenhuma keyword com dado proprio suficiente ainda — todas seguem a curva GLOBAL recalibrada)\n"
+            by_kw.setdefault(kw, []).append("%02dh %s%%→%s%%" % (e["event_hour"], e["de"], e["para"]))
+        for kw, chgs in list(by_kw.items())[:12]:
+            head += "• <b>%s</b>: %s\n" % (kw[:28], ", ".join(chgs[:6]))
 
     if not global_changes and not entity_changes:
-        head += "\nNenhuma recomendacao: as curvas ja batem com a atual."
+        head += "\nNenhuma recomendacao com prova forte ainda — mantem suas curvas. Medindo p/ aprender."
     return head
 
 
@@ -151,8 +143,8 @@ def run_dayparting_calibration():
             # o calculo + digest; o hook de escrita entra quando o dono ligar a trava.
             log.info("APPLY_ENABLED=true — aplicacao real ainda nao acoplada ao applier; mantendo advisory")
         digest = build_digest(summary, global_changes, entity_changes, applied)
-        log.info("calibracao keyword x hora: %s celulas | %s keywords | %s com curva propria | %s com recomendacao",
-                 n, summary["keywords"], summary["kw_entity"], summary["kw_com_rec"])
+        log.info("calibracao keyword x hora: %s celulas | %s keywords | %s com recomendacao (prova forte) | up=%s down=%s held=%s",
+                 n, summary["keywords"], summary["kw_com_rec"], summary["boosts"], summary["cuts"], summary["held"])
         log.info("DIGEST:\n%s", digest)
         send_telegram(digest)
     finally:
