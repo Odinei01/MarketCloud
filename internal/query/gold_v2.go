@@ -828,11 +828,18 @@ func (h *Handler) GoldDaypartingApply(w http.ResponseWriter, r *http.Request) {
 				_, e1 := tx.Exec(ctx, `DELETE FROM swarm_src.zanom_ads_bid_schedule_rules WHERE profile_id_ref=$1`, profileID)
 				_, e2 := tx.Exec(ctx, `
 					INSERT INTO swarm_src.zanom_ads_bid_schedule_rules
-						(id, profile_id_ref, hour_start, hour_end, multiplier, created_at)
-					SELECT gen_random_uuid()::text, $1, event_hour, event_hour+1, recommended_multiplier, now()
+						(id, profile_id_ref, hour_start, hour_end, multiplier, created_at, updated_at)
+					SELECT gen_random_uuid()::text, $1, event_hour, event_hour+1, recommended_multiplier, now(), now()
 					FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1 WHERE keyword_id=$2`,
 					profileID, body.KeywordID)
-				if e1 != nil || e2 != nil {
+				// mantem PUBLISHED+is_active e bumpa version/published_at para o app
+				// enxergar como recem-publicado (o automator horario aplica na Amazon).
+				_, e3 := tx.Exec(ctx, `
+					UPDATE swarm_src.zanom_ads_bid_schedule_profiles
+					SET status='PUBLISHED', is_active=true, version=COALESCE(version,0)+1,
+					    published_at=now(), updated_at=now()
+					WHERE id=$1`, profileID)
+				if e1 != nil || e2 != nil || e3 != nil {
 					_ = tx.Rollback(ctx)
 					result = "WRITE_FAILED"
 				} else if cErr := tx.Commit(ctx); cErr != nil {
