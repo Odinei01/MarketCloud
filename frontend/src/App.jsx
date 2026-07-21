@@ -8,6 +8,7 @@ import HorariosReais from './pages/HorariosReais.jsx'
 import AmcAlerts from './pages/AmcAlerts.jsx'
 import MeuRoboHoje from './pages/MeuRoboHoje.jsx'
 import KeywordHorarios from './pages/KeywordHorarios.jsx'
+import DaypartingCalibration from './pages/DaypartingCalibration.jsx'
 import StatusAmsMl from './pages/StatusAmsMl.jsx'
 import PartnerCampaignMonitor from './pages/PartnerCampaignMonitor.jsx'
 
@@ -91,6 +92,9 @@ export default function App() {
           <button className={page === 'keyword-horarios' ? 'active' : ''} onClick={() => setPage('keyword-horarios')}>
             <span>KW  Keywords x hora</span><span className="dot" />
           </button>
+          <button className={page === 'dayparting-calib' ? 'active' : ''} onClick={() => setPage('dayparting-calib')}>
+            <span>DP  Calibracao horaria</span><span className="dot" />
+          </button>
           <button className={page === 'partner-monitor' ? 'active' : ''} onClick={() => setPage('partner-monitor')}>
             <span>M19 Monitor parceiro</span><span className="dot" />
           </button>
@@ -120,6 +124,7 @@ export default function App() {
         {page === 'cockpit'  && <ReviewQueue ctx={ctx} key={`cockpit-${storeID}`} />}
         {page === 'horarios' && <HorariosReais ctx={ctx} key={`horarios-${storeID}`} />}
         {page === 'keyword-horarios' && <KeywordHorarios ctx={ctx} key={`keyword-horarios-${storeID}`} />}
+        {page === 'dayparting-calib' && <DaypartingCalibration ctx={ctx} key={`dayparting-calib-${storeID}`} />}
         {page === 'partner-monitor' && <PartnerCampaignMonitor ctx={ctx} key={`partner-monitor-${storeID}`} />}
         {page === 'status-ams-ml' && <StatusAmsMl ctx={ctx} key={`status-ams-ml-${storeID}`} />}
         {page === 'amc-alerts' && <AmcAlerts ctx={ctx} key={`amc-alerts-${storeID}`} />}

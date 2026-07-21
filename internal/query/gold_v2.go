@@ -671,3 +671,59 @@ func (h *Handler) GoldDecide(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"recommendation_id": recID, "decision": body.Decision, "execution_status": execStatus, "status": "ok"})
 }
+
+// GET /api/v1/gold/dayparting-calibration
+// Calibracao de dayparting no grao KEYWORD (hierarquia keyword->campanha->global via
+// shrinkage). Retorna: recomendacoes com prova (mudanca vs a curva publicada de cada
+// keyword) + heatmap semana x hora (eficiencia) + resumo. Somente leitura (advisory).
+func (h *Handler) GoldDaypartingCalibration(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	recRows, err := h.db.Query(ctx, `
+		SELECT keyword_id, COALESCE(NULLIF(keyword_text,''),'(sem texto)') AS keyword_text,
+			event_hour,
+			(published_multiplier*100)::int AS atual_pct,
+			(recommended_multiplier*100)::int AS sugerido_pct,
+			action, scope, weeks_of_data,
+			hour_roas::float8 AS roas, scope_avg_roas::float8 AS ref_roas,
+			clicks::float8 AS clicks, reason
+		FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1
+		WHERE gate='OK' AND action <> 'HOLD'
+		ORDER BY keyword_text, event_hour`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "calibration_recs_failed: "+err.Error())
+		return
+	}
+	recs, err := pgx.CollectRows(recRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+
+	hmRows, err := h.db.Query(ctx, `
+		SELECT to_char(data_date,'IW') AS semana, event_hour AS hora,
+			sum(spend)::float8 AS spend, sum(sales_7d)::float8 AS sales,
+			CASE WHEN sum(spend)>0 THEN round((sum(sales_7d)/sum(spend))::numeric,2)::float8 ELSE 0 END AS roas
+		FROM marketcloud_bronze.bronze_amazon_ads_hourly
+		GROUP BY 1,2 HAVING sum(spend)>0 ORDER BY 1,2`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "calibration_heatmap_failed: "+err.Error())
+		return
+	}
+	hm, err := pgx.CollectRows(hmRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+
+	var kws, recCount int
+	_ = h.db.QueryRow(ctx, `
+		SELECT count(DISTINCT keyword_id),
+			count(DISTINCT keyword_id) FILTER (WHERE gate='OK' AND action<>'HOLD')
+		FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1`).Scan(&kws, &recCount)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"recommendations": recs, "heatmap": hm,
+		"keywords": kws, "kw_com_rec": recCount,
+	})
+}

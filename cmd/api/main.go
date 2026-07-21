@@ -141,6 +141,7 @@ func main() {
 		r.Get("/campaign-plans", queryH.GoldCampaignPlans)
 		r.Get("/hourly-real", queryH.GoldHourlyReal)
 		r.Get("/keyword-hourly-real", queryH.GoldKeywordHourlyReal)
+		r.Get("/dayparting-calibration", queryH.GoldDaypartingCalibration)
 		r.Get("/keyword-hourly-real/{id}/explain", queryH.GoldKeywordHourlyExplain)
 		r.With(managerUp).Post("/keyword-hourly/apply", queryH.GoldKeywordApply)
 		r.With(managerUp).Post("/refresh-swarm-state", queryH.RefreshSwarmState)

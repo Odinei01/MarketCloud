@@ -141,6 +141,7 @@ export const api = {
     return req('GET', `/gold/keyword-hourly-real?${p}`, null, tid)
   },
   goldKeywordHourlyExplain: (tid, id) => req('GET', `/gold/keyword-hourly-real/${encodeURIComponent(id)}/explain`, null, tid),
+  goldDaypartingCalibration: (tid) => req('GET', '/gold/dayparting-calibration', null, tid),
   goldKeywordApply: (tid, body) => req('POST', '/gold/keyword-hourly/apply', body, tid),
   goldMlAmsStatus: (tid) => req('GET', '/gold/ml-ams-status', null, tid),
   goldMlFullAutoCampaigns: (tid) => req('GET', '/gold/ml-full-auto-campaigns', null, tid),
