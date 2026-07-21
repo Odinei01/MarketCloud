@@ -180,6 +180,12 @@ services:
       # Robo de negativacao (search term por CPA-alvo). Roda 1x/dia. Default OFF.
       NEGATIVE_KEYWORD_APPLY_ENABLED: "${NEGATIVE_KEYWORD_APPLY_ENABLED:-false}"
       NEGATIVE_KEYWORD_MAX_PER_RUN: "${NEGATIVE_KEYWORD_MAX_PER_RUN:-25}"
+      # Calibracao de dayparting (control loop, 1x/semana). ADVISORY por padrao:
+      # ENABLED liga o calculo+digest; APPLY_ENABLED (default OFF) liga a escrita
+      # real de bid (so pilotos). WINDOW_DAYS = janela trailing.
+      DAYPARTING_CALIBRATION_ENABLED: "${DAYPARTING_CALIBRATION_ENABLED:-true}"
+      DAYPARTING_CALIBRATION_APPLY_ENABLED: "${DAYPARTING_CALIBRATION_APPLY_ENABLED:-false}"
+      DAYPARTING_CALIBRATION_WINDOW_DAYS: "${DAYPARTING_CALIBRATION_WINDOW_DAYS:-28}"
       # Telegram (auditoria/notificacao das acoes executadas).
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"

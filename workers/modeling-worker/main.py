@@ -120,6 +120,37 @@ def run_negative_keyword_daily():
         log.exception("neg-kw-executor scheduler error: %s", exc)
 
 
+_last_dayparting_calib_week = None
+
+
+def run_dayparting_calibration_weekly():
+    # Calibracao de dayparting (control loop, trailing 28d): roda 1x/semana (marcador
+    # ISO-week BRT). E ADVISORY por padrao — sempre recalcula e manda digest no Telegram;
+    # so escreve bid de verdade se DAYPARTING_CALIBRATION_APPLY_ENABLED=true (pilotos).
+    # Seguro agendar: sem a trava, nao toca dinheiro.
+    global _last_dayparting_calib_week
+    if os.environ.get("DAYPARTING_CALIBRATION_ENABLED", "true").lower() != "true":
+        return
+    from datetime import datetime, timezone, timedelta
+    now_brt = datetime.now(timezone.utc) - timedelta(hours=3)
+    week = now_brt.isocalendar()[:2]  # (ano, semana)
+    if _last_dayparting_calib_week == week:
+        return
+    _last_dayparting_calib_week = week
+    script = os.path.join(os.path.dirname(__file__), "marketcloud_dayparting_calibration.py")
+    if not os.path.exists(script):
+        return
+    try:
+        result = subprocess.run([sys.executable, script], check=False, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.stdout:
+            log.info("[dayparting-calibration]\n%s", result.stdout.strip())
+        if result.returncode != 0:
+            log.error("dayparting-calibration failed rc=%s", result.returncode)
+    except Exception as exc:
+        log.exception("dayparting-calibration scheduler error: %s", exc)
+
+
 def hourly_real_ml_loop():
     if not HOURLY_REAL_ML_ENABLED:
         log.info("Hourly real ML scheduler disabled")
@@ -161,6 +192,7 @@ def hourly_real_ml_loop():
         auto_apply_ml_campaign_recommendations()
         apply_full_control_360()
         run_negative_keyword_daily()
+        run_dayparting_calibration_weekly()
         refresh_learning_outcomes()
 
 
