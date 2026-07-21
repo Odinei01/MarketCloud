@@ -45,6 +45,9 @@ export default function DaypartingCalibration({ ctx }) {
 
   const curve = byKw[sel] || {}
   const nChanges = Object.values(curve).filter(r => r.action !== 'HOLD').length
+  const baseScope = (Object.values(curve)[0] || {}).baseline_scope || ''
+  const scopeTxt = { ENTITY: 'schedule proprio', CAMPAIGN: 'herda da campanha', GLOBAL: 'herda do global', AD_GROUP: 'herda do grupo', HARDCODED: 'padrao' }[baseScope] || baseScope
+  const candidates = data.candidates || []
   const muted = { color: 'var(--muted,#8aa0c0)' }
 
   return (
@@ -71,7 +74,7 @@ export default function DaypartingCalibration({ ctx }) {
               {kwList.length === 0 && <option>— sem recomendacao —</option>}
               {kwList.map(k => <option key={k} value={k}>{k}</option>)}
             </select>
-            <span style={muted}>{kwList.length} keyword(s) com recomendacao · <b style={{ color: 'var(--fg)' }}>{nChanges}</b> hora(s) mudam nesta</span>
+            <span style={muted}>{kwList.length} keyword(s) · <b style={{ color: 'var(--fg)' }}>{nChanges}</b> hora(s) mudam{baseScope && <> · baseline: <b style={{ color: 'var(--fg)' }}>{scopeTxt}</b></>}</span>
           </div>
 
           {kwList.length === 0 && (
@@ -118,6 +121,27 @@ export default function DaypartingCalibration({ ctx }) {
               </span>
             ))}
             <span>· borda grossa = mudanca sugerida (passe o mouse p/ a prova)</span>
+          </div>
+
+          <div style={{ marginTop: 18, border: '1px solid var(--border,#2a3550)', borderRadius: 10, padding: '10px 14px' }}>
+            <h3 style={{ margin: '0 0 6px' }}>Candidatas a schedule proprio <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(sem schedule proprio, mas ja com dado)</span></h3>
+            {candidates.length === 0
+              ? <p style={{ ...muted, margin: 0, fontSize: 13 }}>Nenhuma ainda — as sem schedule proprio herdam campanha/global. Aparecem aqui quando acumularem dado suficiente pra valer a pena criar uma propria.</p>
+              : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+                  <thead><tr style={{ ...muted, textAlign: 'left' }}><th style={{ padding: '3px 8px' }}>Keyword</th><th>Herda de</th><th>Cliques</th><th>Horas c/ rec</th></tr></thead>
+                  <tbody>
+                    {candidates.map((c, i) => (
+                      <tr key={i} style={{ borderTop: '1px solid var(--border,#22304a)' }}>
+                        <td style={{ padding: '3px 8px' }}>{c.keyword_text}</td>
+                        <td style={muted}>{c.herda_de}</td>
+                        <td>{c.clicks_total}</td>
+                        <td>{c.horas_com_rec}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
           </div>
 
           {sel && nChanges > 0 && (

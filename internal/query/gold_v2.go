@@ -689,7 +689,7 @@ func (h *Handler) GoldDaypartingCalibration(w http.ResponseWriter, r *http.Reque
 			c.event_hour,
 			(c.published_multiplier*100)::int AS atual_pct,
 			(c.recommended_multiplier*100)::int AS sugerido_pct,
-			c.action, c.scope, c.weeks_of_data,
+			c.action, c.scope, c.baseline_scope, c.weeks_of_data,
 			c.hour_roas::float8 AS roas, c.scope_avg_roas::float8 AS ref_roas,
 			c.clicks::float8 AS clicks, c.reason
 		FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1 c
@@ -727,8 +727,17 @@ func (h *Handler) GoldDaypartingCalibration(w http.ResponseWriter, r *http.Reque
 			count(DISTINCT keyword_id) FILTER (WHERE gate='OK' AND action<>'HOLD')
 		FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1`).Scan(&kws, &recCount)
 
+	// candidatas a schedule proprio (sem ENTITY publicado, com dado suficiente)
+	candRows, err := h.db.Query(ctx, `
+		SELECT keyword_text, herda_de, clicks_total, horas_com_rec
+		FROM marketcloud_gold.v_dayparting_schedule_candidates_v1 LIMIT 50`)
+	var cands []map[string]any
+	if err == nil {
+		cands, _ = pgx.CollectRows(candRows, pgx.RowToMap)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"recommendations": recs, "heatmap": hm,
+		"recommendations": recs, "heatmap": hm, "candidates": cands,
 		"keywords": kws, "kw_com_rec": recCount,
 	})
 }
