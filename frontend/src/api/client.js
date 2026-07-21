@@ -140,6 +140,7 @@ export const api = {
     Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
     return req('GET', `/gold/keyword-hourly-real?${p}`, null, tid)
   },
+  goldKeywordHourlyExplain: (tid, id) => req('GET', `/gold/keyword-hourly-real/${encodeURIComponent(id)}/explain`, null, tid),
   goldKeywordApply: (tid, body) => req('POST', '/gold/keyword-hourly/apply', body, tid),
   goldMlAmsStatus: (tid) => req('GET', '/gold/ml-ams-status', null, tid),
   goldMlFullAutoCampaigns: (tid) => req('GET', '/gold/ml-full-auto-campaigns', null, tid),
