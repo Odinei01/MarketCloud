@@ -57,6 +57,14 @@ def send_telegram(text):
 
 def run_calibration(conn):
     with conn.cursor() as cur:
+        # (1) congela o baseline de metricas da semana (historico de aprendizado)
+        try:
+            cur.execute("SELECT marketcloud_gold.snapshot_dayparting_metrics()")
+            snap = cur.fetchone()["snapshot_dayparting_metrics"]
+            log.info("snapshot semanal de metricas: %s linhas congeladas", snap)
+        except Exception as exc:
+            log.warning("snapshot de metricas falhou: %s", exc)
+        # (2) recalibra
         cur.execute("SELECT marketcloud_gold.refresh_keyword_hourly_calibration(%s)", (WINDOW_DAYS,))
         n = cur.fetchone()["refresh_keyword_hourly_calibration"]
     conn.commit()

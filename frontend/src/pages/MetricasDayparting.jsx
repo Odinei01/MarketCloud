@@ -57,24 +57,42 @@ function Delta({ label, cur, prev, betterUp, fmt }) {
 
 export default function MetricasDayparting({ ctx }) {
   const { tenantID } = ctx
-  const [data, setData] = useState({ series: [], latest: null })
+  const [data, setData] = useState({ series: [], campaigns: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mkey, setMkey] = useState('roas')
+  const [campaign, setCampaign] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
-      const res = await api.goldDaypartingMetrics(tenantID)
+      const res = await api.goldDaypartingMetrics(tenantID, campaign)
       if (!res?.ok) throw new Error(res?.data?.error || 'falha')
       setData(res.data || { series: [] })
     } catch (e) { setError(e?.message || 'Falha ao carregar') } finally { setLoading(false) }
-  }, [tenantID])
+  }, [tenantID, campaign])
   useEffect(() => { load() }, [load])
 
   const metric = METRICS.find(m => m.key === mkey)
   const series = data.series || []
-  const L = data.latest || {}
+  // DoD/WoW/MoM computados da propria serie (ultimo dia vs D-1, D-7, D-30)
+  const L = useMemo(() => {
+    if (!series.length) return {}
+    const byDate = {}; series.forEach(d => { byDate[d.date] = d })
+    const last = series[series.length - 1]
+    const shift = (days) => {
+      const dt = new Date(last.date); dt.setDate(dt.getDate() - days)
+      return byDate[dt.toISOString().slice(0, 10)]
+    }
+    const out = { date: last.date }
+    METRICS.forEach(m => {
+      out[m.key] = Number(last[m.key])
+      out[m.key + '_dod'] = Number(shift(1)?.[m.key])
+      out[m.key + '_wow'] = Number(shift(7)?.[m.key])
+      out[m.key + '_mom'] = Number(shift(30)?.[m.key])
+    })
+    return out
+  }, [series])
   const color = { roas: '#3987e5', tacos: '#eb6834', cvr: '#199e70', cpc: '#eda100' }[mkey]
   const muted = { color: 'var(--muted,#8aa0c0)' }
   const cur = Number(L[mkey])
@@ -94,11 +112,21 @@ export default function MetricasDayparting({ ctx }) {
 
       {!loading && !error && (
         <>
-          <div style={{ display: 'flex', gap: 8, margin: '14px 0' }}>
-            {METRICS.map(m => (
-              <button key={m.key} className="btn" onClick={() => setMkey(m.key)}
-                style={{ fontSize: 13, borderColor: mkey === m.key ? 'var(--accent,#3b82f6)' : undefined, color: mkey === m.key ? 'var(--accent,#93c5fd)' : undefined }}>{m.label}</button>
-            ))}
+          <div style={{ display: 'flex', gap: 10, margin: '14px 0', alignItems: 'center', flexWrap: 'wrap' }}>
+            <select value={campaign} onChange={e => setCampaign(e.target.value)}
+              style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border,#2a3550)', background: 'var(--card-bg,#0b1220)', color: 'inherit', fontSize: 13, minWidth: 220 }}>
+              <option value="">Global (todas as campanhas)</option>
+              {(data.campaigns || []).map(c => <option key={c.campaign_name} value={c.campaign_name}>{c.campaign_name}</option>)}
+            </select>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {METRICS.map(m => {
+                const disabled = campaign && m.key === 'tacos'
+                return (
+                  <button key={m.key} className="btn" disabled={disabled} onClick={() => setMkey(m.key)} title={disabled ? 'TACOS so no nivel global (precisa da venda total da conta)' : ''}
+                    style={{ fontSize: 13, borderColor: mkey === m.key ? 'var(--accent,#3b82f6)' : undefined, color: mkey === m.key ? 'var(--accent,#93c5fd)' : undefined }}>{m.label}</button>
+                )
+              })}
+            </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 6 }}>
