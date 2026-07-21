@@ -39,6 +39,19 @@ export default function DaypartingCalibration({ ctx }) {
   }, [tenantID])
   useEffect(() => { load() }, [load])
 
+  const byKw = useMemo(() => {
+    const g = {}
+    ;(data.recommendations || []).forEach(r => { (g[r.keyword_text] = g[r.keyword_text] || {})[r.event_hour] = r })
+    return g
+  }, [data])
+  const kwList = useMemo(() => Object.keys(byKw).sort(), [byKw])
+  useEffect(() => { if (!sel && kwList.length) setSel(kwList[0]) }, [kwList, sel])
+
+  const curve = byKw[sel] || {}
+  const nChanges = Object.values(curve).filter(r => r.action !== 'HOLD').length
+  const kwId = String((Object.values(curve)[0] || {}).keyword_id || '')
+  const isPilot = PILOTS.has(kwId)
+
   const doApply = useCallback(async (dry) => {
     if (!kwId) return
     setApplying(true); setApplyRes(null)
@@ -52,18 +65,6 @@ export default function DaypartingCalibration({ ctx }) {
   }, [kwId, tenantID, load])
   useEffect(() => { setApplyRes(null) }, [sel])
 
-  const byKw = useMemo(() => {
-    const g = {}
-    ;(data.recommendations || []).forEach(r => { (g[r.keyword_text] = g[r.keyword_text] || {})[r.event_hour] = r })
-    return g
-  }, [data])
-  const kwList = useMemo(() => Object.keys(byKw).sort(), [byKw])
-  useEffect(() => { if (!sel && kwList.length) setSel(kwList[0]) }, [kwList, sel])
-
-  const curve = byKw[sel] || {}
-  const nChanges = Object.values(curve).filter(r => r.action !== 'HOLD').length
-  const kwId = String((Object.values(curve)[0] || {}).keyword_id || '')
-  const isPilot = PILOTS.has(kwId)
   const baseScope = (Object.values(curve)[0] || {}).baseline_scope || ''
   const scopeTxt = { ENTITY: 'schedule proprio', CAMPAIGN: 'herda da campanha', GLOBAL: 'herda do global', AD_GROUP: 'herda do grupo', HARDCODED: 'padrao' }[baseScope] || baseScope
   const candidates = data.candidates || []
