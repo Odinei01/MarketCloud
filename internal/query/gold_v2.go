@@ -872,3 +872,42 @@ func (h *Handler) GoldDaypartingApply(w http.ResponseWriter, r *http.Request) {
 		"hours_changed": hoursChanged, "plan": plan,
 	})
 }
+
+// GET /api/v1/gold/dayparting-metrics
+// Serie diaria de metricas (ROAS/TACOS/CVR/CPC) + DoD/WoW/MoM do ultimo dia.
+// Base do historico de aprendizado do dayparting. Somente leitura.
+func (h *Handler) GoldDaypartingMetrics(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	sRows, err := h.db.Query(ctx, `
+		SELECT to_char(date,'YYYY-MM-DD') AS date,
+			roas::float8, tacos::float8, cvr::float8, cpc::float8, acos::float8,
+			spend::float8, total_sales::float8
+		FROM marketcloud_gold.v_dayparting_metrics_daily_v1
+		WHERE date > CURRENT_DATE - 60 ORDER BY date`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "metrics_failed: "+err.Error())
+		return
+	}
+	series, err := pgx.CollectRows(sRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+	dRows, err := h.db.Query(ctx, `
+		SELECT to_char(date,'YYYY-MM-DD') AS date,
+			roas::float8, roas_dod::float8, roas_wow::float8, roas_mom::float8,
+			tacos::float8, tacos_dod::float8, tacos_wow::float8, tacos_mom::float8,
+			cvr::float8, cvr_dod::float8, cvr_wow::float8, cvr_mom::float8,
+			cpc::float8, cpc_dod::float8, cpc_wow::float8, cpc_mom::float8
+		FROM marketcloud_gold.v_dayparting_metrics_deltas_v1
+		ORDER BY date DESC LIMIT 1`)
+	var deltas []map[string]any
+	if err == nil {
+		deltas, _ = pgx.CollectRows(dRows, pgx.RowToMap)
+	}
+	var latest map[string]any
+	if len(deltas) > 0 {
+		latest = deltas[0]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"series": series, "latest": latest})
+}
