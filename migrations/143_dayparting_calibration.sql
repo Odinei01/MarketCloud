@@ -101,9 +101,11 @@ ORDER BY keyword_id, event_hour, computed_at DESC;
 
 -- refresh_keyword_hourly_calibration: roda o controlador keyword x hora.
 CREATE OR REPLACE FUNCTION marketcloud_gold.refresh_keyword_hourly_calibration(
-    p_window_days int     DEFAULT 28,
-    p_min_clicks  int     DEFAULT 15,   -- gate de amostra por celula (por scope)
-    p_min_spend   numeric DEFAULT 8.0
+    p_window_days      int     DEFAULT 28,
+    p_kw_min_clicks    int     DEFAULT 25,   -- gate de NIVEL-KEYWORD: total na janela p/ ter curva propria (ENTITY)
+    p_cell_min_clicks  int     DEFAULT 1,    -- a keyword usa o proprio sinal na hora quando tem >= isso
+    p_pool_min_clicks  int     DEFAULT 12,   -- gate de amostra p/ campanha/global (celula)
+    p_min_spend        numeric DEFAULT 5.0
 ) RETURNS int
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -145,6 +147,9 @@ BEGIN
     ),
     globperf AS (SELECT hr, sum(clicks) c, sum(spend) s, sum(sales) v FROM src GROUP BY 1),
     globavg  AS (SELECT sum(sales)/NULLIF(sum(spend),0) AS avg_roas FROM src),
+    kwtot AS (  -- total da keyword na janela (decide elegibilidade a ENTITY, nivel-keyword)
+        SELECT keyword_id, sum(clicks) c, sum(spend) s FROM src GROUP BY 1
+    ),
     prior AS (
         SELECT keyword_id, event_hour, recommended_multiplier
         FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1
@@ -152,27 +157,34 @@ BEGIN
     resolved AS (
         SELECT
             g.campaign_id, g.ad_group_id, g.keyword_id, g.keyword_text, g.match_type, g.hr,
-            -- escolhe o scope mais fino que passa no gate de amostra
+            -- ENTITY = keyword com volume TOTAL suficiente (curva propria, como
+            -- 'abridor de vinho'), usando o proprio sinal na hora onde tem >= 1 clique;
+            -- caso contrario cai p/ campanha/global naquela hora (curva ainda individual
+            -- pq as horas ativas diferem por keyword). Sem volume total: pool.
             CASE
-                WHEN kp.c >= p_min_clicks AND kp.s >= p_min_spend THEN 'ENTITY'
-                WHEN cp.c >= p_min_clicks AND cp.s >= p_min_spend THEN 'CAMPAIGN'
-                WHEN gp.c >= p_min_clicks AND gp.s >= p_min_spend THEN 'GLOBAL'
+                WHEN kt.c >= p_kw_min_clicks AND kt.s >= p_min_spend
+                     AND COALESCE(kp.c,0) >= p_cell_min_clicks           THEN 'ENTITY'
+                WHEN cp.c >= p_pool_min_clicks AND cp.s >= p_min_spend    THEN 'CAMPAIGN'
+                WHEN gp.c >= p_pool_min_clicks AND gp.s >= p_min_spend    THEN 'GLOBAL'
                 ELSE 'NONE'
             END AS scope,
             COALESCE(kp.c,0) kc, COALESCE(kp.s,0) ks, COALESCE(kp.v,0) kv,
             CASE
-                WHEN kp.c >= p_min_clicks AND kp.s >= p_min_spend THEN COALESCE(kp.v/NULLIF(kp.s,0),0)
-                WHEN cp.c >= p_min_clicks AND cp.s >= p_min_spend THEN COALESCE(cp.v/NULLIF(cp.s,0),0)
-                WHEN gp.c >= p_min_clicks AND gp.s >= p_min_spend THEN COALESCE(gp.v/NULLIF(gp.s,0),0)
+                WHEN kt.c >= p_kw_min_clicks AND kt.s >= p_min_spend
+                     AND COALESCE(kp.c,0) >= p_cell_min_clicks           THEN COALESCE(kp.v/NULLIF(kp.s,0),0)
+                WHEN cp.c >= p_pool_min_clicks AND cp.s >= p_min_spend    THEN COALESCE(cp.v/NULLIF(cp.s,0),0)
+                WHEN gp.c >= p_pool_min_clicks AND gp.s >= p_min_spend    THEN COALESCE(gp.v/NULLIF(gp.s,0),0)
                 ELSE 0
             END AS hour_roas,
             CASE
-                WHEN kp.c >= p_min_clicks AND kp.s >= p_min_spend THEN COALESCE(ka.avg_roas,0)
-                WHEN cp.c >= p_min_clicks AND cp.s >= p_min_spend THEN COALESCE(ca.avg_roas,0)
+                WHEN kt.c >= p_kw_min_clicks AND kt.s >= p_min_spend
+                     AND COALESCE(kp.c,0) >= p_cell_min_clicks           THEN COALESCE(ka.avg_roas,0)
+                WHEN cp.c >= p_pool_min_clicks AND cp.s >= p_min_spend    THEN COALESCE(ca.avg_roas,0)
                 ELSE COALESCE(ga.avg_roas,0)
             END AS scope_avg_roas,
             COALESCE(pr.recommended_multiplier, marketcloud_gold._dp_hardcoded_band(g.hr::int)) AS current_mult
         FROM grid g
+        LEFT JOIN kwtot    kt ON kt.keyword_id=g.keyword_id
         LEFT JOIN kwperf   kp ON kp.keyword_id=g.keyword_id AND kp.hr=g.hr
         LEFT JOIN kwavg    ka ON ka.keyword_id=g.keyword_id
         LEFT JOIN campperf cp ON cp.campaign_id=g.campaign_id AND cp.hr=g.hr
