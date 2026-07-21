@@ -680,16 +680,21 @@ func (h *Handler) GoldDaypartingCalibration(w http.ResponseWriter, r *http.Reque
 	ctx := r.Context()
 
 	recRows, err := h.db.Query(ctx, `
-		SELECT keyword_id, COALESCE(NULLIF(keyword_text,''),'(sem texto)') AS keyword_text,
-			event_hour,
-			(published_multiplier*100)::int AS atual_pct,
-			(recommended_multiplier*100)::int AS sugerido_pct,
-			action, scope, weeks_of_data,
-			hour_roas::float8 AS roas, scope_avg_roas::float8 AS ref_roas,
-			clicks::float8 AS clicks, reason
-		FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1
-		WHERE gate='OK' AND action <> 'HOLD'
-		ORDER BY keyword_text, event_hour`)
+		WITH kw_rec AS (
+			SELECT DISTINCT keyword_id
+			FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1
+			WHERE gate='OK' AND action <> 'HOLD'
+		)
+		SELECT c.keyword_id, COALESCE(NULLIF(c.keyword_text,''),'(sem texto)') AS keyword_text,
+			c.event_hour,
+			(c.published_multiplier*100)::int AS atual_pct,
+			(c.recommended_multiplier*100)::int AS sugerido_pct,
+			c.action, c.scope, c.weeks_of_data,
+			c.hour_roas::float8 AS roas, c.scope_avg_roas::float8 AS ref_roas,
+			c.clicks::float8 AS clicks, c.reason
+		FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1 c
+		JOIN kw_rec USING (keyword_id)
+		ORDER BY c.keyword_text, c.event_hour`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "calibration_recs_failed: "+err.Error())
 		return
