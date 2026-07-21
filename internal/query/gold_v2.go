@@ -807,12 +807,25 @@ func (h *Handler) GoldDaypartingApply(w http.ResponseWriter, r *http.Request) {
 		WHERE status='PUBLISHED' AND scope='ENTITY' AND entity_id=$1 LIMIT 1`, body.KeywordID).Scan(&profileID)
 
 	planJSON, _ := json.Marshal(plan)
+	// BACKUP do estado atual (regras publicadas) ANTES de sobrescrever — reversivel.
+	preRulesJSON := "[]"
+	if profileID != "" {
+		if pr, e := h.db.Query(ctx, `
+			SELECT hour_start, hour_end, multiplier::float8 AS multiplier, day_of_week
+			FROM swarm_src.zanom_ads_bid_schedule_rules WHERE profile_id_ref=$1 ORDER BY hour_start`, profileID); e == nil {
+			if preRules, e2 := pgx.CollectRows(pr, pgx.RowToMap); e2 == nil {
+				if b, e3 := json.Marshal(preRules); e3 == nil {
+					preRulesJSON = string(b)
+				}
+			}
+		}
+	}
 	var auditID int64
 	_ = h.db.QueryRow(ctx, `
 		INSERT INTO marketcloud_gold.dayparting_apply_audit
-			(keyword_id, keyword_text, profile_id, dry_run, hours_changed, plan_json, actor)
-		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7) RETURNING id`,
-		body.KeywordID, kwText, profileID, !realWrite, hoursChanged, string(planJSON),
+			(keyword_id, keyword_text, profile_id, dry_run, hours_changed, plan_json, pre_rules_json, actor)
+		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8) RETURNING id`,
+		body.KeywordID, kwText, profileID, !realWrite, hoursChanged, string(planJSON), preRulesJSON,
 		middleware.TenantIDFromCtx(ctx).String()).Scan(&auditID)
 
 	result := "DRY_RUN"
