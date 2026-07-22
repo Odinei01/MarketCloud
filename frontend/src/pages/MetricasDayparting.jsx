@@ -9,14 +9,21 @@ const METRICS = [
   { key: 'cvr', label: 'Conversao %', fmt: v => (v ?? 0).toFixed(1) + '%', betterUp: true },
   { key: 'cpc', label: 'CPC R$', fmt: v => 'R$ ' + (v ?? 0).toFixed(2), betterUp: false },
 ]
-// heat termico p/ ROAS (vermelho ruim -> verde bom, meta 3), opacidade = gasto
+// heat termico p/ ROAS (vermelho ruim -> verde bom, meta 3), opacidade = gasto.
+// ROAS<=0 (gastou e nao vendeu, ou reembolso) = PIOR caso = vermelho forte.
 function heatColor(roas, spend, maxSpend) {
   if (!spend || spend <= 0) return 'transparent'
-  const op = Math.max(0.12, Math.min(1, Math.sqrt(spend / maxSpend)))
+  const op = Math.max(0.3, Math.min(1, Math.sqrt(spend / maxSpend)))
   let r, g, b
-  if (roas <= 0) { r = 138; g = 136; b = 128 }
-  else if (roas < 3) { const t = Math.min(1, roas / 3); r = 208; g = Math.round(59 + t * 120); b = 45 }
-  else { const t = Math.min(1, (roas - 3) / 6); r = Math.round(180 - t * 160); g = Math.round(179 + t * 20); b = 45 }
+  if (roas < 3) {
+    // 0 (ou negativo) = vermelho puro; sobe pra amarelo conforme chega em 3
+    const t = Math.max(0, Math.min(1, roas / 3))
+    r = 208; g = Math.round(45 + t * 145); b = 45
+  } else {
+    // 3 = amarelo-esverdeado; sobe pra verde forte
+    const t = Math.min(1, (roas - 3) / 6)
+    r = Math.round(190 - t * 170); g = Math.round(190 + t * 20); b = 45
+  }
   return `rgba(${r},${g},${b},${op})`
 }
 
@@ -95,6 +102,7 @@ export default function MetricasDayparting({ ctx }) {
   const [campaign, setCampaign] = useState('')
 
   const [heat, setHeat] = useState({ cells: [] })
+  const [dow, setDow] = useState('')
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -106,9 +114,9 @@ export default function MetricasDayparting({ ctx }) {
   useEffect(() => { load() }, [load])
   useEffect(() => {
     let alive = true
-    api.goldDaypartingKeywordHeatmap(tenantID).then(r => { if (alive && r?.ok) setHeat(r.data || { cells: [] }) }).catch(() => {})
+    api.goldDaypartingKeywordHeatmap(tenantID, dow).then(r => { if (alive && r?.ok) setHeat(r.data || { cells: [] }) }).catch(() => {})
     return () => { alive = false }
-  }, [tenantID])
+  }, [tenantID, dow])
 
   const metric = METRICS.find(m => m.key === mkey)
   const series = data.series || []
@@ -196,7 +204,18 @@ export default function MetricasDayparting({ ctx }) {
             Verde = melhorou ({metric.betterUp ? 'maior' : 'menor'} e melhor).
           </div>
 
-          <h3 style={{ margin: '24px 0 6px' }}>Heatmap geral — todas as keywords &times; hora <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(ROAS, trailing 28d)</span></h3>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '24px 0 6px', flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0 }}>Heatmap geral — todas as keywords &times; hora <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(ROAS, trailing 28d)</span></h3>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {[['', 'Tudo'], ['weekday', 'Uteis'], ['weekend', 'Fim de semana'], ['1', 'Seg'], ['2', 'Ter'], ['3', 'Qua'], ['4', 'Qui'], ['5', 'Sex'], ['6', 'Sab'], ['7', 'Dom']].map(([v, lbl]) => (
+                <button key={v || 'all'} onClick={() => setDow(v)}
+                  style={{ fontSize: 11.5, padding: '4px 9px', borderRadius: 7, cursor: 'pointer',
+                    border: '1px solid var(--border,#2a3550)',
+                    background: dow === v ? '#3987e5' : 'var(--card-bg,#0b1220)',
+                    color: dow === v ? '#fff' : 'inherit', fontWeight: dow === v ? 700 : 400 }}>{lbl}</button>
+              ))}
+            </div>
+          </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, ...muted, fontSize: 11.5, marginBottom: 8 }}>
             <span><span style={{ display: 'inline-block', width: 11, height: 11, background: 'rgba(208,59,45,.9)', borderRadius: 2, marginRight: 4 }} />ROAS &lt; 3</span>
             <span><span style={{ display: 'inline-block', width: 11, height: 11, background: 'rgba(180,179,45,.9)', borderRadius: 2, marginRight: 4 }} />&asymp; 3</span>

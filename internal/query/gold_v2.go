@@ -932,6 +932,21 @@ func (h *Handler) GoldDaypartingMetrics(w http.ResponseWriter, r *http.Request) 
 // janela trailing 28d. Somente leitura.
 func (h *Handler) GoldDaypartingKeywordHeatmap(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	// filtro por dia-da-semana. ISODOW: seg=1..dom=7.
+	// dow: '' (tudo) | 'weekday' (1-5) | 'weekend' (6-7) | '1'..'7' (dia unico)
+	dowFilter := ""
+	switch dow := r.URL.Query().Get("dow"); dow {
+	case "", "all":
+		dowFilter = ""
+	case "weekday":
+		dowFilter = " AND EXTRACT(ISODOW FROM data_date) BETWEEN 1 AND 5"
+	case "weekend":
+		dowFilter = " AND EXTRACT(ISODOW FROM data_date) IN (6,7)"
+	case "1", "2", "3", "4", "5", "6", "7":
+		dowFilter = " AND EXTRACT(ISODOW FROM data_date) = " + dow
+	default:
+		dowFilter = "" // valor desconhecido = sem filtro (nunca interpola livre)
+	}
 	rows, err := h.db.Query(ctx, `
 		WITH kw AS (
 			SELECT COALESCE(NULLIF(keyword_text,''),'(sem texto)') AS keyword_text,
@@ -940,7 +955,7 @@ func (h *Handler) GoldDaypartingKeywordHeatmap(w http.ResponseWriter, r *http.Re
 				sum(sales_7d)::float8 AS sales,
 				CASE WHEN sum(spend)>0 THEN round((sum(sales_7d)/sum(spend))::numeric,2)::float8 ELSE 0 END AS roas
 			FROM marketcloud_bronze.bronze_ams_hourly_target
-			WHERE data_date > CURRENT_DATE - 28
+			WHERE data_date > CURRENT_DATE - 28`+dowFilter+`
 			GROUP BY 1,2 HAVING sum(spend) > 0
 		)
 		SELECT keyword_text, event_hour, spend, sales, roas,
