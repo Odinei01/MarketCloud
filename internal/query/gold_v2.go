@@ -952,8 +952,8 @@ func (h *Handler) GoldDaypartingKeywordHeatmap(w http.ResponseWriter, r *http.Re
 			SELECT COALESCE(NULLIF(keyword_text,''),'(sem texto)') AS keyword_text,
 				event_hour,
 				sum(spend)::float8 AS spend,
-				sum(sales_7d)::float8 AS sales,
-				CASE WHEN sum(spend)>0 THEN round((sum(sales_7d)/sum(spend))::numeric,2)::float8 ELSE 0 END AS roas
+				COALESCE(sum(sales_7d) FILTER (WHERE clicks > 0),0)::float8 AS sales,   -- so venda-com-clique
+				CASE WHEN sum(spend)>0 THEN round((COALESCE(sum(sales_7d) FILTER (WHERE clicks > 0),0)/sum(spend))::numeric,2)::float8 ELSE 0 END AS roas
 			FROM marketcloud_bronze.bronze_ams_hourly_target
 			WHERE data_date > CURRENT_DATE - 28`+dowFilter+`
 			GROUP BY 1,2 HAVING sum(spend) > 0
