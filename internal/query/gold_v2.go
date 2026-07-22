@@ -973,3 +973,44 @@ func (h *Handler) GoldDaypartingKeywordHeatmap(w http.ResponseWriter, r *http.Re
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cells": cells})
 }
+
+// GoldDaypartingGreening: motor DETERMINISTICO de "esverdear". Retorna o placar
+// (% do gasto em celula verde, hoje vs potencial) + a lista de acoes acionaveis
+// (CUT/FEED/KEEP e keywords VIGIAR/MATAR). Somente leitura: recomenda, nao gasta.
+func (h *Handler) GoldDaypartingGreening(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	sbRows, err := h.db.Query(ctx, `SELECT * FROM marketcloud_gold.v_dayparting_greening_scoreboard`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "greening_scoreboard_failed: "+err.Error())
+		return
+	}
+	scoreboard, err := pgx.CollectRows(sbRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+
+	// acionaveis: tudo que nao e so "aguardar dado", ordenado por gasto.
+	actRows, err := h.db.Query(ctx, `
+		SELECT keyword_text, event_hour, spend, sales, clicks, raw_roas, shrunk_roas,
+			kw_roas, kw_clicks, kw_flag, action, suggested_multiplier, reason
+		FROM marketcloud_gold.v_dayparting_greening_cells
+		WHERE action <> 'HOLD' OR kw_flag <> 'ok'
+		ORDER BY (action='FEED') DESC, spend DESC`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "greening_cells_failed: "+err.Error())
+		return
+	}
+	actions, err := pgx.CollectRows(actRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+
+	var sb map[string]any
+	if len(scoreboard) > 0 {
+		sb = scoreboard[0]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"scoreboard": sb, "actions": actions})
+}

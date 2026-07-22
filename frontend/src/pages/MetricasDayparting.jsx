@@ -93,6 +93,79 @@ function FragmentKwRow({ kw, cells, max, muted }) {
   )
 }
 
+// motor deterministico de "esverdear": placar (% verde hoje -> potencial) + acoes
+const ACTION_STYLE = {
+  FEED: { bg: '#14c741', fg: '#062', label: 'ALIMENTAR' },
+  CUT: { bg: '#d03b2d', fg: '#fff', label: 'CORTAR' },
+  KEEP: { bg: '#3987e5', fg: '#fff', label: 'MANTER' },
+  HOLD: { bg: '#5a6b85', fg: '#fff', label: 'AGUARDAR' },
+}
+const KWFLAG_STYLE = {
+  MATAR: { bg: '#8b1a1a', fg: '#fff', label: 'MATAR KW' },
+  VIGIAR: { bg: '#b8860b', fg: '#fff', label: 'VIGIAR KW' },
+}
+function Chip({ s }) {
+  return <span style={{ background: s.bg, color: s.fg, fontSize: 10.5, fontWeight: 700, padding: '2px 7px', borderRadius: 5, whiteSpace: 'nowrap' }}>{s.label}</span>
+}
+function GreeningPanel({ sb, actions, muted }) {
+  const hoje = Number(sb.pct_verde_hoje) || 0
+  const pot = Number(sb.pct_verde_potencial) || 0
+  const card = { background: 'var(--card-bg,#1e1e2e)', borderRadius: 10, padding: '10px 14px', minWidth: 120 }
+  return (
+    <div style={{ marginTop: 22, border: '1px solid var(--border,#2a3550)', borderRadius: 12, padding: 14 }}>
+      <h3 style={{ margin: '0 0 2px' }}>Motor de esverdeamento <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(deterministico · janela madura 28-7d · meta ROAS 3)</span></h3>
+      <p style={{ ...muted, fontSize: 11.5, margin: '0 0 12px' }}>Regra fixa por celula. Mesma entrada = mesma saida. So recomenda — nao gasta.</p>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'stretch' }}>
+        <div style={{ ...card, flex: '1 1 260px' }}>
+          <div style={{ fontSize: 11.5, ...muted }}>% do gasto em hora verde (ROAS &ge; 3)</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 4 }}>
+            <span style={{ fontSize: 30, fontWeight: 800, color: '#14c741' }}>{hoje.toFixed(0)}%</span>
+            <span style={{ ...muted }}>hoje &nbsp;&rarr;&nbsp; <b style={{ color: '#8fe3a5' }}>{pot.toFixed(0)}%</b> potencial (cortando o morto)</span>
+          </div>
+          <div style={{ marginTop: 8, height: 10, borderRadius: 6, background: 'var(--border,#2a3550)', overflow: 'hidden', position: 'relative' }}>
+            <div style={{ position: 'absolute', inset: 0, width: pot + '%', background: 'rgba(20,199,65,.28)' }} />
+            <div style={{ position: 'absolute', inset: 0, width: hoje + '%', background: '#14c741' }} />
+          </div>
+        </div>
+        <div style={card}><div style={{ fontSize: 11.5, ...muted }}>A cortar (morto)</div><div style={{ fontSize: 20, fontWeight: 700, color: '#fca5a5' }}>R$ {Number(sb.gasto_a_cortar || 0).toFixed(0)}</div><div style={{ fontSize: 10.5, ...muted }}>{sb.n_cortar} hora(s)</div></div>
+        <div style={card}><div style={{ fontSize: 11.5, ...muted }}>A alimentar (vencedor)</div><div style={{ fontSize: 20, fontWeight: 700, color: '#8fe3a5' }}>R$ {Number(sb.gasto_a_alimentar || 0).toFixed(0)}</div><div style={{ fontSize: 10.5, ...muted }}>{sb.n_alimentar} hora(s)</div></div>
+        <div style={card}><div style={{ fontSize: 11.5, ...muted }}>Aguardando dado</div><div style={{ fontSize: 20, fontWeight: 700 }}>{sb.n_aguardar}</div><div style={{ fontSize: 10.5, ...muted }}>celulas fracas</div></div>
+        <div style={card}><div style={{ fontSize: 11.5, ...muted }}>Keywords</div><div style={{ fontSize: 20, fontWeight: 700, color: '#eab308' }}>{sb.n_keywords_matar} / {sb.n_keywords_vigiar}</div><div style={{ fontSize: 10.5, ...muted }}>matar / vigiar</div></div>
+      </div>
+
+      {actions?.length > 0 && (
+        <div style={{ marginTop: 12, overflow: 'auto', maxHeight: 320 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr style={{ ...muted, textAlign: 'left' }}>
+              <th style={{ padding: '4px 8px' }}>Acao</th><th style={{ padding: '4px 8px' }}>Keyword</th>
+              <th style={{ padding: '4px 8px' }}>Hora</th><th style={{ padding: '4px 8px', textAlign: 'right' }}>ROAS</th>
+              <th style={{ padding: '4px 8px', textAlign: 'right' }}>Gasto</th><th style={{ padding: '4px 8px', textAlign: 'right' }}>Mult.</th>
+              <th style={{ padding: '4px 8px' }}>Motivo</th>
+            </tr></thead>
+            <tbody>
+              {actions.map((a, i) => {
+                const as = ACTION_STYLE[a.action] || ACTION_STYLE.HOLD
+                const kf = KWFLAG_STYLE[a.kw_flag]
+                return (
+                  <tr key={i} style={{ borderTop: '1px solid var(--border,#1a2238)' }}>
+                    <td style={{ padding: '4px 8px', display: 'flex', gap: 4, alignItems: 'center' }}><Chip s={as} />{kf && <Chip s={kf} />}</td>
+                    <td style={{ padding: '4px 8px' }}>{a.keyword_text}</td>
+                    <td style={{ padding: '4px 8px' }}>{String(a.event_hour).padStart(2, '0')}h</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right' }}>{Number(a.shrunk_roas).toFixed(1)}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right' }}>R$ {Number(a.spend).toFixed(2)}</td>
+                    <td style={{ padding: '4px 8px', textAlign: 'right' }}>{a.suggested_multiplier == null ? '—' : a.suggested_multiplier + '%'}</td>
+                    <td style={{ padding: '4px 8px', ...muted, fontSize: 11 }}>{a.reason}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function MetricasDayparting({ ctx }) {
   const { tenantID } = ctx
   const [data, setData] = useState({ series: [], campaigns: [] })
@@ -103,6 +176,7 @@ export default function MetricasDayparting({ ctx }) {
 
   const [heat, setHeat] = useState({ cells: [] })
   const [dow, setDow] = useState('')
+  const [green, setGreen] = useState({ scoreboard: null, actions: [] })
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -117,6 +191,11 @@ export default function MetricasDayparting({ ctx }) {
     api.goldDaypartingKeywordHeatmap(tenantID, dow).then(r => { if (alive && r?.ok) setHeat(r.data || { cells: [] }) }).catch(() => {})
     return () => { alive = false }
   }, [tenantID, dow])
+  useEffect(() => {
+    let alive = true
+    api.goldDaypartingGreening(tenantID).then(r => { if (alive && r?.ok) setGreen(r.data || { scoreboard: null, actions: [] }) }).catch(() => {})
+    return () => { alive = false }
+  }, [tenantID])
 
   const metric = METRICS.find(m => m.key === mkey)
   const series = data.series || []
@@ -203,6 +282,8 @@ export default function MetricasDayparting({ ctx }) {
             {series.length} dia(s) · a linha e o valor diario; os cards comparam hoje com ontem (DoD), 7 dias (WoW) e 30 dias (MoM).
             Verde = melhorou ({metric.betterUp ? 'maior' : 'menor'} e melhor).
           </div>
+
+          {green.scoreboard && <GreeningPanel sb={green.scoreboard} actions={green.actions} muted={muted} />}
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '24px 0 6px', flexWrap: 'wrap' }}>
             <h3 style={{ margin: 0 }}>Heatmap geral — todas as keywords &times; hora <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(ROAS, trailing 28d)</span></h3>
