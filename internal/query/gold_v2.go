@@ -1070,3 +1070,41 @@ func (h *Handler) GoldDaypartingWindows(w http.ResponseWriter, r *http.Request) 
 		"stability": stability, "placement": placement, "pricing": pricing,
 	})
 }
+
+// GoldDaypartCurveRich: heatmap campanha x hora da FONTE RICA (bronze_amazon_ads_hourly,
+// desde 31/05, ~3257 cliques). Substitui o heatmap de keyword do stream esparso como
+// visual autoritativo do dayparting. Retorna tambem a curva global. Somente leitura.
+func (h *Handler) GoldDaypartCurveRich(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	campRows, err := h.db.Query(ctx, `
+		SELECT campaign_name, event_hour, clicks, spend::float8 AS spend,
+			sales::float8 AS sales, orders::float8 AS orders, roas::float8 AS roas
+		FROM marketcloud_gold.v_daypart_curve_campaign_rich
+		ORDER BY campaign_name, event_hour`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "curve_campaign_failed: "+err.Error())
+		return
+	}
+	campaign, err := pgx.CollectRows(campRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+
+	glRows, err := h.db.Query(ctx, `
+		SELECT event_hour, clicks, spend::float8 AS spend, sales::float8 AS sales,
+			orders::float8 AS orders, roas::float8 AS roas, suggested_global_mult, reason
+		FROM marketcloud_gold.v_daypart_curve_global_rich ORDER BY event_hour`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "curve_global_failed: "+err.Error())
+		return
+	}
+	global, err := pgx.CollectRows(glRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"campaign": campaign, "global": global})
+}

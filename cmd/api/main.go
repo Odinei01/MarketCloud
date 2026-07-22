@@ -147,6 +147,7 @@ func main() {
 		r.Get("/dayparting-keyword-heatmap", queryH.GoldDaypartingKeywordHeatmap)
 		r.Get("/dayparting-greening", queryH.GoldDaypartingGreening)
 		r.Get("/dayparting-windows", queryH.GoldDaypartingWindows)
+		r.Get("/daypart-curve-rich", queryH.GoldDaypartCurveRich)
 		r.Get("/keyword-hourly-real/{id}/explain", queryH.GoldKeywordHourlyExplain)
 		r.With(managerUp).Post("/keyword-hourly/apply", queryH.GoldKeywordApply)
 		r.With(managerUp).Post("/refresh-swarm-state", queryH.RefreshSwarmState)

@@ -214,6 +214,65 @@ function WindowsPanel({ win, muted }) {
   )
 }
 
+// heatmap AUTORITATIVO: campanha x hora na fonte rica (desde 31/05) + curva global
+function RichCurvePanel({ rich, muted }) {
+  const cells = rich.campaign || []
+  const gl = rich.global || []
+  const max = Math.max(1, ...cells.map(c => Number(c.spend) || 0))
+  const byCamp = {}, order = []
+  cells.forEach(c => {
+    if (!byCamp[c.campaign_name]) { byCamp[c.campaign_name] = {}; order.push(c.campaign_name) }
+    byCamp[c.campaign_name][c.event_hour] = c
+  })
+  const glMax = Math.max(1, ...gl.map(g => Number(g.spend) || 0))
+  return (
+    <div style={{ marginTop: 22, border: '1px solid var(--border,#2a3550)', borderRadius: 12, padding: 14 }}>
+      <h3 style={{ margin: '0 0 2px' }}>Dayparting real — campanha &times; hora <span style={{ color: '#14c741', fontWeight: 700, fontSize: 12 }}>(fonte rica, desde 31/05)</span></h3>
+      <p style={{ ...muted, fontSize: 11.5, margin: '0 0 12px' }}>Base autoritativa (~3257 cliques, cobre campanhas auto). Cor = ROAS (verde &ge;3), opacidade = gasto.</p>
+
+      {/* curva global 24h */}
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ ...muted, fontSize: 11, marginBottom: 3 }}>GLOBAL (todas as campanhas empilhadas)</div>
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(24, 1fr)`, gap: 1 }}>
+          {gl.map(g => (
+            <div key={g.event_hour} title={`${String(g.event_hour).padStart(2,'0')}h · ROAS ${Number(g.roas).toFixed(1)} · ${g.clicks} cl · R$ ${Number(g.spend).toFixed(0)}`}
+              style={{ height: 26, borderRadius: 2, background: heatColor(Number(g.roas), Number(g.spend), glMax), border: '1px solid var(--border,#1a2238)', fontSize: 8, textAlign: 'center', lineHeight: '26px', color: 'rgba(255,255,255,.6)' }}>
+              {g.event_hour}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ overflow: 'auto', maxHeight: 460, border: '1px solid var(--border,#2a3550)', borderRadius: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: `160px repeat(24, 22px)`, gap: 1, minWidth: 160 + 24 * 23, padding: 6 }}>
+          <div style={{ position: 'sticky', left: 0, background: 'var(--card-bg,#0b1220)', zIndex: 2 }} />
+          {Array.from({ length: 24 }, (_, h) => <div key={h} style={{ ...muted, fontSize: 9, textAlign: 'center' }}>{String(h).padStart(2, '0')}</div>)}
+          {order.map(camp => (
+            <FragmentCampRow key={camp} camp={camp} cells={byCamp[camp]} max={max} muted={muted} />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+function FragmentCampRow({ camp, cells, max, muted }) {
+  return (
+    <>
+      <div title={camp} style={{ position: 'sticky', left: 0, background: 'var(--card-bg,#0b1220)', zIndex: 1, fontSize: 10, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: 6, lineHeight: '18px' }}>{camp}</div>
+      {Array.from({ length: 24 }, (_, h) => {
+        const c = cells[h]
+        const roas = c ? Number(c.roas) : 0
+        const spend = c ? Number(c.spend) : 0
+        return (
+          <div key={h}
+            title={c ? `${camp} · ${String(h).padStart(2, '0')}h\nROAS ${roas.toFixed(2)} · ${c.clicks} cl · gasto R$ ${spend.toFixed(2)}` : `${String(h).padStart(2, '0')}h · sem gasto`}
+            style={{ height: 18, borderRadius: 2, background: heatColor(roas, spend, max), border: '1px solid var(--border,#1a2238)' }} />
+        )
+      })}
+    </>
+  )
+}
+
 export default function MetricasDayparting({ ctx }) {
   const { tenantID } = ctx
   const [data, setData] = useState({ series: [], campaigns: [] })
@@ -226,6 +285,7 @@ export default function MetricasDayparting({ ctx }) {
   const [dow, setDow] = useState('')
   const [green, setGreen] = useState({ scoreboard: null, actions: [] })
   const [win, setWin] = useState({ stability: [], placement: [], pricing: [] })
+  const [rich, setRich] = useState({ campaign: [], global: [] })
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -248,6 +308,11 @@ export default function MetricasDayparting({ ctx }) {
   useEffect(() => {
     let alive = true
     api.goldDaypartingWindows(tenantID).then(r => { if (alive && r?.ok) setWin(r.data || { stability: [], placement: [], pricing: [] }) }).catch(() => {})
+    return () => { alive = false }
+  }, [tenantID])
+  useEffect(() => {
+    let alive = true
+    api.goldDaypartCurveRich(tenantID).then(r => { if (alive && r?.ok) setRich(r.data || { campaign: [], global: [] }) }).catch(() => {})
     return () => { alive = false }
   }, [tenantID])
 
@@ -341,8 +406,10 @@ export default function MetricasDayparting({ ctx }) {
 
           <WindowsPanel win={win} muted={muted} />
 
+          <RichCurvePanel rich={rich} muted={muted} />
+
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '24px 0 6px', flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0 }}>Heatmap geral — todas as keywords &times; hora <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(ROAS, trailing 28d)</span></h3>
+            <h3 style={{ margin: 0 }}>Heatmap keyword &times; hora <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(stream esparso desde 19/06 — baixa confianca, so ~3 keywords com dado)</span></h3>
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
               {[['', 'Tudo'], ['weekday', 'Uteis'], ['weekend', 'Fim de semana'], ['1', 'Seg'], ['2', 'Ter'], ['3', 'Qua'], ['4', 'Qui'], ['5', 'Sex'], ['6', 'Sab'], ['7', 'Dom']].map(([v, lbl]) => (
                 <button key={v || 'all'} onClick={() => setDow(v)}
