@@ -1014,3 +1014,59 @@ func (h *Handler) GoldDaypartingGreening(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"scoreboard": sb, "actions": actions})
 }
+
+// GoldDaypartingWindows: fundacao das 3 alavancas. Score DETERMINISTICO de
+// estabilidade de janela (dia x daypart) + candidatas de placement (primeira
+// pagina, grao campanha) + candidatas de pricing (feeder do robo de preco).
+// Somente leitura.
+func (h *Handler) GoldDaypartingWindows(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	sumRows, err := h.db.Query(ctx, `
+		SELECT readiness, count(*)::int AS janelas, sum(clicks)::float8 AS cliques,
+			round(sum(spend)::numeric,2)::float8 AS gasto
+		FROM marketcloud_gold.v_dayparting_window_stability
+		GROUP BY readiness ORDER BY readiness`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "window_stability_failed: "+err.Error())
+		return
+	}
+	stability, err := pgx.CollectRows(sumRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+
+	plcRows, err := h.db.Query(ctx, `
+		SELECT campaign_name, daypart, day_bucket, clicks, spend, roas, weeks_green,
+			readiness, suggested_tos_boost_pct, reason
+		FROM marketcloud_gold.v_placement_window_candidates
+		WHERE suggested_tos_boost_pct > 0
+		ORDER BY suggested_tos_boost_pct DESC, roas DESC`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "placement_candidates_failed: "+err.Error())
+		return
+	}
+	placement, err := pgx.CollectRows(plcRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+
+	prcRows, err := h.db.Query(ctx, `
+		SELECT keyword_text, campaign_name, daypart, day_bucket, weeks_green, clicks, roas, hypothesis
+		FROM marketcloud_gold.v_pricing_window_candidates`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "pricing_candidates_failed: "+err.Error())
+		return
+	}
+	pricing, err := pgx.CollectRows(prcRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"stability": stability, "placement": placement, "pricing": pricing,
+	})
+}

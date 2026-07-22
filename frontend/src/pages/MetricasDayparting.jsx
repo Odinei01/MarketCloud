@@ -166,6 +166,54 @@ function GreeningPanel({ sb, actions, muted }) {
   )
 }
 
+// 3 alavancas sobre o mesmo sinal de demanda, governadas pela estabilidade da janela
+const READY_STYLE = { READY: { bg: '#14c741', fg: '#062' }, EMERGING: { bg: '#b8860b', fg: '#fff' }, THIN: { bg: '#5a6b85', fg: '#fff' } }
+function WindowsPanel({ win, muted }) {
+  const card = { background: 'var(--card-bg,#1e1e2e)', borderRadius: 10, padding: '10px 14px' }
+  const th = { padding: '4px 8px', textAlign: 'left' }
+  const readyCount = (win.stability || []).find(s => s.readiness === 'READY')?.janelas || 0
+  const emergCount = (win.stability || []).find(s => s.readiness === 'EMERGING')?.janelas || 0
+  const thinCount = (win.stability || []).find(s => s.readiness === 'THIN')?.janelas || 0
+  return (
+    <div style={{ marginTop: 18, border: '1px solid var(--border,#2a3550)', borderRadius: 12, padding: 14 }}>
+      <h3 style={{ margin: '0 0 2px' }}>Janelas &amp; alavancas <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(dia &times; daypart · 6 semanas · deterministico)</span></h3>
+      <p style={{ ...muted, fontSize: 11.5, margin: '0 0 12px' }}>Uma janela so libera dinheiro (bid, primeira pagina, preco) quando converte alto <b>e repete</b> entre semanas. Enquanto e magra/instavel, fica em espera. So recomenda.</p>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        <div style={{ ...card, borderLeft: '3px solid #14c741' }}><div style={{ fontSize: 11, ...muted }}>Prontas (READY)</div><div style={{ fontSize: 20, fontWeight: 800, color: '#14c741' }}>{readyCount}</div></div>
+        <div style={{ ...card, borderLeft: '3px solid #b8860b' }}><div style={{ fontSize: 11, ...muted }}>Emergindo</div><div style={{ fontSize: 20, fontWeight: 800, color: '#eab308' }}>{emergCount}</div></div>
+        <div style={{ ...card, borderLeft: '3px solid #5a6b85' }}><div style={{ fontSize: 11, ...muted }}>Em espera (magra)</div><div style={{ fontSize: 20, fontWeight: 800 }}>{thinCount}</div></div>
+      </div>
+
+      <div style={{ fontSize: 12.5, fontWeight: 700, margin: '6px 0 4px' }}>🟦 Primeira pagina (top-of-search) — candidatas <span style={{ ...muted, fontWeight: 400, fontSize: 11 }}>· executor gated OFF</span></div>
+      {(win.placement || []).length === 0
+        ? <div style={{ ...muted, fontSize: 12, padding: '4px 8px' }}>Nenhuma janela madura o bastante ainda. Acumulando dado.</div>
+        : <div style={{ overflow: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr style={muted}><th style={th}>Campanha</th><th style={th}>Daypart</th><th style={th}>Dia</th><th style={{ ...th, textAlign: 'right' }}>ROAS</th><th style={{ ...th, textAlign: 'center' }}>Semanas verdes</th><th style={{ ...th, textAlign: 'center' }}>Prontidao</th><th style={{ ...th, textAlign: 'right' }}>Boost 1a pag.</th></tr></thead>
+            <tbody>{win.placement.map((p, i) => { const rs = READY_STYLE[p.readiness] || READY_STYLE.THIN; return (
+              <tr key={i} style={{ borderTop: '1px solid var(--border,#1a2238)' }}>
+                <td style={th}>{p.campaign_name || '(sem nome)'}</td><td style={th}>{p.daypart}</td><td style={th}>{p.day_bucket === 'fim_semana' ? 'fim sem.' : 'util'}</td>
+                <td style={{ ...th, textAlign: 'right' }}>{Number(p.roas).toFixed(1)}</td><td style={{ ...th, textAlign: 'center' }}>{p.weeks_green}</td>
+                <td style={{ ...th, textAlign: 'center' }}><span style={{ background: rs.bg, color: rs.fg, fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4 }}>{p.readiness}</span></td>
+                <td style={{ ...th, textAlign: 'right', color: '#8fe3a5', fontWeight: 700 }}>+{p.suggested_tos_boost_pct}%</td>
+              </tr>) })}</tbody>
+          </table></div>}
+
+      <div style={{ fontSize: 12.5, fontWeight: 700, margin: '14px 0 4px' }}>💲 Pricing — candidatas a teste de premio <span style={{ ...muted, fontWeight: 400, fontSize: 11 }}>· alimenta o robo de preco · nao mexe preco</span></div>
+      {(win.pricing || []).length === 0
+        ? <div style={{ ...muted, fontSize: 12, padding: '4px 8px' }}>Nenhuma janela estavel o bastante p/ testar preco (precisa READY + ROAS &ge; 6, repetido). Correto: nao se sobe preco em pico de 1 semana.</div>
+        : <div style={{ overflow: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead><tr style={muted}><th style={th}>Keyword</th><th style={th}>Daypart</th><th style={th}>Dia</th><th style={{ ...th, textAlign: 'center' }}>Semanas verdes</th><th style={{ ...th, textAlign: 'right' }}>ROAS</th></tr></thead>
+            <tbody>{win.pricing.map((p, i) => (
+              <tr key={i} style={{ borderTop: '1px solid var(--border,#1a2238)' }}>
+                <td style={th}>{p.keyword_text}</td><td style={th}>{p.daypart}</td><td style={th}>{p.day_bucket === 'fim_semana' ? 'fim sem.' : 'util'}</td>
+                <td style={{ ...th, textAlign: 'center' }}>{p.weeks_green}</td><td style={{ ...th, textAlign: 'right' }}>{Number(p.roas).toFixed(1)}</td>
+              </tr>))}</tbody>
+          </table></div>}
+    </div>
+  )
+}
+
 export default function MetricasDayparting({ ctx }) {
   const { tenantID } = ctx
   const [data, setData] = useState({ series: [], campaigns: [] })
@@ -177,6 +225,7 @@ export default function MetricasDayparting({ ctx }) {
   const [heat, setHeat] = useState({ cells: [] })
   const [dow, setDow] = useState('')
   const [green, setGreen] = useState({ scoreboard: null, actions: [] })
+  const [win, setWin] = useState({ stability: [], placement: [], pricing: [] })
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -194,6 +243,11 @@ export default function MetricasDayparting({ ctx }) {
   useEffect(() => {
     let alive = true
     api.goldDaypartingGreening(tenantID).then(r => { if (alive && r?.ok) setGreen(r.data || { scoreboard: null, actions: [] }) }).catch(() => {})
+    return () => { alive = false }
+  }, [tenantID])
+  useEffect(() => {
+    let alive = true
+    api.goldDaypartingWindows(tenantID).then(r => { if (alive && r?.ok) setWin(r.data || { stability: [], placement: [], pricing: [] }) }).catch(() => {})
     return () => { alive = false }
   }, [tenantID])
 
@@ -284,6 +338,8 @@ export default function MetricasDayparting({ ctx }) {
           </div>
 
           {green.scoreboard && <GreeningPanel sb={green.scoreboard} actions={green.actions} muted={muted} />}
+
+          <WindowsPanel win={win} muted={muted} />
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '24px 0 6px', flexWrap: 'wrap' }}>
             <h3 style={{ margin: 0 }}>Heatmap geral — todas as keywords &times; hora <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(ROAS, trailing 28d)</span></h3>

@@ -146,6 +146,7 @@ export const api = {
   goldDaypartingMetrics: (tid, campaign) => req('GET', '/gold/dayparting-metrics' + (campaign ? '?campaign=' + encodeURIComponent(campaign) : ''), null, tid),
   goldDaypartingKeywordHeatmap: (tid, dow) => req('GET', '/gold/dayparting-keyword-heatmap' + (dow ? '?dow=' + encodeURIComponent(dow) : ''), null, tid),
   goldDaypartingGreening: (tid) => req('GET', '/gold/dayparting-greening', null, tid),
+  goldDaypartingWindows: (tid) => req('GET', '/gold/dayparting-windows', null, tid),
   goldKeywordApply: (tid, body) => req('POST', '/gold/keyword-hourly/apply', body, tid),
   goldMlAmsStatus: (tid) => req('GET', '/gold/ml-ams-status', null, tid),
   goldMlFullAutoCampaigns: (tid) => req('GET', '/gold/ml-full-auto-campaigns', null, tid),
