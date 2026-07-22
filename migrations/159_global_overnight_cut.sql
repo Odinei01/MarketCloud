@@ -20,9 +20,9 @@ CREATE TABLE IF NOT EXISTS marketcloud_gold.overnight_cut_audit (
   created_at   timestamptz NOT NULL DEFAULT now()
 );
 
--- horas da madrugada (22h ate 07h inclusive)
+-- horas da madrugada (22h ate 06h inclusive; 07h fica de fora = inicio do dia)
 CREATE OR REPLACE FUNCTION marketcloud_gold._overnight_hours() RETURNS int[]
-LANGUAGE sql IMMUTABLE AS $$ SELECT ARRAY[22,23,0,1,2,3,4,5,6,7] $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT ARRAY[22,23,0,1,2,3,4,5,6] $$;
 
 CREATE OR REPLACE FUNCTION marketcloud_gold.apply_overnight_cut_all(
   p_floor   numeric DEFAULT 0.20,
