@@ -15,7 +15,7 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 
 	modelRows, err := h.db.Query(ctx, `
 		SELECT model_name, model_version, model_type, target_name, status,
-		       training_rows, metrics_json, created_at
+		       training_rows, metrics_json, created_at, last_trained_at
 		FROM marketcloud_features.model_registry
 		WHERE model_name IN (
 			'HourlyConversionRealV2', 'HourlyExpectedRoasRealV2',

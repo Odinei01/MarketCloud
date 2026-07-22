@@ -42,7 +42,7 @@ func (h *Handler) RobotToday(w http.ResponseWriter, r *http.Request) {
 		SELECT (metrics_json->>'roc_auc')::float8
 		FROM marketcloud_features.model_registry
 		WHERE model_name = 'HourlyConversionRealV2' AND metrics_json ? 'roc_auc'
-		ORDER BY created_at DESC LIMIT 1`).Scan(&auc)
+		ORDER BY last_trained_at DESC LIMIT 1`).Scan(&auc)
 	nivel, texto := "aprendendo", "🟡 Aprendendo — ainda juntando dados pra ficar preciso."
 	if auc != nil {
 		pct := int(*auc * 100)
