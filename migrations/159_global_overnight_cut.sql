@@ -107,17 +107,18 @@ END;
 $$;
 
 -- REVERT do ultimo (ou de um run_id): restaura as regras do backup pre_rules_json.
-CREATE OR REPLACE FUNCTION marketcloud_gold.revert_overnight_cut(p_run_id text DEFAULT NULL)
-RETURNS TABLE(profile_id text, restored_rules int) LANGUAGE plpgsql AS $$
+DROP FUNCTION IF EXISTS marketcloud_gold.revert_overnight_cut(text);
+CREATE FUNCTION marketcloud_gold.revert_overnight_cut(p_run_id text DEFAULT NULL)
+RETURNS TABLE(out_profile_id text, restored_rules int) LANGUAGE plpgsql AS $$
 DECLARE
   v_run text;
 BEGIN
-  v_run := COALESCE(p_run_id, (SELECT run_id FROM marketcloud_gold.overnight_cut_audit
-                               WHERE applied ORDER BY created_at DESC LIMIT 1));
+  v_run := COALESCE(p_run_id, (SELECT a.run_id FROM marketcloud_gold.overnight_cut_audit a
+                               WHERE a.applied ORDER BY a.created_at DESC LIMIT 1));
   IF v_run IS NULL THEN RAISE EXCEPTION 'nenhum run aplicado p/ reverter'; END IF;
 
   DELETE FROM swarm_src.zanom_ads_bid_schedule_rules
-  WHERE profile_id_ref IN (SELECT profile_id FROM marketcloud_gold.overnight_cut_audit WHERE run_id=v_run AND applied);
+  WHERE profile_id_ref IN (SELECT a.profile_id FROM marketcloud_gold.overnight_cut_audit a WHERE a.run_id=v_run AND a.applied);
 
   INSERT INTO swarm_src.zanom_ads_bid_schedule_rules
     (id, profile_id_ref, hour_start, hour_end, multiplier, created_at, updated_at)
@@ -129,7 +130,7 @@ BEGIN
 
   UPDATE swarm_src.zanom_ads_bid_schedule_profiles
   SET version=COALESCE(version,0)+1, published_at=now(), updated_at=now()
-  WHERE id IN (SELECT profile_id FROM marketcloud_gold.overnight_cut_audit WHERE run_id=v_run AND applied);
+  WHERE id IN (SELECT a.profile_id FROM marketcloud_gold.overnight_cut_audit a WHERE a.run_id=v_run AND a.applied);
 
   RETURN QUERY
   SELECT a.profile_id, jsonb_array_length(a.pre_rules_json)
