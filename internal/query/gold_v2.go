@@ -893,14 +893,14 @@ func (h *Handler) GoldDaypartingMetrics(w http.ResponseWriter, r *http.Request) 
 		sRows, err = h.db.Query(ctx, `
 			SELECT to_char(date,'YYYY-MM-DD') AS date,
 				roas::float8, NULL::float8 AS tacos, cvr::float8, cpc::float8, acos::float8,
-				spend::float8, NULL::float8 AS total_sales
+				spend::float8, NULL::float8 AS total_sales, ad_sales::float8 AS vendas
 			FROM marketcloud_gold.v_dayparting_metrics_campaign_daily_v1
 			WHERE campaign_name=$1 AND date > CURRENT_DATE - 60 ORDER BY date`, campaign)
 	} else {
 		sRows, err = h.db.Query(ctx, `
 			SELECT to_char(date,'YYYY-MM-DD') AS date,
 				roas::float8, tacos::float8, cvr::float8, cpc::float8, acos::float8,
-				spend::float8, total_sales::float8
+				spend::float8, total_sales::float8, ad_sales::float8 AS vendas
 			FROM marketcloud_gold.v_dayparting_metrics_daily_v1
 			WHERE date > CURRENT_DATE - 60 ORDER BY date`)
 	}
@@ -925,4 +925,36 @@ func (h *Handler) GoldDaypartingMetrics(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"series": series, "campaigns": campaigns, "campaign": campaign})
+}
+
+// GET /api/v1/gold/dayparting-keyword-heatmap
+// Heatmap geral: TODAS as keywords x hora, ROAS (eficiencia) + gasto (confianca),
+// janela trailing 28d. Somente leitura.
+func (h *Handler) GoldDaypartingKeywordHeatmap(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rows, err := h.db.Query(ctx, `
+		WITH kw AS (
+			SELECT COALESCE(NULLIF(keyword_text,''),'(sem texto)') AS keyword_text,
+				event_hour,
+				sum(spend)::float8 AS spend,
+				sum(sales_7d)::float8 AS sales,
+				CASE WHEN sum(spend)>0 THEN round((sum(sales_7d)/sum(spend))::numeric,2)::float8 ELSE 0 END AS roas
+			FROM marketcloud_bronze.bronze_ams_hourly_target
+			WHERE data_date > CURRENT_DATE - 28
+			GROUP BY 1,2 HAVING sum(spend) > 0
+		)
+		SELECT keyword_text, event_hour, spend, sales, roas,
+			sum(spend) OVER (PARTITION BY keyword_text) AS kw_total_spend
+		FROM kw
+		ORDER BY kw_total_spend DESC, keyword_text, event_hour`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "kw_heatmap_failed: "+err.Error())
+		return
+	}
+	cells, err := pgx.CollectRows(rows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cells": cells})
 }

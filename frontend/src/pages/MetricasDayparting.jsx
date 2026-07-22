@@ -2,11 +2,23 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client.js'
 
 const METRICS = [
-  { key: 'roas', label: 'ROAS', fmt: v => v?.toFixed(2), betterUp: true },
-  { key: 'tacos', label: 'TACOS %', fmt: v => v?.toFixed(1) + '%', betterUp: false },
-  { key: 'cvr', label: 'Conversao %', fmt: v => v?.toFixed(1) + '%', betterUp: true },
-  { key: 'cpc', label: 'CPC R$', fmt: v => 'R$ ' + v?.toFixed(2), betterUp: false },
+  { key: 'roas', label: 'ROAS', fmt: v => (v ?? 0).toFixed(2), betterUp: true },
+  { key: 'tacos', label: 'TACOS %', fmt: v => (v ?? 0).toFixed(1) + '%', betterUp: false },
+  { key: 'acos', label: 'ACOS %', fmt: v => (v ?? 0).toFixed(1) + '%', betterUp: false },
+  { key: 'vendas', label: 'Vendas', fmt: v => 'R$ ' + Math.round(v || 0).toLocaleString('pt-BR'), betterUp: true },
+  { key: 'cvr', label: 'Conversao %', fmt: v => (v ?? 0).toFixed(1) + '%', betterUp: true },
+  { key: 'cpc', label: 'CPC R$', fmt: v => 'R$ ' + (v ?? 0).toFixed(2), betterUp: false },
 ]
+// heat termico p/ ROAS (vermelho ruim -> verde bom, meta 3), opacidade = gasto
+function heatColor(roas, spend, maxSpend) {
+  if (!spend || spend <= 0) return 'transparent'
+  const op = Math.max(0.12, Math.min(1, Math.sqrt(spend / maxSpend)))
+  let r, g, b
+  if (roas <= 0) { r = 138; g = 136; b = 128 }
+  else if (roas < 3) { const t = Math.min(1, roas / 3); r = 208; g = Math.round(59 + t * 120); b = 45 }
+  else { const t = Math.min(1, (roas - 3) / 6); r = Math.round(180 - t * 160); g = Math.round(179 + t * 20); b = 45 }
+  return `rgba(${r},${g},${b},${op})`
+}
 
 function LineChart({ series, mkey, color }) {
   const w = 900, h = 260, pad = { l: 44, r: 12, t: 12, b: 26 }
@@ -55,6 +67,25 @@ function Delta({ label, cur, prev, betterUp, fmt }) {
   )
 }
 
+// uma linha do heatmap: nome da keyword (sticky) + 24 celulas hora
+function FragmentKwRow({ kw, cells, max, muted }) {
+  return (
+    <>
+      <div title={kw} style={{ position: 'sticky', left: 0, background: 'var(--card-bg,#0b1220)', zIndex: 1, fontSize: 10.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingRight: 6, lineHeight: '20px' }}>{kw}</div>
+      {Array.from({ length: 24 }, (_, h) => {
+        const c = cells[h]
+        const roas = c ? Number(c.roas) : 0
+        const spend = c ? Number(c.spend) : 0
+        return (
+          <div key={h}
+            title={c ? `${kw} · ${String(h).padStart(2, '0')}h\nROAS ${roas.toFixed(2)} · gasto R$ ${spend.toFixed(2)} · vendas R$ ${Number(c.sales || 0).toFixed(2)}` : `${String(h).padStart(2, '0')}h · sem gasto`}
+            style={{ height: 20, borderRadius: 2, background: heatColor(roas, spend, max), border: '1px solid var(--border,#1a2238)' }} />
+        )
+      })}
+    </>
+  )
+}
+
 export default function MetricasDayparting({ ctx }) {
   const { tenantID } = ctx
   const [data, setData] = useState({ series: [], campaigns: [] })
@@ -63,6 +94,7 @@ export default function MetricasDayparting({ ctx }) {
   const [mkey, setMkey] = useState('roas')
   const [campaign, setCampaign] = useState('')
 
+  const [heat, setHeat] = useState({ cells: [] })
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try {
@@ -72,6 +104,11 @@ export default function MetricasDayparting({ ctx }) {
     } catch (e) { setError(e?.message || 'Falha ao carregar') } finally { setLoading(false) }
   }, [tenantID, campaign])
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    let alive = true
+    api.goldDaypartingKeywordHeatmap(tenantID).then(r => { if (alive && r?.ok) setHeat(r.data || { cells: [] }) }).catch(() => {})
+    return () => { alive = false }
+  }, [tenantID])
 
   const metric = METRICS.find(m => m.key === mkey)
   const series = data.series || []
@@ -93,9 +130,20 @@ export default function MetricasDayparting({ ctx }) {
     })
     return out
   }, [series])
-  const color = { roas: '#3987e5', tacos: '#eb6834', cvr: '#199e70', cpc: '#eda100' }[mkey]
+  const color = { roas: '#3987e5', tacos: '#eb6834', acos: '#d55181', vendas: '#199e70', cvr: '#1baf7a', cpc: '#eda100' }[mkey]
   const muted = { color: 'var(--muted,#8aa0c0)' }
   const cur = Number(L[mkey])
+
+  const kwHeat = useMemo(() => {
+    const cells = heat.cells || []
+    const max = Math.max(1, ...cells.map(c => c.spend || 0))
+    const byKw = {}, order = []
+    cells.forEach(c => {
+      if (!byKw[c.keyword_text]) { byKw[c.keyword_text] = {}; order.push(c.keyword_text) }
+      byKw[c.keyword_text][c.event_hour] = c
+    })
+    return { order, byKw, max }
+  }, [heat])
 
   return (
     <div style={{ maxWidth: 1000, color: 'var(--fg,#e6edf7)' }}>
@@ -147,6 +195,24 @@ export default function MetricasDayparting({ ctx }) {
             {series.length} dia(s) · a linha e o valor diario; os cards comparam hoje com ontem (DoD), 7 dias (WoW) e 30 dias (MoM).
             Verde = melhorou ({metric.betterUp ? 'maior' : 'menor'} e melhor).
           </div>
+
+          <h3 style={{ margin: '24px 0 6px' }}>Heatmap geral — todas as keywords &times; hora <span style={{ ...muted, fontWeight: 400, fontSize: 12 }}>(ROAS, trailing 28d)</span></h3>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, ...muted, fontSize: 11.5, marginBottom: 8 }}>
+            <span><span style={{ display: 'inline-block', width: 11, height: 11, background: 'rgba(208,59,45,.9)', borderRadius: 2, marginRight: 4 }} />ROAS &lt; 3</span>
+            <span><span style={{ display: 'inline-block', width: 11, height: 11, background: 'rgba(180,179,45,.9)', borderRadius: 2, marginRight: 4 }} />&asymp; 3</span>
+            <span><span style={{ display: 'inline-block', width: 11, height: 11, background: 'rgba(20,199,65,.9)', borderRadius: 2, marginRight: 4 }} />&gt; 3</span>
+            <span>opacidade = gasto · {kwHeat.order.length} keyword(s)</span>
+          </div>
+          <div style={{ overflow: 'auto', maxHeight: 540, border: '1px solid var(--border,#2a3550)', borderRadius: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: `180px repeat(24, 24px)`, gap: 1, minWidth: 180 + 24 * 25, padding: 6 }}>
+              <div style={{ position: 'sticky', left: 0, background: 'var(--card-bg,#0b1220)', zIndex: 2 }} />
+              {Array.from({ length: 24 }, (_, h) => <div key={h} style={{ ...muted, fontSize: 9.5, textAlign: 'center' }}>{String(h).padStart(2, '0')}</div>)}
+              {kwHeat.order.map(kw => (
+                <FragmentKwRow key={kw} kw={kw} cells={kwHeat.byKw[kw]} max={kwHeat.max} muted={muted} />
+              ))}
+            </div>
+          </div>
+          <p style={{ ...muted, fontSize: 11, marginTop: 6 }}>Ordenado por gasto. Célula = ROAS daquela keyword×hora; passe o mouse para gasto/ROAS. Verde forte = hora que converte bem (candidata a bid cheio); vermelho = hora fraca (candidata a corte).</p>
         </>
       )}
     </div>
