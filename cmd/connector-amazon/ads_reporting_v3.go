@@ -51,6 +51,8 @@ func adsReprocessReportConfigs() []adsReportConfig {
 			Columns: []string{
 				"date", "campaignId", "campaignName", "campaignStatus",
 				"impressions", "clicks", "cost", "purchases7d", "sales7d", "unitsSoldClicks7d",
+				// parcela de impressao do topo de busca (0-100), diaria. Alimenta feature do ML.
+				"topOfSearchImpressionShare",
 			},
 			ReportIDKey: "sp_campaign_report_id",
 			RowsKey:     "sp_campaign_rows_ingested",
@@ -492,8 +494,8 @@ func (s *connectorServer) ingestCampaignRows(ctx context.Context, c *adsReproces
 			INSERT INTO marketcloud_ops.ads_reporting_sp_campaign_daily_v3 (
 				profile_id, data_date, campaign_id, campaign_name, campaign_status,
 				impressions, clicks, cost, attributed_sales, purchases, units_sold,
-				currency, report_id, raw_json, synced_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,NOW())
+				top_of_search_is, currency, report_id, raw_json, synced_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,NOW())
 			ON CONFLICT (profile_id, data_date, campaign_id) DO UPDATE SET
 				campaign_name = EXCLUDED.campaign_name,
 				campaign_status = EXCLUDED.campaign_status,
@@ -503,6 +505,7 @@ func (s *connectorServer) ingestCampaignRows(ctx context.Context, c *adsReproces
 				attributed_sales = EXCLUDED.attributed_sales,
 				purchases = EXCLUDED.purchases,
 				units_sold = EXCLUDED.units_sold,
+				top_of_search_is = COALESCE(EXCLUDED.top_of_search_is, marketcloud_ops.ads_reporting_sp_campaign_daily_v3.top_of_search_is),
 				currency = EXCLUDED.currency,
 				report_id = EXCLUDED.report_id,
 				raw_json = EXCLUDED.raw_json,
@@ -516,6 +519,7 @@ func (s *connectorServer) ingestCampaignRows(ctx context.Context, c *adsReproces
 			firstNumber(row, "sales7d", "sales14d", "attributedSales7d", "attributedSales14d"),
 			firstInt(row, "purchases7d", "purchases14d", "attributedConversions7d", "attributedConversions14d"),
 			firstInt(row, "unitsSoldClicks7d", "unitsSoldSameSku7d", "unitsSold14d"),
+			nullableNumber(row, "topOfSearchImpressionShare"),
 			firstString(row, "currency", "campaignBudgetCurrencyCode"),
 			reportID,
 			string(raw),
@@ -736,6 +740,21 @@ func stringFromAny(v any) string {
 	default:
 		return ""
 	}
+}
+
+// nullableNumber: retorna *float64 ou nil quando a chave falta/vazia. Usado p/ metricas
+// opcionais (ex. topOfSearchImpressionShare) que a Amazon pode nao retornar — grava NULL
+// (desconhecido) em vez de 0 (que seria "ganhou 0% do leilao", uma mentira).
+func nullableNumber(m map[string]any, key string) *float64 {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	if s, isStr := v.(string); isStr && strings.TrimSpace(s) == "" {
+		return nil
+	}
+	f := floatFromAny(v)
+	return &f
 }
 
 func floatFromAny(v any) float64 {

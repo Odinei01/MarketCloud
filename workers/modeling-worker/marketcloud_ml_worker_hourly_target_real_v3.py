@@ -119,6 +119,11 @@ def load(conn):
                 ELSE 0
             END::float AS robot_proposed_to_amazon_median_ratio,
             CASE WHEN COALESCE(NULLIF(r.recommended_bid_median, 0), NULLIF(d.amazon_recommended_bid_median, 0), 0) > 0 THEN 1 ELSE 0 END::float AS has_amazon_bid_recommendation
+            -- parcela de impressao do topo de busca (diaria, media da campanha na janela).
+            -- NULL (desconhecido) -> 0 + flag has_impression_share, p/ o modelo distinguir
+            -- "IS=0 conhecido" de "IS ausente". Fica constante 0 ate o conector popular.
+            , COALESCE(isd.top_of_search_is, 0)::float AS top_of_search_is
+            , CASE WHEN isd.top_of_search_is IS NOT NULL THEN 1 ELSE 0 END::float AS has_impression_share
             , COALESCE(q.quality_orders_30d,0)::float AS quality_orders_30d
             , COALESCE(q.quality_units_sold_30d,0)::float AS quality_units_sold_30d
             , COALESCE(q.refund_total_30d,0)::float AS refund_total_30d
@@ -277,6 +282,11 @@ def load(conn):
          AND hc.event_hour = b.event_hour
         LEFT JOIN marketcloud_features.feature_campaign_commercial_context_v1 cx
           ON cx.campaign_id = b.campaign_id
+        LEFT JOIN (
+            SELECT campaign_id, avg(top_of_search_is) AS top_of_search_is
+            FROM marketcloud_gold.v_campaign_impression_share_daily
+            GROUP BY campaign_id
+        ) isd ON isd.campaign_id = b.campaign_id
     """
     with conn.cursor() as cur:
         cur.execute(sql)
@@ -292,6 +302,7 @@ def load(conn):
         "effective_min_bid", "effective_max_bid",
         "amazon_rec_median_to_current_ratio", "robot_proposed_to_amazon_median_ratio",
         "has_amazon_bid_recommendation",
+        "top_of_search_is", "has_impression_share",
         "quality_orders_30d", "quality_units_sold_30d", "refund_total_30d",
         "return_quantity_30d", "return_events_30d", "return_units_30d",
         "return_refund_amount_30d", "return_rate_30d",
@@ -362,6 +373,7 @@ def build_X(df, target):
         "effective_min_bid", "effective_max_bid",
         "amazon_rec_median_to_current_ratio", "robot_proposed_to_amazon_median_ratio",
         "has_amazon_bid_recommendation",
+        "top_of_search_is", "has_impression_share",
         "quality_orders_30d", "quality_units_sold_30d", "refund_total_30d",
         "return_quantity_30d", "return_events_30d", "return_units_30d",
         "return_refund_amount_30d", "return_rate_30d",
