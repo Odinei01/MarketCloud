@@ -120,23 +120,23 @@ def run_negative_keyword_daily():
         log.exception("neg-kw-executor scheduler error: %s", exc)
 
 
-_last_dayparting_calib_week = None
+_last_dayparting_calib_date = None
 
 
-def run_dayparting_calibration_weekly():
-    # Calibracao de dayparting (control loop, trailing 28d): roda 1x/semana (marcador
-    # ISO-week BRT). E ADVISORY por padrao — sempre recalcula e manda digest no Telegram;
+def run_dayparting_calibration_daily():
+    # Calibracao de dayparting (control loop, trailing 28d): roda 1x/dia (marcador
+    # de data BRT). E ADVISORY por padrao — sempre recalcula e manda digest no Telegram;
     # so escreve bid de verdade se DAYPARTING_CALIBRATION_APPLY_ENABLED=true (pilotos).
     # Seguro agendar: sem a trava, nao toca dinheiro.
-    global _last_dayparting_calib_week
+    global _last_dayparting_calib_date
     if os.environ.get("DAYPARTING_CALIBRATION_ENABLED", "true").lower() != "true":
         return
     from datetime import datetime, timezone, timedelta
     now_brt = datetime.now(timezone.utc) - timedelta(hours=3)
-    week = now_brt.isocalendar()[:2]  # (ano, semana)
-    if _last_dayparting_calib_week == week:
+    today_brt = now_brt.date()
+    if _last_dayparting_calib_date == today_brt:
         return
-    _last_dayparting_calib_week = week
+    _last_dayparting_calib_date = today_brt
     script = os.path.join(os.path.dirname(__file__), "marketcloud_dayparting_calibration.py")
     if not os.path.exists(script):
         return
@@ -192,7 +192,7 @@ def hourly_real_ml_loop():
         auto_apply_ml_campaign_recommendations()
         apply_full_control_360()
         run_negative_keyword_daily()
-        run_dayparting_calibration_weekly()
+        run_dayparting_calibration_daily()
         refresh_learning_outcomes()
 
 
@@ -410,6 +410,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 

@@ -42,14 +42,27 @@ def load_actions(conn):
     with conn.cursor() as cur:
         cur.execute(
             """
+            WITH candidates AS (
+                SELECT recommendation_id, campaign_id, campaign_name, action_type,
+                       COALESCE(current_value,0)::float8 AS current_value,
+                       COALESCE(recommended_value,0)::float8 AS recommended_value,
+                       operator_decision, guardrail_status, priority_score
+                FROM marketcloud_gold.v_ml_full_control_360_decision_v1
+                WHERE operator_decision IN ('APLICAR','APLICAR_SEGURANCA')
+                  AND can_control_now = true
+                  AND COALESCE(campaign_id,'') <> ''
+            ),
+            ranked AS (
+                SELECT *,
+                       bool_or(action_type='STOP_LOSS_PROTECT') OVER (PARTITION BY campaign_id) AS has_stop_loss,
+                       row_number() OVER (PARTITION BY campaign_id, action_type ORDER BY priority_score DESC NULLS LAST) AS action_rank
+                FROM candidates
+            )
             SELECT recommendation_id, campaign_id, campaign_name, action_type,
-                   COALESCE(current_value,0)::float8 AS current_value,
-                   COALESCE(recommended_value,0)::float8 AS recommended_value,
-                   operator_decision, guardrail_status
-            FROM marketcloud_gold.v_ml_full_control_360_decision_v1
-            WHERE operator_decision IN ('APLICAR','APLICAR_SEGURANCA')
-              AND can_control_now = true
-              AND COALESCE(campaign_id,'') <> ''
+                   current_value, recommended_value, operator_decision, guardrail_status
+            FROM ranked
+            WHERE NOT (has_stop_loss AND action_type <> 'STOP_LOSS_PROTECT')
+              AND action_rank = 1
             ORDER BY priority_score DESC NULLS LAST
             LIMIT %s
             """,

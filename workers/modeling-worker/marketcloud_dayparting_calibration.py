@@ -44,13 +44,23 @@ def send_telegram(text):
     if not token or not chat:
         log.info("telegram nao configurado; pulando")
         return
+    chunks = []
+    current = ""
+    for line in text.splitlines(True):
+        if len(current) + len(line) > 3500 and current:
+            chunks.append(current)
+            current = ""
+        current += line
+    if current:
+        chunks.append(current)
     try:
-        req = urllib.request.Request(
-            "https://api.telegram.org/bot%s/sendMessage" % token,
-            data=json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=15) as r:
-            r.read()
+        for chunk in chunks:
+            req = urllib.request.Request(
+                "https://api.telegram.org/bot%s/sendMessage" % token,
+                data=json.dumps({"chat_id": chat, "text": chunk, "parse_mode": "HTML"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as r:
+                r.read()
     except Exception as exc:
         log.warning("falha ao enviar telegram: %s", exc)
 
@@ -61,7 +71,7 @@ def run_calibration(conn):
         try:
             cur.execute("SELECT marketcloud_gold.snapshot_dayparting_metrics()")
             snap = cur.fetchone()["snapshot_dayparting_metrics"]
-            log.info("snapshot semanal de metricas: %s linhas congeladas", snap)
+            log.info("snapshot diario de metricas: %s linhas congeladas", snap)
         except Exception as exc:
             log.warning("snapshot de metricas falhou: %s", exc)
         # (2) recalibra

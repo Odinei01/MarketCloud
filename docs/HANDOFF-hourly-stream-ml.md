@@ -8220,3 +8220,513 @@ Pendente (estrutural, dono):
 - Confirmar valores digitados: preco OK (confirmado); estoque agora vem do FBA.
 - Parar de depender da tabela manual: ingerir ASIN anunciado real por campanha
   (Amazon Ads API product ads) e preco/custo via feed/SP-API.
+
+## 144. Dayparting calibration diaria + leitura do heatmap - 2026-07-23
+
+Contexto:
+
+- A fonte de sinal para dayparting esta entrando de hora em hora no lake:
+  `ams-hourly-refresh` atualiza `bronze_ams_hourly_target` e
+  `bronze_amazon_ads_hourly`; o ML target tambem roda de hora em hora.
+- A curva `gold_keyword_hourly_calibration_latest_v1`, entretanto, estava com
+  `computed_at` de 2026-07-22 12:11 UTC. Ou seja: o dado bruto estava chegando,
+  mas a calibracao keyword x hora nao recalculava diariamente.
+
+Mudanca aplicada:
+
+- `workers/modeling-worker/main.py`: o scheduler `run_dayparting_calibration`
+  saiu de marcador semanal ISO-week para marcador diario BRT (`today_brt`).
+- `docker-compose.yml`: comentario operacional atualizado para explicitar
+  `1x/dia`; variaveis seguem:
+  `DAYPARTING_CALIBRATION_ENABLED=true`,
+  `DAYPARTING_CALIBRATION_WINDOW_DAYS=28`,
+  `DAYPARTING_CALIBRATION_APPLY_ENABLED=false` por padrao.
+- `marketcloud_dayparting_calibration.py`: log do snapshot agora diz
+  "snapshot diario".
+- `marketcloud_dayparting_calibration.py`: Telegram passou a fatiar o digest em
+  blocos menores; a primeira rodada diaria gerou mensagem grande demais e a API
+  retornou HTTP 400.
+
+Seguranca:
+
+- A rodada diaria recalcula e envia digest; nao aplica bid sozinha.
+- Escrita real continua gated por `DAYPARTING_CALIBRATION_APPLY_ENABLED` e pelo
+  applier/allowlist. A mudanca aumenta frescor do aprendizado, nao amplia risco
+  financeiro.
+
+Leitura do heatmap:
+
+- Heatmap global mostra padrao operacional consistente, mas ainda nao deve ser
+  usado sozinho para full-auto amplo.
+- Ultimas semanas indicam forca recorrente em 09h-12h, 14h, 16h-17h e 20h-21h,
+  com madrugada/03h-05h fraca e 22h-23h instavel.
+- Semana 30 ainda e incompleta e tem baixo volume; deve pesar menos que semanas
+  maduras.
+- Para decisao de dinheiro, usar campanha/keyword com sinal proprio; fallback
+  global permanece apenas como prior/observacao.
+
+## 145. Full Control 360 - confirmacao de write e Stop Loss aplicavel - 2026-07-24
+
+Incidente:
+
+- O `marketcloud_full_control_360_executor.py` gerou 10 acoes para
+  `Forma Silicone`, mas todas voltavam como `FAILED_POST_WRITE_CONFIRMATION`.
+- Causa 1: o confirmador do SWARM (`amazon_ads_post_write_confirmation.go`)
+  validava qualquer alteracao de campanha pelo `CampaignStatus`, exceto budget.
+  Assim, `INCREASE_TOP_OF_SEARCH` comparava `ENABLED` com `150.00` e falhava.
+- Causa 2: `STOP_LOSS_PROTECT` era roteado como tentativa de budget para `0/1`.
+  A Amazon recusou com `BUDGET_OUT_OF_MARKET_PLACE_RANGE`; o budget minimo da
+  campanha/marketplace ficou em R$ 10,00. Budget nao e alavanca suficiente para
+  stop loss abaixo desse piso.
+
+Correcoes:
+
+- SWARM (`mercado-data-app`):
+  - `STOP_LOSS_PROTECT` passou a ser defesa de placement:
+    `PLACEMENT_TOP` para `0%`, em vez de budget abaixo do minimo.
+  - Confirmacao de campanha agora valida o campo certo:
+    `TOP_OF_SEARCH`/`STOP_LOSS_PROTECT` confirmam
+    `top_of_search_bid_adjustment`; budget continua confirmando
+    `budget_amount`.
+  - Confirmacao de campanha persiste a estrutura lida da Amazon no cache local
+    (`amazon_ads_campaigns_daily`) para a tela nao ficar stale apos write.
+- MarketCloud:
+  - executor 360 deduplica por `campaign_id + action_type`.
+  - se houver `STOP_LOSS_PROTECT` para a campanha, ele suprime acoes de ganho no
+    mesmo ciclo. Stop loss tem precedencia sobre aumento.
+
+Validacao:
+
+- Testes Go focados passaram.
+- Reexecucao manual do executor:
+  `INCREASE_TOP_OF_SEARCH` confirmou e, em seguida, `STOP_LOSS_PROTECT` confirmou
+  com `confirmed_value=0.00`, `desired_value=0.00`.
+- Observacao: antes da deduplicacao final, o mesmo stop loss foi aplicado varias
+  vezes porque havia uma recomendacao por hora. A correcao final evita repetir a
+  mesma acao por campanha/tipo no proximo ciclo.
+
+## 146. Risk Stop Loss geral - cooldown so libera com ROAS recuperado - 2026-07-24
+
+Contexto:
+
+- O operador confirmou que o relatorio direto da Amazon ja passava de R$ 50,00,
+  enquanto o Risk local ainda mostrava R$ 48,11.
+- Diagnostico local: o Risk usa `amazon_ads_campaigns_daily` e
+  `amazon_ads_search_terms_daily`; ambas estavam stale com ultimo sync em
+  2026-07-24 16:01 BRT. O `run-now` retornou `STALE_ADS_DATA` porque havia jobs
+  `spCampaigns` e `spSearchTerm` em `WAITING_AMAZON`.
+- Config ativa em `ads_risk_global_config`:
+  `stop_loss_amount=50.00`, `roas_escape_threshold=5.00`,
+  `protection_bid=0.15`.
+
+Regra operacional confirmada:
+
+- Stop Loss geral ativa quando gasto total Ads do dia >= R$ 50,00 e ROAS geral
+  <= 5,00.
+- Quando ativo, protege os targets/campanhas ruins; excecao somente para
+  entidade com ROAS proprio acima do limite de escape.
+- Cooldown nao deve liberar sozinho. O fim do cooldown apenas torna a entidade
+  elegivel a reavaliacao.
+
+Correcao aplicada:
+
+- `mercado-data-app/internal/services/amazon_ads_risk_worker.go`:
+  - `STOP_LOSS_ACTIVE` nao restaura mais baseline so porque o cooldown expirou.
+  - Para restaurar, agora precisa ter pedido/venda e ROAS >= limite de
+    liberacao (`roas_escape_threshold`, hoje 5,00; fallback no ROAS minimo da
+    campanha se o global nao estiver configurado).
+  - Se cooldown venceu mas ROAS continua abaixo do limite, permanece
+    `STOP_LOSS_ACTIVE`/vermelho.
+
+Validacao:
+
+- Teste adicionado:
+  `TestAdsRiskStopLossCooldownRequiresRecoveredROAS`.
+- Teste focado passou junto com o kill-switch do Risk:
+  `go test ./internal/services -run "TestAdsRiskStopLossCooldownRequiresRecoveredROAS|TestAdsRiskRealWriteUsesDedicatedKillSwitch" -count=1 -v`.
+- `go-backend` foi rebuildado e `pricing_api` recriado.
+- Endpoint `/api/amazon/ads/risk/summary` voltou com worker ativo, mas ainda
+  indica `data_stale=true` ate os reports atuais da Amazon processarem.
+
+## 147. Incidente Stop Loss - BID real acima do protegido durante cooldown - 2026-07-24
+
+Contexto:
+
+- Operador reportou campanha passando do limite antes do Stop Loss conter o
+  gasto.
+- Exemplo investigado: `Pau de Selfie`
+  (`campaign_id=146372099279669`), budget diario configurado em R$ 10,00 e
+  gasto observado no report local em R$ 21,02.
+- O estado de risco ja estava em `STOP_LOSS_SUSPENDED`/`RED`, mas o inventario
+  local ainda mostrava BID real `0.30` para as duas keywords:
+  `pau de selfie` e `pau de selfie 360`.
+
+Causa raiz:
+
+- O Risk marcava o target como suspenso/protegido, mas nao reaplicava a defesa
+  durante o cooldown quando o BID real/cache voltava acima do protegido.
+- Quando os reports ficavam `STALE_ADS_DATA`, o worker abortava a avaliacao
+  inteira. Isso era correto para novas decisoes, mas errado para protecao ja
+  determinada: uma trava vermelha precisa continuar fazendo enforcement mesmo
+  com relatorio atrasado.
+- O fluxo S1/manual nao e apropriado para Stop Loss emergencial porque passa
+  pela allowlist comercial do plano ativo; protecao de risco deve usar o
+  executor do Risk.
+- A auditoria do Risk tambem estava fraca: o insert anterior gravava campos
+  incorretos e/ou `old_bid=0`, dificultando provar o write.
+
+Correcoes aplicadas:
+
+- `mercado-data-app/internal/services/amazon_ads_risk_worker.go`:
+  - adicionada rotina `adsRiskReapplyProtectionForDrift`.
+  - Mesmo quando `run-now` retorna `STALE_ADS_DATA`, o worker agora varre
+    entidades em `STOP_LOSS_ACTIVE`, `STOP_LOSS_SUSPENDED` ou
+    `STOP_GAIN_ACTIVE` e reaplica o `protected_bid` se o BID real estiver acima.
+  - A reaplicacao nao incrementa strike; ela apenas reexecuta a defesa ja
+    decidida.
+  - `adsRiskApplyBidChange` passou a atualizar
+    `amazon_ads_targeting_inventory` apos write bem-sucedido e gravar auditoria
+    com `old_bid` real e `new_bid`.
+- `mercado-data-app/internal/services/amazon_ads_risk_bid_guard.go`:
+  - o guard global permite writes defensivos quando `requestedBid <=
+    protection_bid`, mas bloqueia aumentos enquanto o Stop Loss geral estiver
+    ativo.
+- `mercado-data-app/internal/services/amazon_ads_bid_schedule_no_pause.go`:
+  - agenda de BID agora consulta o Risk guard tambem quando a decisao seria
+    `SKIPPED_ALREADY_IN_TARGET_STATE`, evitando mascarar um BID que parece
+    correto para a agenda mas esta proibido pelo risco.
+
+Validacao:
+
+- Testes focados passaram:
+  `go test ./internal/services -run "TestAdsRiskStopLossCooldownRequiresRecoveredROAS|TestAdsRiskSuspendedReappliesProtectionWhenBidDrifts|TestAdsRiskRealWriteUsesDedicatedKillSwitch|TestAmazonAdsBidScheduleDecisionUsesBaseBidAndClamps" -count=1`.
+- `go-backend` foi rebuildado e `pricing_api` recriado.
+- `POST /api/amazon/ads/risk/worker/run-now` retornou `STALE_ADS_DATA`, mas
+  executou `protection_drift` com `checked=159`, `reapplied=151`, `errors=0`.
+- `Pau de Selfie` apos a correcao:
+  - `pau de selfie`: BID `0.30 -> 0.15`, `bid_source=ADS_RISK_WORKER`,
+    `status=STOP_LOSS_SUSPENDED`, cooldown ate `2026-07-25 02:59:59Z`.
+  - `pau de selfie 360`: BID `0.30 -> 0.15`, `bid_source=ADS_RISK_WORKER`,
+    `status=STOP_LOSS_SUSPENDED`, cooldown ate `2026-07-25 02:59:59Z`.
+  - Auditoria `amazon_ads_bid_change_audit`: registros `APPLIED` com
+    `old_bid=0.30`, `new_bid=0.15`, `applied_by=ADS_RISK_WORKER`.
+
+Estado operacional apos patch:
+
+- Stop Loss geral ativo:
+  `global_risk_status=GLOBAL_STOP_LOSS_ACTIVE`,
+  `cost_today=R$70.14`, `sales_today=R$212.86`, `roas_today=3.03`,
+  `global_stop_loss_amount=R$50.00`, escape `ROAS > 5.00`.
+- `data_stale=true` ainda depende da Amazon liberar/processar o report de
+  search terms mais recente. A protecao de entidades ja vermelhas nao depende
+  mais desse frescor.
+
+## 148. Risk diario - reset de indicadores e strikes acumulados - 2026-07-24
+
+Regra operacional definida:
+
+- Stop Loss/Stop Gain sao diarios.
+- Na virada do dia BRT, os indicadores diarios zeram:
+  gasto, venda, pedido, ROAS, ACOS, impressoes, cliques, CPC, CTR,
+  conversao, consumo de budget, cooldown e status vermelho do dia anterior.
+- `strike_count` nao zera. Ele e memoria acumulada de reincidencia.
+- Se uma keyword passar de 10 strikes acumulados, ela deixa de ser apenas
+  monitorada/protegida e vira candidata a keyword negativa.
+
+Correcao aplicada:
+
+- `mercado-data-app/internal/services/amazon_ads_risk_worker.go`:
+  - adicionada rotina de virada diaria `adsRiskHandleDailyRollover`.
+  - Ao detectar Stop Loss/Stop Gain de dia anterior, o worker limpa os campos
+    diarios, remove cooldown e restaura o BID baseline quando permitido.
+  - O reset diario preserva `strike_count`.
+  - Para `strike_count > 10`, o estado passa para
+    `NEGATIVE_KEYWORD_CANDIDATE` e o Risk chama o executor de negativacao.
+  - Se a entidade for keyword e o kill-switch/allowlist do executor permitir, a
+    negativa e enviada para a Amazon; se bloquear, fica auditado como candidato
+    sem fingir aplicacao real.
+- `mercado-data-app/internal/services/amazon_ads_negative_keyword_executor.go`:
+  - chamadas normais continuam respeitando `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS`.
+  - chamadas originadas pelo Risk com `RecID=risk-strike-threshold-*` agora
+    tambem podem escrever quando a campanha esta em `ads_risk_campaign_config`
+    com `enabled=true` e `auto_actions_enabled=true`.
+  - O kill-switch `NEGATIVE_KEYWORD_EXECUTE_ENABLED` segue obrigatorio.
+
+Validacao:
+
+- Testes adicionados:
+  - `TestAdsRiskDailyRolloverResetsDailyStateAndKeepsStrikes`
+  - `TestAdsRiskDailyRolloverMarksNegativeCandidateAfterTenStrikes`
+- Teste focado passou:
+  `go test ./internal/services -run "TestAdsRiskDailyRollover|TestAdsRiskStopLossCooldownRequiresRecoveredROAS|TestAdsRiskSuspendedReappliesProtectionWhenBidDrifts|TestAdsRiskRealWriteUsesDedicatedKillSwitch|TestAmazonAdsBidScheduleDecisionUsesBaseBidAndClamps|TestNegativeKeyword" -count=1`.
+
+## 149. Incidente virada diaria bloqueada por STALE_ADS_DATA - 2026-07-25
+
+Contexto:
+
+- As 07h BRT do dia seguinte, a tela ainda mostrava dezenas de targets em
+  Stop Loss, apesar de o Stop Loss ser diario.
+- `risk/summary` ja mostrava `business_date=2026-07-25` e `cost_today=0`, mas
+  `global_risk_status` e varios targets ainda refletiam o dia 2026-07-24.
+- Causa: o worker retornava `STALE_ADS_DATA` antes de executar o rollover
+  diario. Como o report de search terms do dia 25 ainda nao existia, ele abortava
+  antes de limpar os locks vencidos.
+
+Correcoes:
+
+- `mercado-data-app/internal/services/amazon_ads_risk_worker.go`:
+  - `adsRiskEvaluateGlobalState` agora roda antes do retorno por stale data.
+  - adicionado `adsRiskApplyDailyRolloverForExpiredStates`.
+  - Mesmo com `STALE_ADS_DATA`, o worker limpa Stop Loss/Stop Gain expirados do
+    dia anterior, restaura baseline e preserva strikes.
+  - A protecao por drift continua rodando depois do rollover.
+- `mercado-data-app/internal/services/amazon_ads_connector.go`:
+  - adicionado media type correto para `/sp/campaignNegativeKeywords`:
+    `application/vnd.spcampaignNegativeKeyword.v3+json`.
+- `mercado-data-app/internal/services/amazon_ads_negative_keyword_executor.go`:
+  - campaign negative keyword usa `NEGATIVE_EXACT`/`NEGATIVE_PHRASE`, conforme
+    enum da Amazon, em vez de `CAMPAIGN_NEGATIVE_EXACT`.
+- `mercado-data-app/internal/services/amazon_ads_risk_routes.go`:
+  - resumo separa `bids_negative` de `bids_stop_loss`.
+  - `NEGATIVE_KEYWORD_APPLIED` nao entra mais como Stop Loss ativo na tela.
+
+Execucao e validacao:
+
+- `POST /api/amazon/ads/risk/worker/run-now` apos patch:
+  - `daily_rollover.checked=170`
+  - `daily_rollover.reset=169`
+  - `daily_rollover.negative_candidates=1`
+  - `global_risk.status=ACTIVE_MONITORING`
+  - `global_risk.cost_today=0`
+- Estado final:
+  - `bids_stop_loss=0`
+  - `campaigns_stop_loss=0`
+  - `bids_negative=1`
+  - 201 targets em `ACTIVE_MONITORING/GRAY`
+  - 2 targets em `ACTIVE_MONITORING/GREEN`
+- Keyword reincidente:
+  - `seladora a vacuo para alimentos`
+  - `strike_count=12`
+  - enviada como `NEGATIVE_EXACT`
+  - Amazon confirmou `campaignNegativeKeywordId=109784567672317`.
+
+## 150. Abridor de Vinho em Full Control campanha-level - 2026-07-25
+
+Pedido:
+
+- Incluir `Abridor de Vinho` no Full Control igual `Forma Silicone`.
+- Escopo deve ser campanha, nao keyword.
+
+Alteracoes aplicadas:
+
+- `marketcloud_control.full_control_pilots`:
+  - piloto `pilot_id=16`
+  - `campaign_id=243188188856118`
+  - `campaign_name=Abridor de Vinho`
+  - alterado de `monitor_only/draft` para `full_control/active`.
+  - `strategy_config.scope=campaign`.
+  - Parametros alinhados ao padrao da Forma Silicone:
+    - `max_daily_budget_brl=10.00`
+    - `max_spend_without_order_brl=3.50`
+    - `min_roas=5.00`
+    - `max_top_of_search_pct=150`
+    - `max_product_page_pct=0`
+    - `max_rest_of_search_pct=0`
+- `marketcloud_control.ml_full_auto_campaign_flags`:
+  - `Abridor de Vinho` alterado para `enabled=true`,
+    `automation_mode=full_auto`.
+  - Nota: "Liberada para ML full-auto 360 em nivel de campanha; sem
+    keyword-level."
+- `mercado-data-app/.env`:
+  - `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS` recebeu `243188188856118`.
+  - Valor atual:
+    `140196475614872,128894883801654,243188188856118`.
+- `pricing_api` recriado para carregar a allowlist nova.
+
+Validacao:
+
+- Full Control ativo agora tem 3 campanhas:
+  - `Abridor de Vinho` (`243188188856118`) - scope `campaign`
+  - `Forma Silicone` (`140196475614872`)
+  - `Kit Kadukli Manga` (`128894883801654`)
+- `marketcloud_control.full_control_keywords` para
+  `campaign_id=243188188856118` retornou `0` linhas ativas.
+  Ou seja: nao ha controle por keyword para o Abridor.
+- `pricing_api` confirmou env:
+  `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS=140196475614872,128894883801654,243188188856118`.
+
+## 151. Abridor de Vinho - budget diario e status do piloto - 2026-07-25
+
+Pedido:
+
+- Aumentar o budget diario do piloto `Abridor de Vinho` para R$ 20,00.
+- Verificar como a campanha esta hoje depois de ligada no Full Control.
+
+Alteracao aplicada:
+
+- `marketcloud_control.full_control_pilots`:
+  - piloto ativo `pilot_id=16`
+  - `campaign_id=243188188856118`
+  - `campaign_name=Abridor de Vinho`
+  - `max_daily_budget_brl` alterado de R$ 10,00 para R$ 20,00.
+  - `max_spend_without_order_brl` mantido em R$ 3,50.
+  - `min_roas` mantido em 5,00.
+  - escopo mantido em campanha inteira, sem regras por keyword.
+
+Status validado hoje:
+
+- Full Control ativo para `Abridor de Vinho` em nivel de campanha.
+- Fonte AMS do dia mostra ate o momento:
+  - gasto: R$ 0,60
+  - cliques: 1
+  - pedidos: 0
+  - vendas: R$ 0,00
+- Risk Console:
+  - 2 targets monitorados
+  - 0 targets em Stop Loss ativo
+  - 0 targets em Stop Gain ativo
+  - strikes preservados: `abridor de vinho` com 5 e `abridor de vinho eletrico` com 3.
+- A governanca 360 esta bloqueando aplicacao automatica com `NO_STOCK`:
+  - o cadastro do piloto ativo mostra `stock_available=50`, mas a view efetiva prioriza `swarm_src.amazon_fba_inventory` / fonte canonica de produto.
+  - para o ASIN ativo `B0H887XGCJ`, a governanca efetiva le `stock_available=0`, logo `can_control=false`.
+  - enquanto isso estiver assim, o robo nao aplica recomendacoes 360 por fail-closed.
+
+Ponto pendente:
+
+- Corrigir/sincronizar a fonte canonica de estoque para o ASIN `B0H887XGCJ` ou confirmar se o piloto deve apontar para o ASIN antigo `B0H2TXK1YG`, que aparece com estoque, mas esta em piloto `completed`.
+
+## 152. Correcao ASIN Abridor de Vinho no Full Control - 2026-07-25
+
+Pedido:
+
+- Corrigir o piloto `Abridor de Vinho`: o ASIN correto e `B0H2TXK1YG`.
+
+Diagnostico:
+
+- O piloto ativo anterior estava ligado ao ASIN errado `B0H887XGCJ`.
+- A fonte canonica de estoque (`swarm_src.amazon_fba_inventory`) mostrava:
+  - `B0H887XGCJ`: 0 unidades disponiveis, 49 inbound.
+  - `B0H2TXK1YG`: 29 unidades disponiveis, 5 reservadas.
+- Por isso a governanca 360 bloqueava corretamente com `NO_STOCK`, mesmo o cadastro manual do piloto mostrando estoque positivo.
+
+Alteracao aplicada:
+
+- Registro com ASIN errado:
+  - `pilot_id=16`
+  - `campaign_id` movido para `243188188856118-wrong-asin-archived`
+  - `mode=monitor_only`
+  - `status=archived`
+  - mantido em historico com `strategy_config.archived_reason=wrong_asin_for_abridor_de_vinho`.
+- Registro com ASIN correto:
+  - `pilot_id=12`
+  - `campaign_id=243188188856118`
+  - `campaign_name=Abridor de Vinho`
+  - `product_asin=B0H2TXK1YG`
+  - `seller_sku=ZNM-NOT-0013`
+  - `mode=full_control`
+  - `status=active`
+  - `max_daily_budget_brl=20.00`
+  - `max_spend_without_order_brl=3.50`
+  - `min_roas=5.00`
+  - `max_top_of_search_pct=150`
+  - `max_product_page_pct=0`
+  - `max_rest_of_search_pct=0`.
+
+Validacao apos ajuste:
+
+- `marketcloud_gold.full_control_effective_governance_v1` para `campaign_id=243188188856118`:
+  - `can_control=true`
+  - `gate_reason=READY`
+  - `stock_available=29`
+  - `stock_fba_available=29`
+  - `spend_today=0.60`
+  - `orders_today=0`
+  - `max_daily_budget_brl=20.00`.
+- `marketcloud_gold.v_ml_full_control_360_decision_v1`:
+  - 30 recomendacoes para Abridor.
+  - 30 com `can_control_now=true`.
+  - `guardrail_status=READY`.
+  - decisoes presentes: `APLICAR`, `APLICAR_SEGURANCA`, `TESTAR_CONTROLADO`.
+
+Observacao operacional:
+
+- Nao foi disparada uma execucao manual de alteracao financeira neste ajuste.
+- A proxima rodada automatica do worker ja deve enxergar o Abridor como apto (`READY`).
+
+## 153. Dashboard SWARM campanhas - graficos diario/semanal/mensal e intraday - 2026-07-26
+
+Pedido:
+
+- Criar uma tela no menu de campanhas do SWARM com graficos do resumo de Ads.
+- Mostrar resumo diario, semanal e mensal.
+- Criar grafico de linha intraday por campanha.
+- Criar comparativo intraday entre keywords/targets, com no maximo 4 selecionadas por combo.
+
+Implementacao:
+
+- Tela adicionada em `http://localhost:3000/#/amazon/ads/campaigns`, acima da tabela de campanhas.
+- Novo endpoint real no backend Go: `GET /api/amazon/ads/campaigns/performance`.
+- Fontes usadas, sem mock:
+  - `amazon_ads_campaigns_daily`: resumo diario/semanal/mensal e lista de campanhas.
+  - `amazon_ads_campaigns_hourly`: intraday por campanha.
+  - `marketcloud_bronze.bronze_ams_hourly_target`: intraday granular por keyword/target vindo do AMS.
+- O painel permite selecionar campanha por combo e selecionar ate 4 keywords/targets por combo; os selecionados aparecem como chips removiveis.
+- O endpoint retorna `build_marker=swarm-ads-campaign-performance-dashboard-v1` para rastreabilidade.
+
+Validacao executada:
+
+- `go test ./internal/services -run '^$' -count=1`: compilacao do backend OK.
+- `vite build --outDir dist-codex`: frontend OK.
+- Containers `go-backend` e `react-frontend` recriados.
+- Chamada real ao endpoint em 26/07/2026:
+  - `campaigns=23`
+  - `keyword_options=15`
+  - `selected_keywords=4`
+  - `daily=7`
+  - `campaign_intraday=24`
+  - `build_marker=swarm-ads-campaign-performance-dashboard-v1`.
+
+Limitacao conhecida:
+
+- O comparativo intraday por keyword/target depende da disponibilidade do AMS target-hour em `marketcloud_bronze.bronze_ams_hourly_target`. Se a campanha nao tiver dado AMS granular no periodo, a tela mostra estado vazio para keywords.
+
+## 154. Ajuste dashboard SWARM campanhas - 6 semanas e comparativo campanhas - 2026-07-26
+
+Pedido complementar:
+
+- A aba/segmento Semanal deve comparar as ultimas 6 semanas, nao apenas agrupar o periodo filtrado.
+- Faltava grafico comparativo entre campanhas, limitado a ate 4 campanhas.
+
+Alteracao aplicada:
+
+- `GET /api/amazon/ads/campaigns/performance` agora retorna `weekly` sempre com 6 semanas ate `date_to`.
+- O endpoint tambem retorna:
+  - `selected_campaigns`: ate 4 campanhas escolhidas/default top 4 por gasto/clique.
+  - `campaign_compare`: serie diaria por campanha selecionada para comparacao visual.
+- A tela `http://localhost:3000/#/amazon/ads/campaigns` ganhou o bloco `Comparativo entre campanhas`:
+  - combo para adicionar campanha;
+  - limite de 4 campanhas;
+  - chips removiveis;
+  - seletor de metrica: Gasto, Vendas Ads, Pedidos ou ROAS.
+
+Validacao executada:
+
+- `go test ./internal/services -run '^$' -count=1`: OK.
+- `vite build --outDir dist-codex`: OK.
+- Containers `go-backend` e `react-frontend` recriados.
+- Chamada real ao endpoint em 26/07/2026:
+  - `weekly=6`
+  - `campaigns=23`
+  - `selected_campaigns=4`
+  - `campaign_compare=7`
+  - `keyword_options=15`
+  - `selected_keywords=4`.
+
+Amostra Semanal retornada:
+
+- Sem. 06-15: gasto R$ 68,36; vendas R$ 344,20; pedidos 6.
+- Sem. 06-22: gasto R$ 89,79; vendas R$ 329,20; pedidos 7.
+- Sem. 06-29: gasto R$ 107,11; vendas R$ 718,20; pedidos 10.
+- Sem. 07-06: gasto R$ 160,09; vendas R$ 1.271,98; pedidos 27.
+- Sem. 07-13: gasto R$ 141,74; vendas R$ 1.127,55; pedidos 14.
+- Sem. 07-20: gasto R$ 106,63; vendas R$ 302,30; pedidos 7.
