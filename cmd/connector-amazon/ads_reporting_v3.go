@@ -33,6 +33,7 @@ type adsReportConfig struct {
 	Grain       string
 	NamePart    string
 	ReportType  string
+	TimeUnit    string // "DAILY" (default) ou "SUMMARY" (necessario p/ impression share)
 	GroupBy     []string
 	Columns     []string
 	Filters     []map[string]any
@@ -51,11 +52,27 @@ func adsReprocessReportConfigs() []adsReportConfig {
 			Columns: []string{
 				"date", "campaignId", "campaignName", "campaignStatus",
 				"impressions", "clicks", "cost", "purchases7d", "sales7d", "unitsSoldClicks7d",
-				// parcela de impressao do topo de busca (0-100), diaria. Alimenta feature do ML.
-				"topOfSearchImpressionShare",
 			},
 			ReportIDKey: "sp_campaign_report_id",
 			RowsKey:     "sp_campaign_rows_ingested",
+		},
+		{
+			// Impression share so vem em relatorio SUMMARY (a Amazon nao devolve em
+			// timeUnit DAILY). Como cada request e de 1 dia, o summary desse dia =
+			// a IS daquele dia -> grava na coluna top_of_search_is da tabela diaria
+			// (mesma chave profile+data+campanha). Isolado: se falhar, so este relatorio.
+			Key:        "campaign_is",
+			Grain:      "CAMPAIGN_IS",
+			NamePart:   "campaign_is",
+			ReportType: "spCampaigns",
+			TimeUnit:   "SUMMARY",
+			GroupBy:    []string{"campaign"},
+			Columns: []string{
+				"campaignId", "campaignName",
+				"impressions", "clicks", "topOfSearchImpressionShare",
+			},
+			ReportIDKey: "sp_campaign_is_report_id",
+			RowsKey:     "sp_campaign_is_rows_ingested",
 		},
 		{
 			Key:        "adgroup",
@@ -151,11 +168,15 @@ func (s *connectorServer) submitAdsReprocessReport(w http.ResponseWriter, r *htt
 }
 
 func (s *connectorServer) submitOneAdsReport(ctx context.Context, c *adsReprocessContext, cfg adsReportConfig) (string, []byte, bool, error) {
+	timeUnit := cfg.TimeUnit
+	if timeUnit == "" {
+		timeUnit = "DAILY"
+	}
 	configuration := map[string]any{
 		"adProduct":    "SPONSORED_PRODUCTS",
 		"groupBy":      cfg.GroupBy,
 		"reportTypeId": cfg.ReportType,
-		"timeUnit":     "DAILY",
+		"timeUnit":     timeUnit,
 		"format":       "GZIP_JSON",
 		"columns":      cfg.Columns,
 	}
@@ -440,6 +461,8 @@ func (s *connectorServer) downloadAndIngestSPReport(ctx context.Context, c *adsR
 	switch cfg.Grain {
 	case "CAMPAIGN":
 		return s.ingestCampaignRows(ctx, c, reportID, rows)
+	case "CAMPAIGN_IS":
+		return s.ingestCampaignISRows(ctx, c, rows)
 	case "AD_GROUP":
 		return s.ingestAdGroupRows(ctx, c, reportID, rows)
 	case "KEYWORD", "TARGET":
@@ -479,6 +502,40 @@ func downloadAdsJSONRows(ctx context.Context, downloadURL string) ([]map[string]
 	dec.UseNumber()
 	var rows []map[string]any
 	return rows, dec.Decode(&rows)
+}
+
+// ingestCampaignISRows: relatorio SUMMARY (1 dia) -> grava a impression share na
+// coluna top_of_search_is da linha diaria correspondente (profile+data+campanha).
+// data = c.DataDate (janela do request). Faz UPDATE; se a linha diaria ainda nao
+// existir, INSERT minimo (o relatorio diario preenche o resto depois via upsert).
+func (s *connectorServer) ingestCampaignISRows(ctx context.Context, c *adsReprocessContext, rows []map[string]any) (int, error) {
+	inserted := 0
+	dataDate := c.DataDate.Format("2006-01-02")
+	for _, row := range rows {
+		campaignID := firstString(row, "campaignId", "campaign_id")
+		if campaignID == "" {
+			continue
+		}
+		is := nullableNumber(row, "topOfSearchImpressionShare")
+		if is == nil {
+			continue // sem IS nessa linha: nao mexe
+		}
+		_, err := s.db.Exec(ctx, `
+			INSERT INTO marketcloud_ops.ads_reporting_sp_campaign_daily_v3
+				(profile_id, data_date, campaign_id, campaign_name, top_of_search_is, synced_at)
+			VALUES ($1,$2,$3,$4,$5,NOW())
+			ON CONFLICT (profile_id, data_date, campaign_id) DO UPDATE SET
+				top_of_search_is = EXCLUDED.top_of_search_is,
+				synced_at = NOW()
+		`, c.ProfileID, dataDate, campaignID,
+			firstString(row, "campaignName", "campaign_name"), *is)
+		if err != nil {
+			return inserted, err
+		}
+		inserted++
+	}
+	log.Printf("ads reporting v3 ingest request=%s grain=campaign_is rows=%d", c.RequestID, inserted)
+	return inserted, nil
 }
 
 func (s *connectorServer) ingestCampaignRows(ctx context.Context, c *adsReprocessContext, reportID string, rows []map[string]any) (int, error) {
