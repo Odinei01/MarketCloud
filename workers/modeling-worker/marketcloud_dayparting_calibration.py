@@ -29,6 +29,10 @@ log = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgres://mcadmin:mcsecret@postgres:5432/marketcloud")
 APPLY_ENABLED = os.environ.get("DAYPARTING_CALIBRATION_APPLY_ENABLED", "false").lower() == "true"
+# PASSO 2 (semi-auto): aplica automaticamente SO os cortes da calibracao rica
+# (reducoes, protetivas, cobertas pelo risk guard). Aumentos (FEED) ficam manuais
+# ate a impression share fluir + a medicao madurar. Gated por env, revertivel.
+AUTO_CUTS_ENABLED = os.environ.get("DAYPARTING_AUTO_CUTS_ENABLED", "false").lower() == "true"
 WINDOW_DAYS = int(os.environ.get("DAYPARTING_CALIBRATION_WINDOW_DAYS", "28"))
 
 DOW = {1: "Seg", 2: "Ter", 3: "Qua", 4: "Qui", 5: "Sex", 6: "Sab", 7: "Dom"}
@@ -77,8 +81,20 @@ def run_calibration(conn):
         # (2) recalibra
         cur.execute("SELECT marketcloud_gold.refresh_keyword_hourly_calibration(%s)", (WINDOW_DAYS,))
         n = cur.fetchone()["refresh_keyword_hourly_calibration"]
+        # (3) PASSO 2 semi-auto: aplica SO os cortes da calibracao rica (campanha x hora).
+        # apply_rich_calibration(dry_run=false, signal_only=true, cuts_only=true) — o
+        # write real do bid passa pelo automator com risk guard (F1). Backup em
+        # calibration_apply_audit -> revert_rich_calibration() sempre possivel.
+        cuts_applied = 0
+        if AUTO_CUTS_ENABLED:
+            try:
+                cur.execute("SELECT count(*) AS n FROM marketcloud_gold.apply_rich_calibration(false, true, true)")
+                cuts_applied = cur.fetchone()["n"]
+                log.info("auto-cortes (semi-auto) aplicados: %s horas", cuts_applied)
+            except Exception as exc:
+                log.warning("auto-cortes falhou: %s", exc)
     conn.commit()
-    return n
+    return n, cuts_applied
 
 
 def load_summary(conn):
@@ -153,7 +169,7 @@ def build_digest(summary, global_changes, entity_changes, applied):
 def run_dayparting_calibration():
     conn = get_conn()
     try:
-        n = run_calibration(conn)
+        n, cuts_applied = run_calibration(conn)
         summary, global_changes, entity_changes = load_summary(conn)
         applied = False
         if APPLY_ENABLED:
@@ -161,6 +177,8 @@ def run_dayparting_calibration():
             # o calculo + digest; o hook de escrita entra quando o dono ligar a trava.
             log.info("APPLY_ENABLED=true — aplicacao real ainda nao acoplada ao applier; mantendo advisory")
         digest = build_digest(summary, global_changes, entity_changes, applied)
+        if AUTO_CUTS_ENABLED:
+            digest += "\n✂️ <b>Semi-auto:</b> %s corte(s) aplicado(s) automaticamente (so reducoes; aumentos manuais). Revert: revert_rich_calibration()." % cuts_applied
         log.info("calibracao keyword x hora: %s celulas | %s keywords | %s com recomendacao (prova forte) | up=%s down=%s held=%s",
                  n, summary["keywords"], summary["kw_com_rec"], summary["boosts"], summary["cuts"], summary["held"])
         log.info("DIGEST:\n%s", digest)
