@@ -136,9 +136,6 @@ func main() {
 	// --- Gold Layer V2 cockpit + feedback loop ---
 	r.Route("/api/v1/gold", func(r chi.Router) {
 		r.Use(auth, tenantIso)
-		r.Get("/review-queue", queryH.GoldReviewQueue)
-		r.Get("/action-summary", queryH.GoldActionSummary)
-		r.Get("/campaign-plans", queryH.GoldCampaignPlans)
 		r.Get("/hourly-real", queryH.GoldHourlyReal)
 		r.Get("/keyword-hourly-real", queryH.GoldKeywordHourlyReal)
 		r.Get("/dayparting-calibration", queryH.GoldDaypartingCalibration)
@@ -156,8 +153,6 @@ func main() {
 		r.Put("/ml-full-auto-campaigns", queryH.GoldSetMLFullAutoCampaign)
 		r.Get("/partner-campaign-monitor", queryH.GoldPartnerCampaignMonitor)
 		r.Get("/amc-alerts", queryH.GoldAMCAlerts)
-		r.Get("/robot-today", queryH.RobotToday)
-		r.Post("/review-queue/{id}/decision", queryH.GoldDecide)
 	})
 
 	// --- Config Center / seller health ---

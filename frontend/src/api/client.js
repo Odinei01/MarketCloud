@@ -121,14 +121,7 @@ export const api = {
   usage: (tid) => req('GET', '/usage', null, tid),
 
   // Gold Layer V2 cockpit + feedback loop
-  goldReviewQueue: (tid, filters = {}) => {
-    const p = new URLSearchParams()
-    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
-    return req('GET', `/gold/review-queue?${p}`, null, tid)
-  },
-  goldActionSummary: (tid) => req('GET', '/gold/action-summary', null, tid),
   amcAlerts: (tid) => req('GET', '/gold/amc-alerts', null, tid),
-  robotToday: (tid) => req('GET', '/gold/robot-today', null, tid),
   goldHourlyReal: (tid, filters = {}) => {
     const p = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
@@ -164,6 +157,4 @@ export const api = {
   setFullControlKeyword: (tid, body) => req('PUT', '/settings/full-control-keyword', body, tid),
   fullControlMonitor: (tid) => req('GET', '/settings/full-control-monitor', null, tid),
   goldPartnerCampaignMonitor: (tid) => req('GET', '/gold/partner-campaign-monitor', null, tid),
-  goldCampaignPlans: (tid) => req('GET', '/gold/campaign-plans', null, tid),
-  goldDecide: (tid, id, body) => req('POST', `/gold/review-queue/${id}/decision`, body, tid),
 }
