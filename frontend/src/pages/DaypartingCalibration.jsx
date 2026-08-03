@@ -39,23 +39,33 @@ export default function DaypartingCalibration({ ctx }) {
   }, [tenantID])
   useEffect(() => { load() }, [load])
 
-  // --- Aprovacao (o que entra no automatico) — grava a flag no bid-robot via FDW ---
+  // --- Aprovacao (list box: seleciona + Confirmar) — grava a flag via FDW ---
   const [scope, setScope] = useState('ENTITY')
   const [profiles, setProfiles] = useState([])
+  const [selected, setSelected] = useState([])
   const [pLoading, setPLoading] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [pMsg, setPMsg] = useState('')
   const loadProfiles = useCallback(async (sc) => {
-    setPLoading(true)
+    setPLoading(true); setPMsg('')
     try {
       const res = await api.goldDaypartingPilotProfiles(tenantID, sc)
-      setProfiles(res?.data?.items || [])
-    } catch { setProfiles([]) } finally { setPLoading(false) }
+      const items = res?.data?.items || []
+      setProfiles(items)
+      setSelected(items.filter(p => p.synced).map(p => String(p.id)))
+    } catch { setProfiles([]); setSelected([]) } finally { setPLoading(false) }
   }, [tenantID])
   useEffect(() => { loadProfiles(scope) }, [scope, loadProfiles])
-  const toggleProfile = useCallback(async (id, enabled) => {
-    setProfiles(prev => prev.map(p => p.id === id ? { ...p, synced: enabled } : p))
-    try { await api.goldDaypartingPilotToggle(tenantID, id, enabled) }
-    catch { loadProfiles(scope) }
-  }, [tenantID, scope, loadProfiles])
+  const confirmSelection = useCallback(async () => {
+    setConfirming(true); setPMsg('')
+    try {
+      const sel = new Set(selected)
+      const changes = profiles.filter(p => (!!p.synced) !== sel.has(String(p.id)))
+      for (const p of changes) { await api.goldDaypartingPilotToggle(tenantID, p.id, sel.has(String(p.id))) }
+      setPMsg(changes.length ? `${changes.length} alteracao(oes) aplicada(s) — efetiva no robo.` : 'Sem mudancas.')
+      await loadProfiles(scope)
+    } catch (e) { setPMsg('Erro: ' + (e?.message || 'falha')) } finally { setConfirming(false) }
+  }, [selected, profiles, tenantID, scope, loadProfiles])
 
   const byKw = useMemo(() => {
     const g = {}
@@ -111,27 +121,29 @@ export default function DaypartingCalibration({ ctx }) {
               style={{ fontSize: 12, borderColor: scope === sc ? 'var(--accent,#3b82f6)' : 'var(--border,#2a3550)', color: scope === sc ? 'var(--accent,#93c5fd)' : 'inherit' }}>{lb}</button>
           ))}
         </div>
-        <div style={{ overflowX: 'auto', marginTop: 10 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-            <thead><tr style={{ ...muted, textAlign: 'left' }}><th style={{ padding: '3px 8px' }}>Alvo</th><th>Cliques</th><th>No automatico</th></tr></thead>
-            <tbody>
-              {pLoading && <tr><td colSpan="3" style={muted}>Carregando...</td></tr>}
-              {!pLoading && profiles.length === 0 && <tr><td colSpan="3" style={muted}>Nenhum profile neste escopo.</td></tr>}
-              {profiles.map(p => (
-                <tr key={p.id} style={{ borderTop: '1px solid var(--border,#22304a)' }}>
-                  <td style={{ padding: '4px 8px' }}>{p.entity_label || p.campaign_name || p.id}</td>
-                  <td>{p.clicks ?? 0}</td>
-                  <td>
-                    <button className="btn" onClick={() => toggleProfile(p.id, !p.synced)}
-                      style={{ fontSize: 12, borderColor: p.synced ? 'rgba(34,197,94,.55)' : 'var(--border,#2a3550)', color: p.synced ? '#86efac' : 'var(--muted,#8aa0c0)' }}>
-                      {p.synced ? '✓ aprovado' : 'aprovar'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        {pLoading
+          ? <p style={{ ...muted, marginTop: 10 }}>Carregando...</p>
+          : profiles.length === 0
+            ? <p style={{ ...muted, marginTop: 10 }}>Nenhum profile neste escopo.</p>
+            : (
+              <select multiple value={selected}
+                onChange={e => setSelected(Array.from(e.target.selectedOptions, o => o.value))}
+                size={Math.min(12, Math.max(4, profiles.length))}
+                style={{ width: '100%', marginTop: 10, padding: 6, borderRadius: 8, border: '1px solid var(--border,#2a3550)', background: 'var(--card-bg,#0b1220)', color: 'inherit', fontSize: 13 }}>
+                {profiles.map(p => (
+                  <option key={p.id} value={String(p.id)}>
+                    {(p.entity_label || p.campaign_name || p.id)} — {p.clicks ?? 0} cliques{p.synced ? '  ✓ no automatico' : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+          <span style={{ ...muted, fontSize: 12 }}>{selected.length} selecionado(s) · Ctrl/Shift p/ marcar varios</span>
+          <div style={{ flex: 1 }} />
+          <button className="btn" disabled={confirming || pLoading} onClick={confirmSelection}
+            style={{ fontSize: 13, borderColor: 'var(--accent,#3b82f6)', color: 'var(--accent,#93c5fd)' }}>{confirming ? 'Aplicando...' : 'Confirmar'}</button>
         </div>
+        {pMsg && <div style={{ ...muted, fontSize: 12, marginTop: 6 }}>{pMsg}</div>}
       </div>
 
       {loading && <p style={muted}>Carregando...</p>}
