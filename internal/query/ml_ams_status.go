@@ -2,6 +2,7 @@ package query
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zanom/marketcloud/internal/middleware"
@@ -12,10 +13,29 @@ import (
 func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tenantID := middleware.TenantIDFromCtx(ctx).String()
+	view := r.URL.Query().Get("view")
+	if view == "" {
+		view = "overview"
+	}
 
 	modelRows, err := h.db.Query(ctx, `
 		SELECT model_name, model_version, model_type, target_name, status,
-		       training_rows, metrics_json, created_at, last_trained_at
+		       training_rows,
+		       jsonb_build_object(
+		       	'n', metrics_json->'n',
+		       	'positives', metrics_json->'positives',
+		       	'nonzero', metrics_json->'nonzero',
+		       	'roc_auc', metrics_json->'roc_auc',
+		       	'roc_auc_clicked_only', metrics_json->'roc_auc_clicked_only',
+		       	'roc_auc_cross_campaign', metrics_json->'roc_auc_cross_campaign',
+		       	'baseline_hourrate_auc', metrics_json->'baseline_hourrate_auc',
+		       	'mae', metrics_json->'mae',
+		       	'mae_clicked_only', metrics_json->'mae_clicked_only',
+		       	'mae_cross_campaign', metrics_json->'mae_cross_campaign',
+		       	'baseline_hourmean_mae', metrics_json->'baseline_hourmean_mae',
+		       	'beats_baseline', metrics_json->'beats_baseline'
+		       ) AS metrics_json,
+		       created_at, last_trained_at
 		FROM marketcloud_features.model_registry
 		WHERE model_name IN (
 			'HourlyConversionRealV2', 'HourlyExpectedRoasRealV2',
@@ -35,7 +55,9 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 	runRows, err := h.db.Query(ctx, `
 		SELECT id, run_kind, model_version, grain, status,
 		       training_rows, positive_click_rows, positive_order_rows,
-		       predictions_written, metrics_json, started_at, finished_at
+		       predictions_written,
+		       NULL::jsonb AS metrics_json,
+		       started_at, finished_at
 		FROM marketcloud_gold.ml_hourly_run_status
 		ORDER BY finished_at DESC
 		LIMIT 24`)
@@ -287,6 +309,53 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		"reading": "DIRECIONAL",
 	}
 
+	if view == "overview" {
+		trainingVolumeLight := []map[string]any{
+			{
+				"source":    "campaign_hour_gold",
+				"rows":      totals["campaign_rows"],
+				"campaigns": nil,
+				"targets":   nil,
+				"clicks":    nil,
+				"orders":    totals["ams_orders_7d"],
+				"sales":     totals["ams_sales_7d"],
+				"spend":     nil,
+			},
+			{
+				"source":    "target_hour_reconciled",
+				"rows":      totals["target_rows"],
+				"campaigns": nil,
+				"targets":   nil,
+				"clicks":    nil,
+				"orders":    totals["target_orders_7d"],
+				"sales":     totals["target_sales_7d"],
+				"spend":     nil,
+			},
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"totals":                         totals,
+			"models":                         models,
+			"ml_runs":                        runs,
+			"ams_hours":                      ams,
+			"learning_outcomes":              []map[string]any{},
+			"learning_summary":               learningSummary,
+			"holdout":                        holdoutSummary,
+			"audit_360_summary":              map[string]any{},
+			"audit_360":                      []map[string]any{},
+			"full_control_360_summary":       map[string]any{},
+			"full_control_360":               []map[string]any{},
+			"ams_quality_summary":            []map[string]any{},
+			"ams_quality_divergences":        []map[string]any{},
+			"ads_reprocess_requests":         []map[string]any{},
+			"ads_reprocess_health":           []map[string]any{},
+			"ml_training_volume":             trainingVolumeLight,
+			"ams_target_quality_summary":     []map[string]any{},
+			"ams_target_quality_divergences": []map[string]any{},
+			"operational_alerts":             []map[string]any{},
+		})
+		return
+	}
+
 	var auditSummary map[string]any
 	err = h.db.QueryRow(ctx, `
 		SELECT jsonb_build_object(
@@ -462,7 +531,7 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 
 	reprocessRows, err := h.db.Query(ctx, `
 		SELECT id, source, data_date, window_label, status, reason,
-		       requested_at, updated_at, completed_at, error_message, metadata_json
+		       requested_at, updated_at, completed_at, error_message
 		FROM marketcloud_ops.ads_reporting_reprocess_requests
 		ORDER BY data_date DESC, window_label
 		LIMIT 30`)
@@ -481,7 +550,8 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		       rows_ingested, grain_status, updated_at, completed_at, error_message
 		FROM marketcloud_gold.v_ads_reporting_reprocess_health_v1
 		ORDER BY data_date DESC,
-			CASE grain WHEN 'CAMPAIGN' THEN 0 WHEN 'AD_GROUP' THEN 1 WHEN 'KEYWORD' THEN 2 WHEN 'TARGET' THEN 3 ELSE 4 END`)
+			CASE grain WHEN 'CAMPAIGN' THEN 0 WHEN 'AD_GROUP' THEN 1 WHEN 'KEYWORD' THEN 2 WHEN 'TARGET' THEN 3 ELSE 4 END
+		LIMIT 40`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "ads_reprocess_health_failed: "+err.Error())
 		return
@@ -577,22 +647,32 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	alertRows, err := h.db.Query(ctx, `
-		SELECT severity, alert_key, title, detail, entity_type, entity_id, observed_at
-		FROM marketcloud_gold.v_ams_ml_operational_alerts_v1
-		ORDER BY
-			CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
-			observed_at DESC NULLS LAST,
-			alert_key
-		LIMIT 30`)
+	operationalAlerts := []map[string]any{}
+	var lastTargetML time.Time
+	err = h.db.QueryRow(ctx, `
+		SELECT COALESCE(MAX(finished_at), TIMESTAMPTZ 'epoch')
+		FROM marketcloud_gold.ml_hourly_run_status
+		WHERE run_kind = 'hourly_target_real_v3'`).Scan(&lastTargetML)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ams_ml_operational_alerts_failed: "+err.Error())
-		return
-	}
-	operationalAlerts, err := pgx.CollectRows(alertRows, pgx.RowToMap)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "ams_ml_operational_alerts_scan_failed: "+err.Error())
-		return
+		operationalAlerts = append(operationalAlerts, map[string]any{
+			"severity":    "warning",
+			"alert_key":   "ml_target_v3_freshness_check_failed",
+			"title":       "ML target V3 freshness indisponivel",
+			"detail":      err.Error(),
+			"entity_type": "ML_RUN",
+			"entity_id":   "hourly_target_real_v3",
+			"observed_at": time.Now().UTC(),
+		})
+	} else if lastTargetML.Before(time.Now().UTC().Add(-2 * time.Hour)) {
+		operationalAlerts = append(operationalAlerts, map[string]any{
+			"severity":    "warning",
+			"alert_key":   "ml_target_v3_freshness",
+			"title":       "ML target V3 freshness",
+			"detail":      "ultimo finished_at=" + lastTargetML.Format(time.RFC3339),
+			"entity_type": "ML_RUN",
+			"entity_id":   "hourly_target_real_v3",
+			"observed_at": lastTargetML,
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

@@ -142,7 +142,7 @@ export const api = {
   goldDaypartingWindows: (tid) => req('GET', '/gold/dayparting-windows', null, tid),
   goldDaypartCurveRich: (tid) => req('GET', '/gold/daypart-curve-rich', null, tid),
   goldKeywordApply: (tid, body) => req('POST', '/gold/keyword-hourly/apply', body, tid),
-  goldMlAmsStatus: (tid) => req('GET', '/gold/ml-ams-status', null, tid),
+  goldMlAmsStatus: (tid, view = 'overview') => req('GET', `/gold/ml-ams-status?view=${encodeURIComponent(view)}`, null, tid),
   goldMlFullAutoCampaigns: (tid) => req('GET', '/gold/ml-full-auto-campaigns', null, tid),
   setGoldMlFullAutoCampaign: (tid, body) => req('PUT', '/gold/ml-full-auto-campaigns', body, tid),
   tenantSettings: (tid) => req('GET', '/settings/tenant', null, tid),

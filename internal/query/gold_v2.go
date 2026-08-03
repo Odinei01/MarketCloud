@@ -53,7 +53,7 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 	         WHEN rules_still_need_change > 0 THEN 'NEEDS_CHANGE'
 	         ELSE 'ALIGNED' END AS schedule_overlap_status
 	  FROM (
-		SELECT recommendation_id, campaign_name, event_hour,
+		SELECT gr.recommendation_id, gr.campaign_name, gr.event_hour,
 			-- ACAO e SUGERIDO vem do ALVO DO ML quando ele existe pra essa
 			-- campanha x hora (mesmo cerebro do cockpit e da tela de keyword).
 			-- Sem alvo do ML, cai no que a v1 calculava. Unifica as 3 telas.
@@ -61,15 +61,15 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 			     WHEN t.ml_multiplier > gr.current_multiplier + 0.001 THEN 'BID_UP'
 			     WHEN t.ml_multiplier < gr.current_multiplier - 0.001 THEN 'BID_DOWN'
 			     ELSE 'KEEP_STRONG' END AS action_type,
-			confidence,
-			spend::float8 AS spend, orders::int AS orders, sales::float8 AS sales,
-			roas::float8 AS roas, cvr::float8 AS cvr, clicks::int AS clicks,
-			impressions::int AS impressions, days_observed::int AS days_observed,
-			current_multiplier::float8 AS current_multiplier,
-			mult_max::float8 AS mult_max, has_schedule,
+			gr.confidence,
+			gr.spend::float8 AS spend, gr.orders::int AS orders, gr.sales::float8 AS sales,
+			gr.roas::float8 AS roas, gr.cvr::float8 AS cvr, gr.clicks::int AS clicks,
+			gr.impressions::int AS impressions, gr.days_observed::int AS days_observed,
+			gr.current_multiplier::float8 AS current_multiplier,
+			gr.mult_max::float8 AS mult_max, gr.has_schedule,
 			COALESCE(t.ml_multiplier, gr.suggested_multiplier)::float8 AS suggested_multiplier,
 			(t.ml_multiplier IS NOT NULL) AS suggestion_from_ml,
-			overlap_rule_count,
+			gr.overlap_rule_count,
 			-- "X de Y abaixo" recontado contra o ALVO DO ML, nao contra a
 			-- suggested_multiplier da v1. Se sobe (alvo > atual): regra abaixo do
 			-- alvo ainda precisa mudar. Se desce: regra acima do alvo. Sem alvo do
@@ -86,14 +86,14 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 			                      THEN (e->>'multiplier')::float8 >= t.ml_multiplier - 0.001
 			                      ELSE (e->>'multiplier')::float8 <= t.ml_multiplier + 0.001 END)
 			END AS rules_already_aligned,
-			overlap_mult_min::float8 AS overlap_mult_min,
-			overlap_mult_max::float8 AS overlap_mult_max,
-			overlap_labels, overlap_rule_details,
-			priority_score::float8 AS priority_score, label_caveat,
-			window_from, window_to,
-			ml_conversion_probability::float8 AS ml_conversion_probability,
-			ml_expected_roas::float8 AS ml_expected_roas,
-			ml_good_hour, ml_agrees,
+			gr.overlap_mult_min::float8 AS overlap_mult_min,
+			gr.overlap_mult_max::float8 AS overlap_mult_max,
+			gr.overlap_labels, gr.overlap_rule_details,
+			gr.priority_score::float8 AS priority_score, gr.label_caveat,
+			gr.window_from, gr.window_to,
+			gr.ml_conversion_probability::float8 AS ml_conversion_probability,
+			gr.ml_expected_roas::float8 AS ml_expected_roas,
+			gr.ml_good_hour, gr.ml_agrees,
 			(SELECT CASE WHEN bool_and(u.conversion_trustworthy) THEN 'MATURE'
 			             WHEN bool_or(u.conversion_trustworthy)  THEN 'MIXED'
 			             ELSE 'IMMATURE' END
@@ -108,7 +108,6 @@ func (h *Handler) GoldHourlyReal(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN marketcloud_gold.gold_hourly_ml_target_mv t
 		  ON t.campaign_name = gr.campaign_name AND t.event_hour = gr.event_hour
 	) q0
-	) q
 	WHERE ` + strings.Join(where, " AND ") + `
 	ORDER BY priority_score DESC
 	LIMIT ` + strconv.Itoa(limit)
@@ -570,6 +569,7 @@ var daypartingApplyAllowlist = map[string]string{
 // Aplica a curva RECOMENDADA no schedule publicado da keyword piloto. Gated:
 //   - allowlist: so os 3 pilotos.
 //   - kill-switch DAYPARTING_APPLY_ENABLED (default OFF) — sem ele, sempre dry-run.
+//
 // Dry-run retorna o plano (atual->sugerido) sem escrever. Audit ANTES de escrever.
 func (h *Handler) GoldDaypartingApply(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

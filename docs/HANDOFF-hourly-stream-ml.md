@@ -8730,3 +8730,383 @@ Amostra Semanal retornada:
 - Sem. 07-06: gasto R$ 160,09; vendas R$ 1.271,98; pedidos 27.
 - Sem. 07-13: gasto R$ 141,74; vendas R$ 1.127,55; pedidos 14.
 - Sem. 07-20: gasto R$ 106,63; vendas R$ 302,30; pedidos 7.
+
+## 155. Monitor M19 Autopilot - watchlist, extrator horario e tela SWARM - 2026-07-27
+
+Pedido:
+
+- Absorver a estrategia do software M19 Autopilot a partir das campanhas criadas para os ASINs selecionados.
+- Monitorar tudo: estrutura, keywords, targets, negativas, bids, status, budget/placement e performance.
+- Criar extrator de hora em hora e tela operacional.
+
+Campanhas monitoradas neste lote:
+
+- `SP -  - All products -  - auto - m19 autopilot - m9CiMFKmOjHgrWZg` -> campaign_id `46825026278093`.
+- `SP -  - All products -  - product - m19 autopilot - ITG1wbJ7wPXMpKyc` -> campaign_id `124588826328514`.
+- `SP -  - All products -  - exact - m19 autopilot - vSjnFKqbm+LNNQer` -> campaign_id `21108061926422`.
+- `SP -  - All products -  - phrase - m19 autopilot - 3oEr+QKQ/ZNBpunH` -> campaign_id `110298784016344`.
+
+Implementacao:
+
+- Novo worker horario: `swarm-m19-autopilot-monitor-hourly-v1`.
+- Novo endpoint:
+  - `GET /api/amazon/ads/m19-monitor`: le monitoria.
+  - `POST /api/amazon/ads/m19-monitor`: roda extrator manual.
+- Nova tela no menu Amazon: `http://localhost:3000/#/amazon/ads/m19-monitor` (`Monitor M19`).
+- Novas tabelas append-only no banco operacional:
+  - `m19_monitor_watchlist`: lote/campanhas explicitamente monitoradas.
+  - `m19_monitor_snapshots`: snapshots de campanha/keyword/target/negativas/bid/status.
+  - `m19_monitor_performance_snapshots`: snapshots de performance cacheada diaria/horaria.
+- O worker agora atualiza targeting seletivo com `SINGLE_CAMPAIGN` somente para as 4 campanhas M19 antes de tirar snapshot. Nao roda `ALL_CAMPAIGNS`.
+- O sync diario pesado de estrutura tambem passa a usar o snapshot Go novo, sem depender da funcao SQL legada `m19_monitor_snapshot()`.
+
+Validacao executada:
+
+- `go test ./cmd/api -run '^$' -count=1`: OK.
+- `vite build --outDir dist-codex`: OK.
+- `go-backend` e `react-frontend` rebuild/recreate: OK.
+- Coleta manual/boot validada em 27/07/2026:
+  - `watchlist=4`.
+  - `campaigns=4`.
+  - `targeting_refresh=3734` entidades sincronizadas seletivamente via API.
+  - `structure_snapshots=3738` linhas append-only gravadas na rodada filtrada.
+  - `new_entities=10` no primeiro delta visivel da watchlist.
+  - `performance_rows=0` no momento da validacao, porque ainda nao havia linha de performance diaria/horaria dessas campanhas no cache local para o dia.
+  - proxima execucao automatica observada: `2026-07-27T20:12:00-03:00`.
+
+Primeira leitura estrategica capturada:
+
+- O M19 criou estrutura massiva ja no lote novo:
+  - auto: 872 entidades vistas.
+  - product: 1.980 entidades vistas.
+  - exact: 53 entidades vistas.
+  - phrase: 829 entidades vistas.
+- A composicao indica funil classico do M19:
+  - campanha auto para discovery;
+  - campanha product para ASIN/product targeting em escala;
+  - exact para termos promovidos/confirmados;
+  - phrase para expansao controlada;
+  - negativas sendo aplicadas em auto/phrase para esculpir trafego.
+- Exemplos detectados na primeira leitura: `pincel para po`, `pincel po solto`, `adaptador hub iphone`, `adaptador cartao sd`, `carregador sansungue`, com combinacao de keywords positivas e negativas entre auto/phrase/exact.
+
+Limitacao atual:
+
+- O monitor ja absorve a estrutura e alteracoes do M19 hora a hora via API seletiva.
+- A performance depende do cache de Ads/AMS ja estar alimentado. Enquanto `amazon_ads_campaigns_daily/hourly` nao trouxer gasto dessas campanhas, a tela mostra performance zerada. Assim que o report/AMS alimentar, o append-only passa a preservar a evolucao.
+
+## 156. Monitor M19 - eventos de estrategia para aprendizado do ML - 2026-07-27
+
+Pedido:
+
+- O Monitor M19 nao pode apenas exibir mudancas; ele deve gravar cada acao observada para depois alimentar nossa inteligencia e melhorar o modelo.
+
+Implementacao:
+
+- Criada tabela append-only `m19_monitor_strategy_events`.
+- Cada evento recebe `event_uid` unico e fica com status inicial `PENDING_OUTCOME`.
+- Campos gravados para treino futuro:
+  - horario detectado e snapshot anterior;
+  - campanha, campaign_id, entidade, entity_id, entity_label, match_type;
+  - ad_group_id/ad_group_name quando disponivel;
+  - tipo do evento (`BID_CHANGED`, `BUDGET_CHANGED`, `TOP_OF_SEARCH_CHANGED`, `STATUS_CHANGED`, `STATE_CHANGED`, `ENTITY_CREATED`);
+  - campo alterado, valor anterior, valor novo, delta numerico;
+  - raw_payload antes/depois e contexto JSON com `needs_ml_outcome=true`.
+- O worker M19 agora grava eventos antes e depois do refresh seletivo, para o aprendizado nao depender da chamada longa da API Ads.
+- O endpoint `GET /api/amazon/ads/m19-monitor` agora retorna `strategy` com os eventos recentes.
+- A tela `http://localhost:3000/#/amazon/ads/m19-monitor` ganhou KPI `Eventos p/ ML` e a tabela `Eventos gravados para aprendizado`.
+- Corrigidos mojibakes visuais nessa tela, substituindo separadores quebrados por ASCII simples.
+
+Validacao executada:
+
+- `go test ./cmd/api -run '^$' -count=1`: OK.
+- `vite build --outDir dist-codex`: OK.
+- Backend recompilado e reiniciado no container via binario Linux local, porque o build Docker ficou instavel/travando.
+- Materializacao inicial validada no banco:
+  - `m19_monitor_strategy_events=4186` eventos.
+  - ultimo evento em `2026-07-27 22:33:27.997657+00`.
+- Endpoint validado apos restart:
+  - `worker.status=COMPLETED`.
+  - `campaigns=4`.
+  - `changes=80`.
+  - `strategy=160` retornados para tela, com a base completa append-only preservada no banco.
+
+Observacao:
+
+- Esses eventos ainda nao sao outcome final; sao propostas/acoes observadas do M19. O proximo passo de inteligencia e cruzar cada evento com AMS/Ads apos 1h, 3h e 24h para rotular ganhou/perdeu ROAS, gasto, clique e pedido.
+
+## 157. Monitor M19 - status, highlights e descobertas - 2026-07-28
+
+Consulta operacional feita em 28/07/2026 pela manha, usando `GET /api/amazon/ads/m19-monitor` e queries diretas no banco.
+
+Status do monitor:
+
+- Worker M19 ativo.
+- Ultimo ciclo completo observado: `2026-07-28T10:13:29-03:00`.
+- Novo ciclo estava rodando desde `2026-07-28T10:26:13-03:00`.
+- Snapshots estruturais atualizados ate `2026-07-28 13:26:17+00`.
+- Eventos gravados para aprendizado: `5900`.
+- Eventos ainda pendentes de outcome: `5900`.
+- Outcomes medidos: `0` no momento da consulta.
+
+Volume por campanha M19 original:
+
+- `SP -  - All products -  - product - m19 autopilot - ITG1wbJ7wPXMpKyc`: `2012` entidades / `105365` snapshots.
+- `SP -  - All products -  - auto - m19 autopilot - m9CiMFKmOjHgrWZg`: `887` entidades / `46422` snapshots.
+- `SP -  - All products -  - phrase - m19 autopilot - 3oEr+QKQ/ZNBpunH`: `844` entidades / `44133` snapshots.
+- `SP -  - All products -  - exact - m19 autopilot - vSjnFKqbm+LNNQer`: `54` entidades / `2852` snapshots.
+
+Eventos gravados por tipo:
+
+- `STATE_CHANGED`: `3790`.
+- `BID_CHANGED`: `1785`.
+- `PRODUCT_PAGE_CHANGED`: `80`.
+- `REST_OF_SEARCH_CHANGED`: `80`.
+- `TOP_OF_SEARCH_CHANGED`: `80`.
+- `ENTITY_CREATED`: `69`.
+- `BUDGET_CHANGED`: `8`.
+- `STATUS_CHANGED`: `4`.
+- `BIDDING_STRATEGY_CHANGED`: `4`.
+
+Leitura estrategica:
+
+- O M19 esta operando com funil classico:
+  - `auto`: descoberta de termos/targets.
+  - `product`: escala forte em product/ASIN targeting.
+  - `phrase`: expansao controlada.
+  - `exact`: termos mais selecionados/promovidos.
+- A campanha `product` e claramente o centro da estrategia, com volume muito superior de entidades.
+- O `exact` e enxuto, sugerindo camada de termos/targets promovidos, nao exploracao massiva.
+- O M19 mexe muito mais em `state` e `bid` do que em budget/status.
+- Foi observado movimento recorrente de bids voltando/subindo para `0.30`, por exemplo:
+  - `pincel macrilan`: `0.14 -> 0.30`.
+  - `carregador 40w`: `0.11 -> 0.30`.
+  - `adaptador hub`: `0.15 -> 0.30`.
+  - varios product targets por ASIN: `0.14/0.16/0.17 -> 0.30`.
+- Interpretacao inicial: o M19 parece normalizar/reabrir agressividade depois de um periodo de bid baixo, usando regras em lote.
+
+Performance capturada ate a consulta:
+
+- Apenas `phrase` tinha gasto relevante nos snapshots:
+  - gasto acumulado capturado: `R$ 3,65`.
+  - vendas: `R$ 0,00`.
+  - pedidos: `0`.
+- No resumo do endpoint, `phrase` aparecia com `R$ 2,26` de gasto hoje e zero pedido.
+- Ainda nao ha volume suficiente para concluir se as mudancas ganharam ou perderam ROAS.
+
+Ponto de atencao:
+
+- A watchlist passou a conter tambem campanhas `m19_asin_neighbor`, alem das 4 campanhas M19 originais:
+  - `Automatica beleza`.
+  - `Automática com todos os produtos`.
+  - `Carregador 30W`.
+  - `Esponja Gota`.
+  - `Hub USB`.
+  - `Marca Peining`.
+  - `USB Manual`.
+- Isso pode ser util para comparacao por ASIN/produto vizinho, mas deve ser separado visualmente na tela para nao confundir `M19 original` com `campanhas vizinhas/controle`.
+
+Conclusao do momento:
+
+- A captura esta boa e ja virou base de engenharia reversa.
+- Ainda falta fechar o loop causal: medir cada evento apos `1h`, `3h` e `24h` contra AMS/Ads para rotular ganho/perda de ROAS, gasto, clique e pedido.
+- Sem esse outcome, os `5900` eventos sao sinais operacionais observados, nao aprendizado conclusivo.
+
+## 158. Full Control - Abridor de Vinho removido da allowlist executora - 2026-07-28
+
+Pedido:
+
+- Tirar a campanha `Abridor de Vinho` do Full Control.
+
+Execucao:
+
+- Campaign ID validado: `243188188856118`.
+- No banco `amazon_ads_product_control_plans`, o plano ja estava desligado:
+  - `campaign_name='Abridor de Vinho'`.
+  - `full_control_enabled=false`.
+  - `status='DRAFT'`.
+- O risco real estava no `.env`: a campanha ainda constava em `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS`.
+- Removido `243188188856118` da allowlist.
+- Valor final da allowlist executora:
+  - `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS=140196475614872,128894883801654`.
+- Backend `pricing_api` reiniciado para recarregar o `.env`.
+
+Validacao:
+
+- `.env` nao contem mais `243188188856118` na allowlist Full Control.
+- Consulta ao banco confirmou `Abridor de Vinho` com `full_control_enabled=false` e `status=DRAFT`.
+
+Resultado:
+
+- `Abridor de Vinho` saiu da camada executora Full Control.
+- A campanha pode continuar existindo em monitorias/risk/Ads, mas nao deve mais receber acao automatica do executor `FULL_CONTROL_360`.
+
+## 159. Full Control - todos os pilotos desligados - 2026-07-28
+
+Pedido:
+
+- Tirar todas as campanhas do piloto Full Control.
+
+Execucao:
+
+- Atualizado `.env` para desligar a camada executora:
+  - `FULL_CONTROL_360_EXECUTE_ENABLED=false`.
+  - `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS=__none__`.
+- O sentinela `__none__` foi usado de proposito para evitar fallback para a allowlist geral do automator caso a variavel fique vazia.
+- Atualizada a tabela `amazon_ads_product_control_plans`:
+  - todos os planos com `full_control_enabled=false`.
+  - todos os planos com `status='DRAFT'`.
+  - `request_json.full_control_enabled=false`.
+  - `request_json.status='DRAFT'`.
+- Backend `pricing_api` reiniciado para recarregar o `.env`.
+
+Validacao:
+
+- `.env` confirmado com kill-switch Full Control desligado e allowlist sentinela.
+- Banco confirmado:
+  - `active_or_enabled=0`.
+  - planos remanescentes somente como configuracao/draft:
+    - `Abridor de Vinho` -> `full_control_enabled=false`, `status=DRAFT`.
+    - `Kit Kadukli Manga` -> `full_control_enabled=false`, `status=DRAFT`.
+
+Resultado:
+
+- Nao ha campanha ativa no piloto Full Control.
+- O executor `FULL_CONTROL_360` nao deve aplicar budget/placement/stop-loss Full Control em nenhuma campanha enquanto o kill-switch estiver desligado.
+- Monitorias de risco, AMS, M19 e dashboards podem continuar lendo dados normalmente; apenas a automacao Full Control foi desligada.
+
+## 160. Correcao Full Control - governance MarketCloud tambem zerada - 2026-07-28
+
+Contexto:
+
+- A tela `Settings` do MarketCloud ainda mostrava `Robo cuidando destas campanhas` com `3 liberadas`, mesmo apos desligar o executor local e os planos locais no `mercado-data-app`.
+- Causa: a tela nao le somente `.env`/`amazon_ads_product_control_plans`; ela le a governance do MarketCloud em `marketcloud_gold.full_control_effective_governance_v1`, derivada de `marketcloud_control.full_control_pilots`.
+
+Diagnostico:
+
+- `mercado-data-app` local ja estava com:
+  - `FULL_CONTROL_360_EXECUTE_ENABLED=false`.
+  - `FULL_CONTROL_360_ALLOWLIST_CAMPAIGN_IDS=__none__`.
+  - `amazon_ads_product_control_plans` sem plano ativo.
+- Mas no banco `marketcloud_db`, ainda havia pilotos com `mode='full_control'` e `status='active'`:
+  - `Abridor de Vinho` (`243188188856118`) -> `can_control=true`.
+  - `Forma Silicone` (`140196475614872`) -> `can_control=true`.
+  - `Kit Kadukli Manga` (`128894883801654`) -> `can_control=true`.
+
+Correcao executada no MarketCloud:
+
+- Atualizada tabela `marketcloud_control.full_control_pilots`:
+  - todos os pilotos com `mode='full_control'` ou `status='active'` foram colocados como `mode='monitor_only'` e `status='draft'`.
+  - `updated_by='codex-disable-all-full-control'`.
+  - nota adicionada em `notes`: `2026-07-28: Full Control disabled for all pilots by user request.`
+
+Validacao direta no MarketCloud:
+
+- `marketcloud_gold.full_control_effective_governance_v1` passou a retornar:
+  - `can_control_count=0`.
+- Amostra apos correcao:
+  - `Abridor de Vinho` -> `mode=monitor_only`, `status=draft`, `can_control=false`.
+  - `Forma Silicone` -> `mode=monitor_only`, `status=draft`, `can_control=false`.
+  - `Kit Kadukli Manga` -> `mode=monitor_only`, `status=draft`, `can_control=false`.
+  - demais campanhas ativas antigas tambem ficaram `monitor_only/draft`.
+
+Resultado:
+
+- A fonte real do card `Robo cuidando destas campanhas` foi zerada.
+- A tela pode precisar de refresh/reload para abandonar o estado antigo em memoria do frontend, mas o banco de origem ja esta com `0` campanhas controlaveis.
+
+## 161. Status AMS + ML - COMPLETED deixou de virar alerta critico - 2026-07-29
+
+Contexto:
+
+- A tela `Status AMS + ML` mostrava `30 ativos` em `Alertas operacionais`.
+- Parte relevante dos alertas era falsa: linhas como `Ads Reporting v3 CAMPAIGN COMPLETED`, `AD_GROUP COMPLETED`, `KEYWORD COMPLETED` e `TARGET COMPLETED` apareciam com severidade `critical`.
+- Causa: a view `marketcloud_gold.v_ams_ml_operational_alerts_v1` herdava `error_message`/estado da janela de reprocessamento mesmo quando o grao individual ja estava `COMPLETED`.
+
+Correcao:
+
+- Criada migration `migrations/168_operational_alerts_completed_is_ok.sql`.
+- A view `marketcloud_gold.v_ams_ml_operational_alerts_v1` agora prioriza:
+  - `grain_status='COMPLETED'` => `ok`.
+  - somente graos `FAILED/CANCELLED/ERROR`, `PENDING`, `PROCESSING`, `UNKNOWN` ou vazios/stale viram alerta.
+  - alertas AMS target continuam ativos para `DIVERGENT` e `ADS_TARGETING_MISSING`.
+- Migration aplicada no banco vivo `marketcloud_db`.
+
+Validacao:
+
+- Antes: havia alertas `critical` para graos `COMPLETED`.
+- Depois:
+  - `completed_alerts=0`.
+  - alertas restantes:
+    - `AMS target DIVERGENT`: 1.
+    - `AMS target ADS_TARGETING_MISSING`: 1 warning.
+    - Ads Reporting v3 restantes apenas `PENDING`, `PROCESSING` e `UNKNOWN`.
+- Backend nao precisou rebuild: o endpoint `/api/v1/gold/ml-ams-status` le a view diretamente.
+
+Resultado:
+
+- O painel deixa de parecer pior do que esta.
+- A leitura operacional passa a separar corretamente:
+  - `COMPLETED` = dado fechado/ok.
+  - `PENDING/PROCESSING/UNKNOWN` = pendencia real de reprocessamento.
+  - `DIVERGENT/ADS_TARGETING_MISSING` = qualidade de dado target a investigar.
+
+## 162. Status AMS + ML - gargalos e shadow 360 corrigidos - 2026-08-01
+
+Contexto:
+
+- A tela `Status AMS + ML` carregava devagar e o endpoint `/api/v1/gold/hourly-real?limit=300` retornava `500`.
+- A rodada `hourly_real_v2` treinava e gravava predicoes, mas `0 recomendacoes Full Control 360 gravadas` quando nao havia piloto controlavel ativo.
+- Pergunta operacional: mesmo campanha shadow/advisor deveria ter sugestao. Resposta: sim, deve gerar recomendacao observavel, mas sem execucao real.
+
+Correcoes:
+
+- `internal/query/gold_v2.go`:
+  - corrigido SQL de `GoldHourlyReal`:
+    - removido parentese extra no wrapper da query.
+    - qualificadas colunas com `gr.` para eliminar ambiguidade com `gold_hourly_ml_target_mv`.
+- `workers/modeling-worker/marketcloud_ml_worker_hourly_real_v2.py`:
+  - `write_full_control_360_actions()` deixou de filtrar somente `is_full_control_pilot=1`.
+  - campanhas sem governanca executavel agora geram sugestoes `SHADOW_ADVISORY`.
+  - `guardrail_status='SHADOW_NOT_APPLICABLE'` diferencia sugestao observavel de acao aplicavel.
+- `migrations/169_fc360_shadow_and_status_perf.sql`:
+  - deduplicou `v_ml_full_control_360_decision_v1` por `recommendation_id`.
+  - deduplicou `sync_ml_full_control_360_proposals()` antes do `ON CONFLICT`, evitando `CardinalityViolation` quando a governanca tem mais de uma linha por campanha.
+- `internal/query/ml_ams_status.go`:
+  - status passou a aceitar `?view=overview|ams|robot|ml|audit`.
+  - `overview` retorna cockpit leve e nao carrega views investigativas pesadas.
+  - `metrics_json` foi reduzido para AUC/MAE/baselines/positivos; arrays de features nao vao mais para a tela.
+  - `ads_reprocess_requests` deixou de enviar `metadata_json` no status.
+  - `ads_reprocess_health` limitado a 40 linhas.
+- `frontend/src/api/client.js` e `frontend/src/pages/StatusAmsMl.jsx`:
+  - frontend passa a aba ativa para `goldMlAmsStatus`.
+  - ao trocar aba, a tela recarrega os dados daquela visao.
+
+Validacao viva:
+
+- `go test ./internal/query` passou.
+- `go test ./cmd/api` passou.
+- Sintaxe Python validada com `py_compile`.
+- API rebuildada e recriada via `docker compose build api` + `docker compose up -d api`.
+- Worker recebeu o script atualizado e rodada manual de `hourly_real_v2` finalizou:
+  - `902 celulas campanha x hora`.
+  - `121 com pedido`.
+  - Conversao `AUC=0.950`, `AUC_clicked=0.843`, baseline `0.687`.
+  - ROAS `MAE=1.263`, baseline `2.256`.
+  - `902 predicoes gravadas`.
+  - `476 recomendacoes Full Control 360 gravadas`.
+  - `456 propostas Full Control 360 sincronizadas no ledger`.
+  - `run_id=1395`.
+- Banco:
+  - `ml_full_control_action_recommendations_v1`: `476` total, `476` `SHADOW_ADVISORY`, `0` `READY`.
+  - `v_ml_full_control_360_audit_v1`: `476` em `AGUARDAR_DADOS`, sem aplicacao real.
+- Endpoints autenticados:
+  - `/api/v1/gold/hourly-real?limit=5`: `200`, `5` itens, ~`0.22s`.
+  - `/api/v1/gold/ml-ams-status?view=overview`: `200`, ~`25KB`, ~`0.83s`.
+  - `/api/v1/gold/ml-ams-status?view=robot`: `200`, ~`198KB`, ~`16.69s` por carregar auditoria completa.
+
+Estado final:
+
+- A tela inicial deixou de depender das views pesadas.
+- `hourly-real` voltou a responder.
+- Existem sugestoes 360 para campanhas shadow, mas nenhuma esta apta a execucao real enquanto `can_control_flag=0`.
+- Proximo refinamento recomendado: paginar/otimizar a aba `robot`, que ainda e investigativa e pesada.

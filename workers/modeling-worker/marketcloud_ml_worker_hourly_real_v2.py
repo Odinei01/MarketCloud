@@ -339,11 +339,14 @@ def append_action(actions, row, action_type, current_value, recommended_value, c
         spend_delta_ratio = -min(0.35, max(0.05, (float(current_value or 0) - float(recommended_value or 0)) / max(abs(float(current_value or 0)), 1.0)))
     expected_delta_spend = round(spend * spend_delta_ratio, 4)
     expected_delta_sales = round((spend + expected_delta_spend) * max(float(er or 0), 0) - spend * max(baseline_roas, 0), 4)
+    can_control = int(row.get("can_control_flag") or 0) == 1
     decision_class = classify_action(row, action_type, cp, er)
     data_sufficiency = data_sufficiency_for(row, cp, er)
     execution_strategy = "AUTO_EXECUTE_BID_ROBOT" if action_type.endswith("BID") else "REQUIRES_REAL_EXECUTOR"
     if action_type in ("STOP_LOSS_PROTECT", "REDUCE_DAILY_BUDGET", "REDUCE_TOP_OF_SEARCH"):
         execution_strategy = "SAFETY_RECOMMENDATION"
+    if not can_control:
+        execution_strategy = "SHADOW_ADVISORY"
     priority = max(0.0, float(er or 0) - min_roas) * 10.0 + float(cp or 0) * 25.0 + priority_boost
     actions.append((
         rec_id(row.get("campaign_id"), row.get("campaign_name"), int(row.get("event_hour") or 0), action_type),
@@ -359,7 +362,7 @@ def append_action(actions, row, action_type, current_value, recommended_value, c
         None if cp is None or np.isnan(cp) else round(float(cp), 4),
         confidence_for(cp, er, min_roas),
         round(priority, 4),
-        "READY" if int(row.get("can_control_flag") or 0) == 1 else "BLOCKED_BY_GOVERNANCE",
+        "READY" if can_control else "SHADOW_NOT_APPLICABLE",
         reason,
         json.dumps({
             "spend": float(row.get("spend") or 0),
@@ -434,8 +437,6 @@ def write_full_control_360_actions(conn, df, proba_full, roas_full):
     actions = []
     for i in range(len(df)):
         row = df.iloc[i]
-        if int(row.get("is_full_control_pilot") or 0) != 1:
-            continue
         cp = None if np.isnan(proba_full[i]) else float(proba_full[i])
         er = None if np.isnan(roas_full[i]) else float(roas_full[i])
         if cp is None or er is None:

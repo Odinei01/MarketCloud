@@ -199,7 +199,7 @@ export default function StatusAmsMl({ ctx }) {
 
   const load = useCallback(async () => {
     setError('')
-    const res = await api.goldMlAmsStatus(tenantID)
+    const res = await api.goldMlAmsStatus(tenantID, activeTab)
     if (res.ok) {
       setData(res.data || DEFAULT_STATUS_DATA)
       setUpdatedAt(new Date())
@@ -207,7 +207,7 @@ export default function StatusAmsMl({ ctx }) {
       setError(res.data?.error || `Falha ao carregar (${res.status})`)
     }
     setLoading(false)
-  }, [tenantID])
+  }, [tenantID, activeTab])
 
   useEffect(() => {
     load()
