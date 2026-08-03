@@ -571,6 +571,70 @@ var daypartingApplyAllowlist = map[string]string{
 //   - kill-switch DAYPARTING_APPLY_ENABLED (default OFF) — sem ele, sempre dry-run.
 //
 // Dry-run retorna o plano (atual->sugerido) sem escrever. Audit ANTES de escrever.
+// GET /api/v1/gold/dayparting-pilot?scope=CAMPAIGN|ENTITY|AD_GROUP|GLOBAL
+// Lista os profiles do bid-robot (via FDW swarm_src) por escopo + volume de dado (cliques
+// da calibracao) + a flag de aprovacao. Filtra "Sem Texto" (ENTITY sem entity_label).
+func (h *Handler) GoldDaypartingPilotProfiles(w http.ResponseWriter, r *http.Request) {
+	scope := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("scope")))
+	if scope == "" {
+		scope = "ENTITY"
+	}
+	rows, err := h.db.Query(r.Context(), `
+		SELECT p.id, p.scope,
+			COALESCE(p.campaign_name,'') AS campaign_name,
+			COALESCE(p.entity_label,'') AS entity_label,
+			COALESCE(p.entity_id,'') AS entity_id,
+			COALESCE(p.dayparting_synced,false) AS synced,
+			COALESCE(
+				(SELECT sum(k.clicks) FROM marketcloud_gold.gold_keyword_hourly_calibration_v1 k
+				 WHERE p.scope='ENTITY' AND k.keyword_id=p.entity_id
+				   AND k.computed_at=(SELECT max(computed_at) FROM marketcloud_gold.gold_keyword_hourly_calibration_v1)),
+				(SELECT sum(v.clicks) FROM marketcloud_gold.v_daypart_calibration_campaign_rich v
+				 WHERE p.scope='CAMPAIGN' AND v.campaign_name=p.campaign_name),
+				0)::int AS clicks
+		FROM swarm_src.zanom_ads_bid_schedule_profiles p
+		WHERE p.scope=$1 AND p.status='PUBLISHED' AND p.is_active=true
+		  AND NOT (p.scope='ENTITY' AND COALESCE(NULLIF(p.entity_label,''),'')='')
+		ORDER BY clicks DESC NULLS LAST, campaign_name, entity_label`, scope)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "pilot_profiles_failed: "+err.Error())
+		return
+	}
+	items, err := pgx.CollectRows(rows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items), "scope": scope})
+}
+
+// POST /api/v1/gold/dayparting-pilot  {profile_id, enabled}
+// Aprova/desaprova um profile no automatico — grava dayparting_synced via FDW (-> pricing/
+// bid-robot). O robo (worker diario) efetiva; a Agenda de BIDs so reflete.
+func (h *Handler) GoldDaypartingPilotToggle(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProfileID string `json:"profile_id"`
+		Enabled   bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ProfileID) == "" {
+		writeError(w, http.StatusBadRequest, "profile_id_required")
+		return
+	}
+	tag, err := h.db.Exec(r.Context(), `UPDATE swarm_src.zanom_ads_bid_schedule_profiles SET dayparting_synced=$2 WHERE id=$1`, strings.TrimSpace(body.ProfileID), body.Enabled)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "toggle_failed: "+err.Error())
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "profile_not_found")
+		return
+	}
+	if h.audit != nil {
+		h.audit.LogRequest(r.Context(), r, "DAYPARTING_PILOT", "bid_schedule_profile", body.ProfileID, nil, map[string]string{"enabled": strconv.FormatBool(body.Enabled)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "profile_id": body.ProfileID, "dayparting_synced": body.Enabled})
+}
+
 func (h *Handler) GoldDaypartingApply(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var body struct {

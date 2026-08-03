@@ -39,6 +39,24 @@ export default function DaypartingCalibration({ ctx }) {
   }, [tenantID])
   useEffect(() => { load() }, [load])
 
+  // --- Aprovacao (o que entra no automatico) — grava a flag no bid-robot via FDW ---
+  const [scope, setScope] = useState('ENTITY')
+  const [profiles, setProfiles] = useState([])
+  const [pLoading, setPLoading] = useState(false)
+  const loadProfiles = useCallback(async (sc) => {
+    setPLoading(true)
+    try {
+      const res = await api.goldDaypartingPilotProfiles(tenantID, sc)
+      setProfiles(res?.data?.items || [])
+    } catch { setProfiles([]) } finally { setPLoading(false) }
+  }, [tenantID])
+  useEffect(() => { loadProfiles(scope) }, [scope, loadProfiles])
+  const toggleProfile = useCallback(async (id, enabled) => {
+    setProfiles(prev => prev.map(p => p.id === id ? { ...p, synced: enabled } : p))
+    try { await api.goldDaypartingPilotToggle(tenantID, id, enabled) }
+    catch { loadProfiles(scope) }
+  }, [tenantID, scope, loadProfiles])
+
   const byKw = useMemo(() => {
     const g = {}
     ;(data.recommendations || []).forEach(r => { (g[r.keyword_text] = g[r.keyword_text] || {})[r.event_hour] = r })
@@ -81,6 +99,39 @@ export default function DaypartingCalibration({ ctx }) {
           </p>
         </div>
         <button className="btn" onClick={load} style={{ fontSize: 12 }}>Atualizar</button>
+      </div>
+
+      <div style={{ marginTop: 14, border: '1px solid var(--border,#2a3550)', borderRadius: 12, padding: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <b>Aprovacao — o que entra no automatico</b>
+          <span style={{ ...muted, fontSize: 12 }}>o que voce aprovar aqui vira efetivo no robo (Agenda de BIDs)</span>
+          <div style={{ flex: 1 }} />
+          {[['ENTITY', 'Por Keyword/Target'], ['CAMPAIGN', 'Por Campanha'], ['AD_GROUP', 'Por Grupo'], ['GLOBAL', 'Global']].map(([sc, lb]) => (
+            <button key={sc} className="btn" onClick={() => setScope(sc)}
+              style={{ fontSize: 12, borderColor: scope === sc ? 'var(--accent,#3b82f6)' : 'var(--border,#2a3550)', color: scope === sc ? 'var(--accent,#93c5fd)' : 'inherit' }}>{lb}</button>
+          ))}
+        </div>
+        <div style={{ overflowX: 'auto', marginTop: 10 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+            <thead><tr style={{ ...muted, textAlign: 'left' }}><th style={{ padding: '3px 8px' }}>Alvo</th><th>Cliques</th><th>No automatico</th></tr></thead>
+            <tbody>
+              {pLoading && <tr><td colSpan="3" style={muted}>Carregando...</td></tr>}
+              {!pLoading && profiles.length === 0 && <tr><td colSpan="3" style={muted}>Nenhum profile neste escopo.</td></tr>}
+              {profiles.map(p => (
+                <tr key={p.id} style={{ borderTop: '1px solid var(--border,#22304a)' }}>
+                  <td style={{ padding: '4px 8px' }}>{p.entity_label || p.campaign_name || p.id}</td>
+                  <td>{p.clicks ?? 0}</td>
+                  <td>
+                    <button className="btn" onClick={() => toggleProfile(p.id, !p.synced)}
+                      style={{ fontSize: 12, borderColor: p.synced ? 'rgba(34,197,94,.55)' : 'var(--border,#2a3550)', color: p.synced ? '#86efac' : 'var(--muted,#8aa0c0)' }}>
+                      {p.synced ? '✓ aprovado' : 'aprovar'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {loading && <p style={muted}>Carregando...</p>}

@@ -139,6 +139,8 @@ func main() {
 		r.Get("/hourly-real", queryH.GoldHourlyReal)
 		r.Get("/keyword-hourly-real", queryH.GoldKeywordHourlyReal)
 		r.Get("/dayparting-calibration", queryH.GoldDaypartingCalibration)
+		r.Get("/dayparting-pilot", queryH.GoldDaypartingPilotProfiles)
+		r.With(managerUp).Post("/dayparting-pilot", queryH.GoldDaypartingPilotToggle)
 		r.Post("/dayparting-calibration/apply", queryH.GoldDaypartingApply)
 		r.Get("/dayparting-metrics", queryH.GoldDaypartingMetrics)
 		r.Get("/dayparting-keyword-heatmap", queryH.GoldDaypartingKeywordHeatmap)
