@@ -136,7 +136,7 @@ export const api = {
   goldKeywordHourlyExplain: (tid, id) => req('GET', `/gold/keyword-hourly-real/${encodeURIComponent(id)}/explain`, null, tid),
   goldDaypartingCalibration: (tid) => req('GET', '/gold/dayparting-calibration', null, tid),
   goldDaypartingPilotProfiles: (tid, scope) => req('GET', `/gold/dayparting-pilot?scope=${encodeURIComponent(scope || 'ENTITY')}`, null, tid),
-  goldDaypartingPilotToggle: (tid, profile_id, enabled) => req('POST', '/gold/dayparting-pilot', { profile_id, enabled }, tid),
+  goldDaypartingPilotToggle: (tid, body) => req('POST', '/gold/dayparting-pilot', body, tid),
   goldDaypartingApply: (tid, keyword_id, dry_run) => req('POST', '/gold/dayparting-calibration/apply', { keyword_id, dry_run }, tid),
   goldDaypartingMetrics: (tid, campaign) => req('GET', '/gold/dayparting-metrics' + (campaign ? '?campaign=' + encodeURIComponent(campaign) : ''), null, tid),
   goldDaypartingKeywordHeatmap: (tid, dow) => req('GET', '/gold/dayparting-keyword-heatmap' + (dow ? '?dow=' + encodeURIComponent(dow) : ''), null, tid),

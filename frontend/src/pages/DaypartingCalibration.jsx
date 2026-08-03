@@ -39,33 +39,41 @@ export default function DaypartingCalibration({ ctx }) {
   }, [tenantID])
   useEffect(() => { load() }, [load])
 
-  // --- Aprovacao (list box: seleciona + Confirmar) — grava a flag via FDW ---
-  const [scope, setScope] = useState('ENTITY')
+  // --- Aprovacao (modal: botoes por campanha/keyword + OK) — grava a flag via FDW ---
+  const [modalScope, setModalScope] = useState('') // '' | 'CAMPAIGN' | 'ENTITY'
   const [profiles, setProfiles] = useState([])
-  const [selected, setSelected] = useState([])
+  const [selected, setSelected] = useState(() => new Set())
   const [pLoading, setPLoading] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [pMsg, setPMsg] = useState('')
-  const loadProfiles = useCallback(async (sc) => {
-    setPLoading(true); setPMsg('')
+  const keyOf = (p) => modalScope === 'CAMPAIGN' ? p.campaign_name : String(p.id)
+  const openModal = useCallback(async (sc) => {
+    setModalScope(sc); setPLoading(true); setProfiles([]); setSelected(new Set())
     try {
       const res = await api.goldDaypartingPilotProfiles(tenantID, sc)
       const items = res?.data?.items || []
       setProfiles(items)
-      setSelected(items.filter(p => p.synced).map(p => String(p.id)))
-    } catch { setProfiles([]); setSelected([]) } finally { setPLoading(false) }
+      setSelected(new Set(items.filter(p => p.synced).map(p => sc === 'CAMPAIGN' ? p.campaign_name : String(p.id))))
+    } catch { setProfiles([]) } finally { setPLoading(false) }
   }, [tenantID])
-  useEffect(() => { loadProfiles(scope) }, [scope, loadProfiles])
-  const confirmSelection = useCallback(async () => {
-    setConfirming(true); setPMsg('')
+  const toggleItem = (p) => {
+    const k = keyOf(p)
+    setSelected(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n })
+  }
+  const confirmModal = useCallback(async () => {
+    setConfirming(true)
     try {
-      const sel = new Set(selected)
-      const changes = profiles.filter(p => (!!p.synced) !== sel.has(String(p.id)))
-      for (const p of changes) { await api.goldDaypartingPilotToggle(tenantID, p.id, sel.has(String(p.id))) }
-      setPMsg(changes.length ? `${changes.length} alteracao(oes) aplicada(s) — efetiva no robo.` : 'Sem mudancas.')
-      await loadProfiles(scope)
+      const changes = profiles.filter(p => (!!p.synced) !== selected.has(keyOf(p)))
+      for (const p of changes) {
+        const enabled = selected.has(keyOf(p))
+        await api.goldDaypartingPilotToggle(tenantID, modalScope === 'CAMPAIGN'
+          ? { scope: 'CAMPAIGN', campaign_name: p.campaign_name, enabled }
+          : { scope: 'ENTITY', profile_id: p.id, enabled })
+      }
+      setPMsg(changes.length ? `${changes.length} alteracao(oes) — efetiva no robo.` : 'Sem mudancas.')
+      setModalScope('')
     } catch (e) { setPMsg('Erro: ' + (e?.message || 'falha')) } finally { setConfirming(false) }
-  }, [selected, profiles, tenantID, scope, loadProfiles])
+  }, [profiles, selected, tenantID, modalScope]) // eslint-disable-line
 
   const byKw = useMemo(() => {
     const g = {}
@@ -114,37 +122,45 @@ export default function DaypartingCalibration({ ctx }) {
       <div style={{ marginTop: 14, border: '1px solid var(--border,#2a3550)', borderRadius: 12, padding: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <b>Aprovacao — o que entra no automatico</b>
-          <span style={{ ...muted, fontSize: 12 }}>o que voce aprovar aqui vira efetivo no robo (Agenda de BIDs)</span>
+          <span style={{ ...muted, fontSize: 12 }}>o que aprovar aqui vira efetivo no robo (Agenda de BIDs)</span>
           <div style={{ flex: 1 }} />
-          {[['ENTITY', 'Por Keyword/Target'], ['CAMPAIGN', 'Por Campanha'], ['AD_GROUP', 'Por Grupo'], ['GLOBAL', 'Global']].map(([sc, lb]) => (
-            <button key={sc} className="btn" onClick={() => setScope(sc)}
-              style={{ fontSize: 12, borderColor: scope === sc ? 'var(--accent,#3b82f6)' : 'var(--border,#2a3550)', color: scope === sc ? 'var(--accent,#93c5fd)' : 'inherit' }}>{lb}</button>
-          ))}
+          <button className="btn" onClick={() => openModal('CAMPAIGN')} style={{ fontSize: 13 }}>Por Campanha</button>
+          <button className="btn" onClick={() => openModal('ENTITY')} style={{ fontSize: 13 }}>Por Keyword</button>
         </div>
-        {pLoading
-          ? <p style={{ ...muted, marginTop: 10 }}>Carregando...</p>
-          : profiles.length === 0
-            ? <p style={{ ...muted, marginTop: 10 }}>Nenhum profile neste escopo.</p>
-            : (
-              <select multiple value={selected}
-                onChange={e => setSelected(Array.from(e.target.selectedOptions, o => o.value))}
-                size={Math.min(12, Math.max(4, profiles.length))}
-                style={{ width: '100%', marginTop: 10, padding: 6, borderRadius: 8, border: '1px solid var(--border,#2a3550)', background: 'var(--card-bg,#0b1220)', color: 'inherit', fontSize: 13 }}>
-                {profiles.map(p => (
-                  <option key={p.id} value={String(p.id)}>
-                    {(p.entity_label || p.campaign_name || p.id)} — {p.clicks ?? 0} cliques{p.synced ? '  ✓ no automatico' : ''}
-                  </option>
-                ))}
-              </select>
-            )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-          <span style={{ ...muted, fontSize: 12 }}>{selected.length} selecionado(s) · Ctrl/Shift p/ marcar varios</span>
-          <div style={{ flex: 1 }} />
-          <button className="btn" disabled={confirming || pLoading} onClick={confirmSelection}
-            style={{ fontSize: 13, borderColor: 'var(--accent,#3b82f6)', color: 'var(--accent,#93c5fd)' }}>{confirming ? 'Aplicando...' : 'Confirmar'}</button>
-        </div>
-        {pMsg && <div style={{ ...muted, fontSize: 12, marginTop: 6 }}>{pMsg}</div>}
+        {pMsg && <div style={{ ...muted, fontSize: 12, marginTop: 8 }}>{pMsg}</div>}
       </div>
+
+      {modalScope && (
+        <div onClick={() => setModalScope('')} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: 'var(--card-bg,#0b1220)', border: '1px solid var(--border,#2a3550)', borderRadius: 12, padding: 18, width: 'min(760px,92vw)', maxHeight: '82vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <b>{modalScope === 'CAMPAIGN' ? 'Selecione as campanhas' : 'Selecione as keywords'}</b>
+              <span style={{ ...muted, fontSize: 12 }}>clique p/ marcar · {selected.size} selecionada(s)</span>
+              <div style={{ flex: 1 }} />
+              <button className="btn" onClick={() => setModalScope('')} style={{ fontSize: 12 }}>Fechar</button>
+            </div>
+            <div style={{ overflowY: 'auto', marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {pLoading && <span style={muted}>Carregando...</span>}
+              {!pLoading && profiles.length === 0 && <span style={muted}>Nenhum item.</span>}
+              {profiles.map(p => {
+                const on = selected.has(keyOf(p))
+                return (
+                  <button key={keyOf(p)} onClick={() => toggleItem(p)} className="btn"
+                    style={{ fontSize: 12.5, textAlign: 'left', borderColor: on ? 'rgba(34,197,94,.6)' : 'var(--border,#2a3550)', background: on ? 'rgba(34,197,94,.12)' : 'transparent', color: on ? '#86efac' : 'inherit' }}>
+                    {on ? '✓ ' : ''}{p.campaign_name || p.entity_label} <span style={{ ...muted, fontSize: 11 }}>· {p.clicks ?? 0} cliques</span>
+                  </button>
+                )
+              })}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
+              <div style={{ flex: 1 }} />
+              <button className="btn" onClick={() => setModalScope('')} style={{ fontSize: 13 }}>Cancelar</button>
+              <button className="btn" disabled={confirming} onClick={confirmModal}
+                style={{ fontSize: 13, borderColor: 'var(--accent,#3b82f6)', color: 'var(--accent,#93c5fd)' }}>{confirming ? 'Aplicando...' : 'OK'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {loading && <p style={muted}>Carregando...</p>}
       {error && <div style={{ padding: 10, borderRadius: 8, background: 'rgba(220,60,60,.15)', color: '#fca5a5', fontSize: 13 }}>{error}</div>}

@@ -571,31 +571,40 @@ var daypartingApplyAllowlist = map[string]string{
 //   - kill-switch DAYPARTING_APPLY_ENABLED (default OFF) — sem ele, sempre dry-run.
 //
 // Dry-run retorna o plano (atual->sugerido) sem escrever. Audit ANTES de escrever.
-// GET /api/v1/gold/dayparting-pilot?scope=CAMPAIGN|ENTITY|AD_GROUP|GLOBAL
-// Lista os profiles do bid-robot (via FDW swarm_src) por escopo + volume de dado (cliques
-// da calibracao) + a flag de aprovacao. Filtra "Sem Texto" (ENTITY sem entity_label).
+// GET /api/v1/gold/dayparting-pilot?scope=CAMPAIGN|ENTITY
+// CAMPAIGN: TODAS as campanhas com dado (view) + flag (join profile por nome).
+// ENTITY: keywords com profile (filtra "Sem Texto"). Ranqueado por cliques.
 func (h *Handler) GoldDaypartingPilotProfiles(w http.ResponseWriter, r *http.Request) {
 	scope := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("scope")))
-	if scope == "" {
-		scope = "ENTITY"
+	if scope != "ENTITY" {
+		scope = "CAMPAIGN"
 	}
-	rows, err := h.db.Query(r.Context(), `
-		SELECT p.id, p.scope,
-			COALESCE(p.campaign_name,'') AS campaign_name,
-			COALESCE(p.entity_label,'') AS entity_label,
-			COALESCE(p.entity_id,'') AS entity_id,
-			COALESCE(p.dayparting_synced,false) AS synced,
-			COALESCE(
-				(SELECT sum(k.clicks) FROM marketcloud_gold.gold_keyword_hourly_calibration_v1 k
-				 WHERE p.scope='ENTITY' AND k.keyword_id=p.entity_id
-				   AND k.computed_at=(SELECT max(computed_at) FROM marketcloud_gold.gold_keyword_hourly_calibration_v1)),
-				(SELECT sum(v.clicks) FROM marketcloud_gold.v_daypart_calibration_campaign_rich v
-				 WHERE p.scope='CAMPAIGN' AND v.campaign_name=p.campaign_name),
-				0)::int AS clicks
-		FROM swarm_src.zanom_ads_bid_schedule_profiles p
-		WHERE p.scope=$1 AND p.status='PUBLISHED' AND p.is_active=true
-		  AND NOT (p.scope='ENTITY' AND COALESCE(NULLIF(p.entity_label,''),'')='')
-		ORDER BY clicks DESC NULLS LAST, campaign_name, entity_label`, scope)
+	var q string
+	if scope == "CAMPAIGN" {
+		q = `
+			SELECT ''::text AS id, 'CAMPAIGN'::text AS scope, v.campaign_name AS campaign_name,
+				''::text AS entity_label, ''::text AS entity_id,
+				COALESCE(bool_or(p.dayparting_synced), false) AS synced,
+				sum(v.clicks)::int AS clicks
+			FROM marketcloud_gold.v_daypart_calibration_campaign_rich v
+			LEFT JOIN swarm_src.zanom_ads_bid_schedule_profiles p
+				ON p.scope='CAMPAIGN' AND p.campaign_name=v.campaign_name AND p.status='PUBLISHED' AND p.is_active=true
+			GROUP BY v.campaign_name
+			ORDER BY clicks DESC NULLS LAST, v.campaign_name`
+	} else {
+		q = `
+			SELECT p.id, 'ENTITY'::text AS scope, COALESCE(p.campaign_name,'') AS campaign_name,
+				COALESCE(p.entity_label,'') AS entity_label, COALESCE(p.entity_id,'') AS entity_id,
+				COALESCE(p.dayparting_synced,false) AS synced,
+				COALESCE((SELECT sum(k.clicks) FROM marketcloud_gold.gold_keyword_hourly_calibration_v1 k
+					WHERE k.keyword_id=p.entity_id
+					  AND k.computed_at=(SELECT max(computed_at) FROM marketcloud_gold.gold_keyword_hourly_calibration_v1)),0)::int AS clicks
+			FROM swarm_src.zanom_ads_bid_schedule_profiles p
+			WHERE p.scope='ENTITY' AND p.status='PUBLISHED' AND p.is_active=true
+			  AND COALESCE(NULLIF(p.entity_label,''),'')<>''
+			ORDER BY clicks DESC NULLS LAST, p.entity_label`
+	}
+	rows, err := h.db.Query(r.Context(), q)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "pilot_profiles_failed: "+err.Error())
 		return
@@ -608,31 +617,76 @@ func (h *Handler) GoldDaypartingPilotProfiles(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items), "scope": scope})
 }
 
-// POST /api/v1/gold/dayparting-pilot  {profile_id, enabled}
-// Aprova/desaprova um profile no automatico — grava dayparting_synced via FDW (-> pricing/
-// bid-robot). O robo (worker diario) efetiva; a Agenda de BIDs so reflete.
+// POST /api/v1/gold/dayparting-pilot  {scope, profile_id, campaign_name, enabled}
+// ENTITY: grava a flag por profile_id. CAMPAIGN: por campaign_name — CRIA o profile se
+// nao existir (resolve campaign_id via FDW + clona o config do global). Via FDW -> pricing.
 func (h *Handler) GoldDaypartingPilotToggle(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ProfileID string `json:"profile_id"`
-		Enabled   bool   `json:"enabled"`
+		Scope        string `json:"scope"`
+		ProfileID    string `json:"profile_id"`
+		CampaignName string `json:"campaign_name"`
+		Enabled      bool   `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ProfileID) == "" {
-		writeError(w, http.StatusBadRequest, "profile_id_required")
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
-	tag, err := h.db.Exec(r.Context(), `UPDATE swarm_src.zanom_ads_bid_schedule_profiles SET dayparting_synced=$2 WHERE id=$1`, strings.TrimSpace(body.ProfileID), body.Enabled)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "toggle_failed: "+err.Error())
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "profile_not_found")
-		return
+	ctx := r.Context()
+	scope := strings.ToUpper(strings.TrimSpace(body.Scope))
+	created := false
+	ref := strings.TrimSpace(body.ProfileID)
+	if scope == "CAMPAIGN" {
+		name := strings.TrimSpace(body.CampaignName)
+		ref = name
+		if name == "" {
+			writeError(w, http.StatusBadRequest, "campaign_name_required")
+			return
+		}
+		tag, err := h.db.Exec(ctx, `UPDATE swarm_src.zanom_ads_bid_schedule_profiles SET dayparting_synced=$2 WHERE scope='CAMPAIGN' AND campaign_name=$1 AND status='PUBLISHED' AND is_active=true`, name, body.Enabled)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "toggle_failed: "+err.Error())
+			return
+		}
+		if tag.RowsAffected() == 0 && body.Enabled {
+			var campaignID, adsProfileID, marketplaceID string
+			_ = h.db.QueryRow(ctx, `SELECT campaign_id FROM swarm_src.amazon_ads_campaigns_daily WHERE campaign_name=$1 AND COALESCE(campaign_id,'')<>'' ORDER BY date DESC LIMIT 1`, name).Scan(&campaignID)
+			_ = h.db.QueryRow(ctx, `SELECT profile_id, marketplace_id FROM swarm_src.zanom_ads_bid_schedule_profiles WHERE scope='GLOBAL' AND is_active=true LIMIT 1`).Scan(&adsProfileID, &marketplaceID)
+			if campaignID == "" || adsProfileID == "" {
+				writeError(w, http.StatusUnprocessableEntity, "campaign_id_or_global_profile_not_found")
+				return
+			}
+			newID := "absp-dp-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+			// FDW manda NULL pras colunas nao-listadas; version/created_at/updated_at sao
+			// NOT NULL (default so local) -> precisam de valor explicito.
+			if _, err := h.db.Exec(ctx, `
+				INSERT INTO swarm_src.zanom_ads_bid_schedule_profiles
+					(id, name, scope, status, profile_id, marketplace_id, campaign_id, campaign_name, is_active, priority, version, created_at, updated_at, dayparting_synced)
+				VALUES ($1, $2, 'CAMPAIGN', 'PUBLISHED', $3, $4, $5, $6, true, 40, 1, NOW(), NOW(), true)`,
+				newID, "Dayparting "+name, adsProfileID, marketplaceID, campaignID, name); err != nil {
+				writeError(w, http.StatusInternalServerError, "create_profile_failed: "+err.Error())
+				return
+			}
+			created = true
+		}
+	} else {
+		if ref == "" {
+			writeError(w, http.StatusBadRequest, "profile_id_required")
+			return
+		}
+		tag, err := h.db.Exec(ctx, `UPDATE swarm_src.zanom_ads_bid_schedule_profiles SET dayparting_synced=$2 WHERE id=$1`, ref, body.Enabled)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "toggle_failed: "+err.Error())
+			return
+		}
+		if tag.RowsAffected() == 0 {
+			writeError(w, http.StatusNotFound, "profile_not_found")
+			return
+		}
 	}
 	if h.audit != nil {
-		h.audit.LogRequest(r.Context(), r, "DAYPARTING_PILOT", "bid_schedule_profile", body.ProfileID, nil, map[string]string{"enabled": strconv.FormatBool(body.Enabled)})
+		h.audit.LogRequest(ctx, r, "DAYPARTING_PILOT", "bid_schedule_profile", ref, nil, map[string]string{"scope": scope, "enabled": strconv.FormatBool(body.Enabled), "created": strconv.FormatBool(created)})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "profile_id": body.ProfileID, "dayparting_synced": body.Enabled})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "scope": scope, "enabled": body.Enabled, "created_profile": created})
 }
 
 func (h *Handler) GoldDaypartingApply(w http.ResponseWriter, r *http.Request) {
