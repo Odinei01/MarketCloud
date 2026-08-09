@@ -170,6 +170,21 @@ def load(conn):
         df = pd.DataFrame([dict(r) for r in cur.fetchall()])
     if df.empty:
         return df
+    # BRIDGE de margem (custo real via FDW swarm_pg): preenche gross_margin_pct=0 com a
+    # margem real por campanha (feature_campaign_margin_bridge_v1). Sem isso o
+    # expected_profit ficava cego (margem 0) fora dos 2 pilotos manuais. Nao-fatal.
+    try:
+        if "gross_margin_pct" in df.columns and "campaign_id" in df.columns:
+            with conn.cursor() as bcur:
+                bcur.execute("SELECT campaign_id, gross_margin_pct FROM marketcloud_features.feature_campaign_margin_bridge_v1 WHERE COALESCE(gross_margin_pct,0) > 0")
+                bridge = {str(r[0]): float(r[1] or 0) for r in bcur.fetchall()}
+            if bridge:
+                df["gross_margin_pct"] = [
+                    (g if (g is not None and float(g or 0) > 0) else bridge.get(str(cid), 0.0))
+                    for g, cid in zip(df["gross_margin_pct"], df["campaign_id"])
+                ]
+    except Exception as _bridge_err:
+        print(f"[WORKER] WARN margin bridge skipped: {_bridge_err}")
     numeric_cols = ["event_hour", "days_observed", "impressions", "clicks", "spend",
                     "orders", "sales", "spend_mature", "mature_days",
                     "amc_assist_rate", "amc_first_touch_rate", "amc_new_customer_rate",
