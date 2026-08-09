@@ -176,7 +176,9 @@ def load(conn):
     try:
         if "gross_margin_pct" in df.columns and "campaign_id" in df.columns:
             with conn.cursor() as bcur:
-                bcur.execute("SELECT campaign_id, gross_margin_pct FROM marketcloud_features.feature_campaign_margin_bridge_v1 WHERE COALESCE(gross_margin_pct,0) > 0")
+                # gross_catalog_margin_pct = margem BRUTA de catalogo (preco-custo)/preco,
+                # NAO margem liquida (ignora fee/ads/imposto/COPER). Nome honesto (mig 175).
+                bcur.execute("SELECT campaign_id, gross_catalog_margin_pct FROM marketcloud_features.feature_campaign_margin_bridge_v1 WHERE COALESCE(gross_catalog_margin_pct,0) > 0")
                 bridge = {str(r[0]): float(r[1] or 0) for r in bcur.fetchall()}
             if bridge:
                 df["gross_margin_pct"] = [
@@ -399,6 +401,7 @@ def append_action(actions, row, action_type, current_value, recommended_value, c
             # - gasto incremental. So exposto no evidence; NAO muda decisao/priorizacao
             # ainda (proximo slice troca o objetivo pra lucro). Margem 0 = pior caso.
             "expected_profit": round(float(row.get("gross_margin_pct") or 0) / 100.0 * expected_delta_sales - expected_delta_spend, 4),
+            "expected_profit_basis": "gross_catalog_margin",  # bruta de catalogo, NAO liquida (fee/imposto/COPER fora)
         }),
         round(expected_delta_spend, 4),
         round(expected_delta_sales, 4),
