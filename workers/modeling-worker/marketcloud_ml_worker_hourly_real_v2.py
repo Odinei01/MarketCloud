@@ -380,6 +380,10 @@ def append_action(actions, row, action_type, current_value, recommended_value, c
             "max_rest_of_search_pct": float(row.get("max_rest_of_search_pct") or 0),
             "stock_available": float(row.get("stock_available") or 0),
             "gross_margin_pct": float(row.get("gross_margin_pct") or 0),
+            # ROAS->LUCRO (advisory, slice 1): lucro esperado = venda incremental x margem
+            # - gasto incremental. So exposto no evidence; NAO muda decisao/priorizacao
+            # ainda (proximo slice troca o objetivo pra lucro). Margem 0 = pior caso.
+            "expected_profit": round(float(row.get("gross_margin_pct") or 0) / 100.0 * expected_delta_sales - expected_delta_spend, 4),
         }),
         round(expected_delta_spend, 4),
         round(expected_delta_sales, 4),
