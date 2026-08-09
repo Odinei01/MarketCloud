@@ -170,8 +170,10 @@ def load(conn):
         df = pd.DataFrame([dict(r) for r in cur.fetchall()])
     if df.empty:
         return df
-    # BRIDGE de margem (custo real via FDW swarm_pg): preenche gross_margin_pct=0 com a
-    # margem real por campanha (feature_campaign_margin_bridge_v1). Sem isso o
+    # BRIDGE de margem (via FDW swarm_pg): preenche gross_margin_pct=0 com a margem
+    # BRUTA DE CATALOGO por campanha (NAO liquida). NOTA: este arquivo em modeling-worker/
+    # e SOBRESCRITO pelo de ml-worker/ no build (ver Dockerfile) — a copia viva e a de
+    # ml-worker/. Mantido em sincronia. Sem isso o
     # expected_profit ficava cego (margem 0) fora dos 2 pilotos manuais. Nao-fatal.
     try:
         if "gross_margin_pct" in df.columns and "campaign_id" in df.columns:

@@ -170,6 +170,21 @@ def load(conn):
         df = pd.DataFrame([dict(r) for r in cur.fetchall()])
     if df.empty:
         return df
+    # BRIDGE de margem (custo real via FDW swarm_pg): preenche gross_margin_pct=0 com a
+    # margem BRUTA DE CATALOGO por campanha (gross_catalog_margin_pct, NAO liquida).
+    # Sem isso o expected_profit ficava cego (margem 0) fora dos 2 pilotos manuais. Nao-fatal.
+    try:
+        if "gross_margin_pct" in df.columns and "campaign_id" in df.columns:
+            with conn.cursor() as bcur:
+                bcur.execute("SELECT campaign_id, gross_catalog_margin_pct FROM marketcloud_features.feature_campaign_margin_bridge_v1 WHERE COALESCE(gross_catalog_margin_pct,0) > 0")
+                bridge = {str(r[0]): float(r[1] or 0) for r in bcur.fetchall()}
+            if bridge:
+                df["gross_margin_pct"] = [
+                    (g if (g is not None and float(g or 0) > 0) else bridge.get(str(cid), 0.0))
+                    for g, cid in zip(df["gross_margin_pct"], df["campaign_id"])
+                ]
+    except Exception as _bridge_err:
+        print(f"[WORKER] WARN margin bridge skipped: {_bridge_err}")
     numeric_cols = ["event_hour", "days_observed", "impressions", "clicks", "spend",
                     "orders", "sales", "spend_mature", "mature_days",
                     "amc_assist_rate", "amc_first_touch_rate", "amc_new_customer_rate",
@@ -377,6 +392,10 @@ def append_action(actions, row, action_type, current_value, recommended_value, c
             "max_rest_of_search_pct": float(row.get("max_rest_of_search_pct") or 0),
             "stock_available": float(row.get("stock_available") or 0),
             "gross_margin_pct": float(row.get("gross_margin_pct") or 0),
+            # ROAS->LUCRO (advisory): lucro esperado = venda incremental x margem BRUTA
+            # de catalogo - gasto incremental. So exposto no evidence; NAO muda decisao.
+            "expected_profit": round(float(row.get("gross_margin_pct") or 0) / 100.0 * expected_delta_sales - expected_delta_spend, 4),
+            "expected_profit_basis": "gross_catalog_margin",
         }),
         round(expected_delta_spend, 4),
         round(expected_delta_sales, 4),
