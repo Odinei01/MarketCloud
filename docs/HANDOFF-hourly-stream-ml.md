@@ -9110,3 +9110,413 @@ Estado final:
 - `hourly-real` voltou a responder.
 - Existem sugestoes 360 para campanhas shadow, mas nenhuma esta apta a execucao real enquanto `can_control_flag=0`.
 - Proximo refinamento recomendado: paginar/otimizar a aba `robot`, que ainda e investigativa e pesada.
+
+## 163. Search Intelligence MVP - Brand Analytics foundation sem mock - 2026-08-10
+
+Contexto:
+
+- A especificacao funcional de Brand Analytics foi aprovada como direcao, mas o MVP escolhido foi `MarketCloud Search Intelligence`.
+- Objetivo do MVP: mostrar por produto/ASIN vendas totais, Ads, organico estimado, margem/EBITDA estimado e deixar o funil Brand Analytics preparado sem inventar dado.
+- Regra principal: Brand Analytics ainda nao ingerido aparece como `NOT_CONFIGURED` / `NO_BRAND_ANALYTICS_DATA`; nenhum share de busca e mockado.
+
+Implementado:
+
+- `migrations/176_search_intelligence_mvp.sql`
+  - adiciona FDWs para:
+    - `swarm_src.amazon_orders`
+    - `swarm_src.amazon_order_items`
+    - `swarm_src.amazon_ads_product_daily`
+    - `swarm_src.amazon_fee_estimates`
+  - cria `marketcloud_gold.dim_ba_brand_asin_v1`.
+  - cria `marketcloud_gold.gold_search_intelligence_product_daily_v1`.
+  - cria `marketcloud_gold.gold_search_intelligence_product_summary_v1`.
+- `internal/query/search_intelligence.go`
+  - `GET /api/v1/gold/search-intelligence?from=&to=&limit=`
+  - `GET /api/v1/gold/search-intelligence/products/{asin}?from=&to=`
+- `cmd/api/main.go`
+  - rotas Gold registradas.
+- `frontend/src/api/client.js`
+  - metodos `goldSearchIntelligence` e `goldSearchIntelligenceProduct`.
+- `frontend/src/pages/SearchIntelligence.jsx`
+  - nova tela com ranking de produtos, KPIs, Ads vs organico estimado, EBITDA estimado, recomendacao explicavel e drilldown diario.
+- `frontend/src/App.jsx`
+  - menu `SI Search Intelligence`.
+
+Fontes reais usadas:
+
+- Vendas totais por produto: `swarm_src.amazon_orders` + `swarm_src.amazon_order_items`.
+- Ads por produto: `swarm_src.amazon_ads_product_daily`.
+- Custo ZANOM: `swarm_src.amazon_listing_links` (`product_cost + extra_cost`).
+- Fees Amazon: `swarm_src.amazon_fee_estimates`.
+- Estoque: `swarm_src.amazon_fba_inventory`.
+- Organico estimado: `gross_sales - ads_sales`.
+- EBITDA estimado: `gross_sales - CMV - fees Amazon - Ads - imposto 4% - COPER 2%`.
+
+Validacao:
+
+- Migration aplicada no `marketcloud_db`.
+- Primeiro erro encontrado e corrigido: `FULL OUTER JOIN` com `OR` no FDW nao era aceito; a dimensao foi reescrita com `UNION ALL` e `DISTINCT ON`.
+- `dim_ba_brand_asin_v1` validada:
+  - `79` ASINs.
+  - `48` com custo.
+  - `31` com estoque FBA.
+- `gold_search_intelligence_product_daily_v1` validada:
+  - periodo disponivel `2026-05-31` a `2026-08-09`.
+  - `873` linhas produto/dia.
+- Endpoint autenticado validado:
+  - `/api/v1/gold/search-intelligence?from=2026-08-01&to=2026-08-09&limit=3` retornou `200` com produtos, totais e cobertura.
+  - `/api/v1/gold/search-intelligence/products/B0H2NJGX4Y?from=2026-08-01&to=2026-08-09` retornou `9` linhas diarias.
+- Build:
+  - `go test ./internal/query -run TestDoesNotExist -count=0` passou.
+  - `go build ./cmd/api` passou.
+  - frontend Vite build passou usando Node bundled do Codex (npm global local esta quebrado).
+  - `docker compose build api` + `docker compose up -d --force-recreate api frontend` executado.
+
+Ressalvas conhecidas:
+
+- O funil completo de busca ainda aparece como pendente porque os reports oficiais Brand Analytics ainda nao foram ingeridos.
+- A venda organica e estimada por diferenca (`total - ads_attributed`) e pode mudar com janela de atribuicao Ads.
+- Muitos produtos aparecem com EBITDA negativo usando custo/fees atuais; isso e dado real/calculo atual, nao mock. Requer auditoria comercial dos custos/fees caso pareca incoerente.
+- Proximo passo natural: implementar extractor oficial Brand Analytics para popular os campos BA da tela.
+
+Correcao critica posterior no mesmo MVP:
+
+- Problema identificado pelo usuario: a tela estava subcontando faturamento e aparentava trazer so venda de Ads, ignorando a maior parte organica.
+- Causa raiz: a primeira view usava `SUM(amazon_order_items.item_price_amount)` como venda por produto. No periodo `2026-08-01..2026-08-09`, havia `239` itens vendidos, mas so `63` tinham `item_price_amount > 0`; a tela somava apenas `R$ 3.127,26` contra `R$ 11.693,91` da Sales API.
+- Correcao aplicada em `migrations/177_search_intelligence_sales_api_allocation.sql`:
+  - adiciona/garante FDW `swarm_src.amazon_sales_daily`.
+  - recria `gold_search_intelligence_product_daily_v1`.
+  - usa `amazon_sales_daily.ordered_product_sales_amount` como total real do dia.
+  - aloca o total diario da Sales API entre os ASINs vendidos usando peso por item/pedido (`item_price_amount` quando existe; senao preco atual; senao custo; senao quantidade).
+  - calcula organico como `gross_sales_alocado - ads_attributed_sales`, capando share visual para nao passar de 100% por janela de atribuicao.
+- Validacao depois da correcao:
+  - `2026-08-01..2026-08-09`: Search Intelligence passou a somar `R$ 11.693,91`, batendo com `amazon_sales_daily`.
+  - Ads atribuido: `R$ 2.244,48`; organico estimado: `R$ 9.695,10`; organico estimado ~`82,9%`.
+  - A tela agora rotula a fonte como `Sales API total alocada por ASIN`, nao como item-price direto.
+
+Complemento EBITDA por produto:
+
+- `internal/query/search_intelligence.go` agora retorna `ebitda_margin` no ranking e no drilldown diario.
+- `frontend/src/pages/SearchIntelligence.jsx` mostra:
+  - EBITDA estimado geral com margem.
+  - EBITDA e margem por produto no ranking.
+  - card "EBITDA por produto" no detalhe do ASIN, decompondo `Receita - CMV ZANOM - Fees Amazon - Ads - imposto 4% - COPER 2%`.
+  - linha diaria com EBITDA e margem EBITDA.
+- Build validado:
+  - `go build ./cmd/api`
+  - `vite build` do frontend MarketCloud.
+
+Complemento quantidade vendida:
+
+- `frontend/src/pages/SearchIntelligence.jsx` passou a exibir `total_units`/`total_orders`:
+  - KPI geral "Itens vendidos".
+  - coluna "Itens" no ranking de produtos.
+  - detalhe do produto com unidades e pedidos.
+  - decomposicao do EBITDA com `unidades / pedidos`.
+  - linha diaria com unidades vendidas no dia.
+- A API ja retornava `total_units` e `total_orders`; nao foi necessario alterar view.
+- Build validado: `vite build` do frontend MarketCloud.
+
+## 164. Brand Analytics oficial - extractor SP-API + ponte Search Intelligence - 2026-08-10
+
+Pedido do usuario:
+
+- "Faca as 4 opcoes" para completar o MVP Brand Analytics:
+  1. Search Query Performance por ASIN/query.
+  2. Search Catalog Performance por ASIN.
+  3. Bronze/silver/gold tables no MarketCloud.
+  4. Popular Search Intelligence com funil real quando houver report oficial.
+
+Implementado no `mercado-data-app`:
+
+- Novo conector `internal/services/amazon_brand_analytics.go`.
+- Novas rotas:
+  - `GET /api/amazon/brand-analytics/status`
+  - `POST /api/amazon/brand-analytics/reports/request`
+  - `POST /api/amazon/brand-analytics/reports/poll`
+- Tabelas origem criadas sob demanda no `pricing_db`:
+  - `amazon_brand_analytics_report_jobs`
+  - `amazon_brand_analytics_search_query_performance`
+  - `amazon_brand_analytics_search_catalog_performance`
+- O conector usa SP-API Reports API (`/reports/2021-06-30/reports` e `/documents/{reportDocumentId}`), reaproveitando LWA/token/auditoria existentes.
+- Worker diario existe, mas fica desligado por default via `BRAND_ANALYTICS_REPORT_WORKER_ENABLED` para nao disparar report automatico sem decisao operacional.
+- Regras oficiais incorporadas:
+  - `reportPeriod=WEEK` normaliza para domingo-sabado.
+  - Search Query Performance envia `reportOptions.asin` como lista separada por espaco, limite efetivo de 200 chars.
+  - ASINs automaticos filtram `B0%` e priorizam venda recente, para nao puxar ISBN/legado da tabela de links.
+- Parser de reports ampliado:
+  - aceita arrays JSON em chaves Brand Analytics e busca recursiva.
+  - trata documento oficial com `reportSpecification` sem linhas como `0 linhas processadas`, nao como falha falsa.
+
+Implementado no `marketcloud`:
+
+- Nova migration `migrations/178_brand_analytics_reports.sql`.
+- FDW para as tres tabelas origem do SWARM.
+- Views:
+  - `marketcloud_bronze.bronze_brand_analytics_search_query_performance_v1`
+  - `marketcloud_bronze.bronze_brand_analytics_search_catalog_performance_v1`
+  - `marketcloud_silver.silver_brand_analytics_query_product_v1`
+  - `marketcloud_silver.silver_brand_analytics_catalog_product_v1`
+  - `marketcloud_gold.gold_brand_analytics_product_period_v1`
+- Endpoint `internal/query/search_intelligence.go` passou a enriquecer o ranking e o drilldown com:
+  - `ba_impression_share`
+  - `ba_click_share`
+  - `ba_cart_share`
+  - `ba_purchase_share`
+  - `ba_purchase_share_lift`
+  - `ba_search_conversion`
+  - `ba_query_count`
+  - `ba_top_queries`
+  - cobertura `COMPLETE/PARTIAL/NOT_CONFIGURED`.
+- Tela `frontend/src/pages/SearchIntelligence.jsx` passou a mostrar o funil BA real quando existir, incluindo queries oficiais; sem report, continua mostrando `pendente BA` explicitamente.
+
+Status dos reports solicitados ao vivo:
+
+- Semana corrigida: `2026-08-02` a `2026-08-08` (domingo-sabado).
+- `GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT`
+  - report id `52204020675`
+  - status local final: `PROCESSED`
+  - linhas: `0`
+  - interpretacao: a conta/API aceitou e processou, mas a Amazon devolveu documento sem linhas uteis para o lote de ASINs solicitado.
+- `GET_BRAND_ANALYTICS_SEARCH_CATALOG_PERFORMANCE_REPORT`
+  - report id `52203020675`
+  - status no momento: `IN_QUEUE`
+  - interpretacao: ainda aguardando processamento Amazon.
+- Jobs antigos gerados com semana errada (`2026-08-03` a `2026-08-09`) ou ASINs legados foram marcados localmente como `ARCHIVED_OLD_INVALID` para nao poluir o poll.
+
+Validacao:
+
+- `go test ./internal/services -run TestDoesNotExist -count=0` passou no `mercado-data-app`.
+- `docker compose up -d --build go-backend` executado e `pricing_api` recriado.
+- `GET /api/amazon/brand-analytics/status` retornou:
+  - `jobs=6`
+  - `search_query_rows=0`
+  - `search_catalog_rows=0`
+  - `status=NO_BRAND_ANALYTICS_DATA`
+- Migration 178 aplicada no `marketcloud_db`.
+- `SELECT COUNT(*) FROM marketcloud_gold.gold_brand_analytics_product_period_v1` executa sem erro e retorna `0` enquanto a Amazon nao entrega linhas.
+- `go build ./cmd/api` e `vite build` passaram no `marketcloud`.
+- `docker compose up -d --build api` executado e `marketcloud_api` recriado.
+
+Ressalvas:
+
+- A implementacao esta pronta para ingerir dados reais, mas ainda nao ha linhas BA populadas.
+- Search Catalog pode entrar depois via poll; rodar `POST /api/amazon/brand-analytics/reports/poll`.
+- Se os proximos SQP continuarem processados com `0` linhas, testar lotes menores/ASIN individual e confirmar elegibilidade Brand Registry/Brand Analytics para estes ASINs.
+- Documentacao oficial consultada: Amazon SP-API Analytics report types. Pontos usados: report types BA, role Brand Analytics, janela `WEEK` domingo-sabado, `asin` obrigatorio no SQP e reports requested-only.
+
+### 164.1 Atualizacao critica - Brand Analytics com dado real de mercado - 2026-08-10
+
+Motivo:
+
+- O MVP nao podia ficar so com a estrutura pronta; precisava de dado real ou de um diagnostico fechado do motivo de nao haver dado.
+- SQP semanal para ASINs ZANOM continuou processando com `0` linhas, entao foi acionado tambem o report oficial `GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT` mensal.
+
+Implementado adicionalmente:
+
+- `mercado-data-app/internal/services/amazon_brand_analytics.go`
+  - adiciona suporte ao tipo oficial `GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT`.
+  - normaliza requests `SEARCH_TERMS`, `SEARCH_TERMS_REPORT` e `TERMS`.
+  - processa campos reais do report:
+    - `searchTerm`
+    - `clickedAsin`
+    - `clickedItemName`
+    - `searchFrequencyRank`
+    - `clickShare`
+    - `conversionShare`
+  - grava no mesmo bronze canônico `amazon_brand_analytics_search_query_performance`, usando `asin=clickedAsin`.
+- `marketcloud/migrations/179_brand_analytics_market_queries.sql`
+  - cria `marketcloud_gold.gold_brand_analytics_market_query_v1`.
+  - agrega por `search_query`, com:
+    - melhor rank (`best_rank`)
+    - quantidade de ASINs concorrentes por termo
+    - quantos ASINs ZANOM aparecem no termo
+    - share medio de clique/conversao
+    - top 5 ASINs lideres para a UI nao carregar payload gigante.
+- `marketcloud/internal/query/search_intelligence.go`
+  - adiciona endpoint `GET /api/v1/gold/search-intelligence/market-queries`.
+  - corrige detalhe por produto que tinha `asin` ambiguo no join lateral com BA.
+- `marketcloud/frontend/src/pages/SearchIntelligence.jsx`
+  - adiciona painel `Demanda de mercado - Brand Analytics`.
+  - mostra termos reais de busca, rank, ASINs lideres, click share e conversion share.
+  - a tela agora separa claramente:
+    - funil proprietario por produto ZANOM: pendente/sem linhas quando a Amazon retorna SQP vazio.
+    - demanda/concorrencia por query: populada pelo Search Terms Report.
+
+Reports e dados ao vivo:
+
+- Report mensal Search Terms:
+  - `report_id=52209020675`
+  - tipo `GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT`
+  - periodo `2026-07-01..2026-07-31`
+  - status local `PROCESSED`
+  - processamento: `131361` linhas brutas no documento / `11269` linhas unicas `ASIN-query` gravadas.
+- Base origem `pricing_db`:
+  - `amazon_brand_analytics_search_query_performance`: `11269` linhas.
+  - `7184` ASINs distintos.
+  - `3757` queries distintas.
+  - melhor rank: `1`.
+- MarketCloud:
+  - `marketcloud_gold.gold_brand_analytics_market_query_v1`: `3757` queries.
+  - soma de links query-ASIN: `11269`.
+  - queries com ASIN ZANOM: `0`.
+  - interpretacao: o Search Terms Report trouxe inteligencia de mercado/concorrencia, mas ainda nao trouxe funil proprietario dos nossos ASINs.
+- Exemplos reais recebidos:
+  - `kindle`, rank `1`, ASINs lideres `B0CP31L73X`, `B0CP31QS6R`, `B0CFPL6CFY`.
+  - `iphone 17`, rank `2`.
+  - `alexa`, rank `3`.
+  - `ps5`, rank `4`.
+
+Reports ainda pendentes/vazios:
+
+- SQP semanal por lote e individual:
+  - `52204020675`, `52205020675`, `52206020675`
+  - status `PROCESSED`
+  - linhas `0`
+  - documento confirmado com `dataByAsin: []`, ou seja, nao foi erro de parser.
+- SQP mensal:
+  - `52208020675`
+  - status `IN_PROGRESS`.
+- Search Catalog mensal:
+  - `52207020675`
+  - status `IN_QUEUE`.
+- Search Catalog semanal:
+  - `52203020675`
+  - status `IN_QUEUE`.
+
+Validacao executada:
+
+- `mercado-data-app`:
+  - `gofmt -w internal/services/amazon_brand_analytics.go`
+  - `go test ./internal/services -run TestDoesNotExist -count=0`
+  - build Linux local e deploy por `docker cp` para `pricing_api` porque o rebuild Docker completo estourou timeout.
+- `marketcloud`:
+  - `gofmt -w internal/query/search_intelligence.go`
+  - `go build ./cmd/api`
+  - `npm run build`
+  - migration 179 aplicada no `marketcloud_db`.
+  - deploy por `docker cp tmp/marketcloud-api-new marketcloud_api:/bin/api` + `docker restart marketcloud_api`.
+- Logs:
+  - `GET /api/v1/gold/search-intelligence/market-queries?...` retornou `200` no frontend autenticado.
+  - chamadas sem auth retornam `401`, esperado.
+
+Parecer operacional:
+
+- Agora existe dado real oficial de Brand Analytics no MarketCloud, mas ele e dado de demanda/concorrencia por query.
+- Ainda nao existe, ate esta validacao, SQP/Catalog proprietario dos ASINs ZANOM. A tela nao deve vender isso como funil completo ainda.
+- Proximo discriminador:
+  1. continuar fazendo poll dos reports `52208020675` e `52207020675`.
+  2. se processarem com `0`, validar elegibilidade Brand Registry/Brand Analytics dos ASINs ZANOM no Seller Central.
+  3. manter o painel de mercado ativo para descoberta de termos e concorrentes enquanto o funil proprietario nao chega.
+
+Atualizacao pos-poll:
+
+- `POST /api/amazon/brand-analytics/reports/poll` executado em 2026-08-10.
+- Resultado:
+  - `search_query_rows=11269`
+  - `search_catalog_rows=0`
+  - `status=DATA_AVAILABLE`
+- O SQP mensal `52208020675` mudou de `IN_PROGRESS` para `PROCESSED`, mas tambem veio com `rows=0`.
+- Confirmacao de associacao:
+  - consulta direta em `amazon_brand_analytics_search_query_performance` para os ASINs ZANOM conhecidos retornou `0` linhas.
+  - `marketcloud_gold.gold_brand_analytics_product_period_v1` tambem retornou `0` produtos BA para ASINs ZANOM.
+- Parecer atualizado:
+  - Brand Analytics Search Terms esta populado e serve para demanda/concorrencia por query.
+  - Search Query Performance proprietario dos ASINs ZANOM ainda nao veio, incluindo semanal e mensal.
+  - A associacao correta aos nossos ASINs so pode acontecer quando a Amazon devolver nossos ASINs nos reports proprietarios ou quando algum deles aparecer como `clickedAsin` no Search Terms; ate agora isso nao aconteceu.
+
+Atualizacao por CSV manual Seller Central:
+
+- O usuario informou que os reports manuais baixados em 2026-08-09/10 tinham dado do ASIN `B0HBZJG89G`.
+- Arquivos verificados em `C:\Users\odine\Downloads`:
+  - `BR_Desempenho_do_catálogo_de_pesquisa_Simples_Week_2026_08_08.csv`
+  - `BR_Desempenho_da_consulta_de_pesquisa_Exibição_de_marca_Abrangente_Week_2026_08_08.csv`
+- Confirmacao:
+  - o catalog CSV contem `B0HBZJG89G` (`Cozedor de Ovos Eletrico, 220V, Capacidade para 7 Ovos`).
+  - metricas do periodo semanal `2026-08-02..2026-08-08`:
+    - impressoes `3341`
+    - cliques `67`
+    - adicionados ao carrinho `24`
+    - compras `8`
+    - vendas por trafego de pesquisa `321.66`
+    - conversao de compra `11.94%`
+- Backfill manual aplicado no `pricing_db`:
+  - tabela `amazon_brand_analytics_search_catalog_performance`
+  - `report_id='manual_console_scp_week_2026_08_08'`
+  - `raw_json_sanitized.source='SELLER_CENTRAL_CSV_MANUAL'`
+- Validacao MarketCloud:
+  - `marketcloud_gold.gold_brand_analytics_product_period_v1` agora retorna `B0HBZJG89G`
+  - `impressions=3341`, `clicks=67`, `cart_adds=24`, `purchases=8`
+  - `ba_search_conversion=0.1194`
+  - `ba_coverage_status='BRAND_ANALYTICS_WEEK'`
+- Observacao critica:
+  - ha divergencia entre CSV manual do Seller Central e SP-API Reports API.
+  - A API `GET_BRAND_ANALYTICS_SEARCH_CATALOG_PERFORMANCE_REPORT` ainda estava `IN_PROGRESS/IN_QUEUE` quando o CSV ja tinha dado no console.
+  - O caminho correto para produto no MVP passa a aceitar backfill CSV manual como fonte oficial auditavel enquanto o report API nao entrega o mesmo conteudo.
+  - O report `Exibição de marca Abrangente` e por query/marca, nao por ASIN; ele ajuda termos e share da marca, mas nao substitui o catalog CSV para associacao direta ao produto.
+
+Correcao posterior - API tinha o dado, parser estava plano:
+
+- Novo poll em 2026-08-10 destravou os jobs SCP:
+  - `52203020675` semanal `2026-08-02..2026-08-08`: `PROCESSED`, `rows=7`.
+  - `52207020675` mensal `2026-07-01..2026-07-31`: `PROCESSED`, `rows=2`.
+- O payload da SP-API veio correto, mas aninhado:
+  - `impressionData.impressionCount`
+  - `clickData.clickCount`
+  - `cartAddData.cartAddCount`
+  - `purchaseData.purchaseCount`
+- Causa raiz:
+  - parser lia apenas campos planos (`impressionCount`, `clickCount`, etc.).
+  - por isso a API tinha `B0HBZJG89G`, mas gravava `0/0/0/0`.
+- Correcao aplicada em `mercado-data-app/internal/services/amazon_brand_analytics.go`:
+  - `baNestedValue()` aceita `path.com.ponto`.
+  - `baRowString`, `baRowFloat` e `baRowInt` agora leem campos planos e aninhados.
+  - mapeamento SCP atualizado para os caminhos aninhados oficiais.
+- Backfill/correcao dos dados ja baixados:
+  - report `52203020675` atualizado direto pelo `raw_json_sanitized`.
+  - `B0HBZJG89G`: `3341` impressoes, `67` cliques, `24` carrinhos, `8` compras.
+  - outros ASINs do mesmo report tambem corrigidos.
+- Dedupe:
+  - o registro manual `manual_console_scp_week_2026_08_08` foi arquivado como `ARCHIVED_MANUAL_SUPERSEDED` quando a API passou a ter o mesmo ASIN/periodo.
+  - a linha manual foi removida da tabela SCP para nao dobrar metricas na gold.
+- Validacao:
+  - `go test ./internal/services -run TestDoesNotExist -count=0` passou.
+  - `pricing_api` atualizado por build Linux + `docker cp` + restart.
+  - `marketcloud_gold.gold_brand_analytics_product_period_v1` retorna `B0HBZJG89G` com `3341/67/24/8` e `ba_search_conversion=0.1194`.
+- Parecer atualizado:
+  - nao e necessario buscar manualmente quando o report API processa.
+  - CSV manual fica apenas como fallback temporario/auditavel quando a API estiver atrasada ou travada.
+  - a falha operacional principal era parser insuficiente para JSON aninhado.
+
+Correcao posterior - P1 de auditoria Big4: dominios BA separados:
+
+- Achado auditado:
+  - `GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT` mede mercado/concorrencia por query.
+  - `GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT` mede funil proprietario por query/ASIN.
+  - Ambos estavam sendo gravados na mesma tabela fisica `amazon_brand_analytics_search_query_performance` sem discriminador.
+  - Risco: quando SQP proprietario comecasse a popular, a view de mercado e a view de produto poderiam misturar share de concorrente com performance dos ASINs ZANOM.
+- Correcao aplicada:
+  - `mercado-data-app/internal/services/amazon_brand_analytics.go` agora grava:
+    - `source_report_type`
+    - `data_domain`
+  - Dominios:
+    - `MARKET_SEARCH_TERMS` para Search Terms.
+    - `PROPRIETARY_SEARCH_QUERY` para SQP proprietario.
+    - `PROPRIETARY_SEARCH_CATALOG` para SCP/catalogo.
+  - Backfill no `pricing_db`:
+    - `11269` linhas de query classificadas como `MARKET_SEARCH_TERMS`.
+    - `9` linhas de catalogo classificadas como `PROPRIETARY_SEARCH_CATALOG`.
+  - `marketcloud/migrations/178_brand_analytics_reports.sql` atualizado para clean install ja nascer com as colunas.
+  - `marketcloud/migrations/179_brand_analytics_market_queries.sql` atualizado para filtrar apenas `MARKET_SEARCH_TERMS`.
+  - `marketcloud/migrations/180_brand_analytics_domain_discriminator.sql` criada para aplicar a correcao incremental no banco atual.
+- Validacao em 2026-08-10:
+  - Origem SWARM:
+    - query table: `MARKET_SEARCH_TERMS / GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT = 11269`.
+    - catalog table: `PROPRIETARY_SEARCH_CATALOG / GET_BRAND_ANALYTICS_SEARCH_CATALOG_PERFORMANCE_REPORT = 9`.
+  - MarketCloud:
+    - `marketcloud_gold.gold_brand_analytics_market_query_v1 = 3757` queries de mercado.
+    - `marketcloud_silver.silver_brand_analytics_query_product_v1 = 0` linhas, correto ate a Amazon devolver SQP proprietario util.
+    - `B0HBZJG89G` segue em `marketcloud_gold.gold_brand_analytics_product_period_v1` com `3341` impressoes, `67` cliques, `24` carrinhos e `8` compras.
+- Parecer:
+  - P1 fechado: nao ha mais mistura semantica entre demanda/concorrencia de mercado e funil proprietario.
+  - P2 de linguagem: nao dizer "Brand Analytics nao trouxe dado"; o correto e "SCP/catalogo trouxe dado proprietario por ASIN; SQP proprietario por query ainda nao trouxe linhas uteis".

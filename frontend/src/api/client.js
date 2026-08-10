@@ -159,4 +159,19 @@ export const api = {
   setFullControlKeyword: (tid, body) => req('PUT', '/settings/full-control-keyword', body, tid),
   fullControlMonitor: (tid) => req('GET', '/settings/full-control-monitor', null, tid),
   goldPartnerCampaignMonitor: (tid) => req('GET', '/gold/partner-campaign-monitor', null, tid),
+  goldSearchIntelligence: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence?${p}`, null, tid)
+  },
+  goldSearchIntelligenceProduct: (tid, asin, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence/products/${encodeURIComponent(asin)}?${p}`, null, tid)
+  },
+  goldSearchIntelligenceMarketQueries: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence/market-queries?${p}`, null, tid)
+  },
 }
