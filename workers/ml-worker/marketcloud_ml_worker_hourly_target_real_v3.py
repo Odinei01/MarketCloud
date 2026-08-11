@@ -33,6 +33,7 @@ MODO SOMBRA (intencional, 2026-07-13):
 import json
 import logging
 import os
+import unicodedata
 from datetime import datetime, timezone
 
 import numpy as np
@@ -57,6 +58,31 @@ MIN_NEGATIVE_CLASS = 10
 GOOD_TARGET_CLICK_PROB = 0.50
 GOOD_TARGET_CONV_PROB = 0.35
 GOOD_TARGET_ROAS = 4.0
+
+COMPETITOR_CONTEXT_COLUMNS = [
+    "has_ba_competitor_context",
+    "ba_competitor_count",
+    "ba_top_competitor_click_share",
+    "ba_top_competitor_purchase_share",
+    "ba_avg_competitor_click_share",
+    "ba_avg_competitor_purchase_share",
+    "ba_search_query_volume",
+    "ba_brand_impression_share",
+    "ba_brand_click_share",
+    "ba_brand_purchase_share",
+    "ba_purchase_median_price",
+    "ba_brand_purchase_median_price",
+    "ba_query_ads_cpc",
+    "ba_our_asin_in_top_results",
+    "ba_has_our_ads_on_query",
+]
+
+
+def norm_query_key(value):
+    raw = "" if value is None else str(value)
+    no_accents = unicodedata.normalize("NFKD", raw)
+    no_accents = "".join(ch for ch in no_accents if not unicodedata.combining(ch))
+    return " ".join(no_accents.strip().lower().split())
 
 
 def get_conn():
@@ -192,6 +218,9 @@ def load(conn):
             , COALESCE(cx.stock_available,0)::float AS stock_available
             , COALESCE(cx.gross_margin_brl,0)::float AS gross_margin_brl
             , COALESCE(cx.gross_margin_pct,0)::float AS gross_margin_pct
+            , COALESCE(pcx.placement_top_adj,0)::float AS placement_top_adj
+            , COALESCE(pcx.placement_rest_adj,0)::float AS placement_rest_adj
+            , COALESCE(pcx.placement_product_adj,0)::float AS placement_product_adj
             , COALESCE(cx.price_to_cost_ratio,0)::float AS price_to_cost_ratio
             , COALESCE(cx.stock_days_of_cover,0)::float AS stock_days_of_cover
             , COALESCE(cx.product_orders_30d,0)::float AS product_orders_30d
@@ -277,12 +306,48 @@ def load(conn):
          AND hc.event_hour = b.event_hour
         LEFT JOIN marketcloud_features.feature_campaign_commercial_context_v1 cx
           ON cx.campaign_id = b.campaign_id
+        LEFT JOIN marketcloud_features.feature_campaign_placement_context_v1 pcx
+          ON pcx.campaign_id = b.campaign_id
     """
     with conn.cursor() as cur:
         cur.execute(sql)
         df = pd.DataFrame([dict(r) for r in cur.fetchall()])
     if df.empty:
         return df
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT query_key,
+                   has_ba_competitor_context,
+                   ba_competitor_count,
+                   ba_top_competitor_click_share,
+                   ba_top_competitor_purchase_share,
+                   ba_avg_competitor_click_share,
+                   ba_avg_competitor_purchase_share,
+                   ba_search_query_volume,
+                   ba_brand_impression_share,
+                   ba_brand_click_share,
+                   ba_brand_purchase_share,
+                   ba_purchase_median_price,
+                   ba_brand_purchase_median_price,
+                   ba_query_ads_cpc,
+                   ba_our_asin_in_top_results,
+                   ba_has_our_ads_on_query
+            FROM marketcloud_features.feature_target_competitor_context_v1
+            """
+        )
+        comp_df = pd.DataFrame([dict(r) for r in cur.fetchall()])
+    if not comp_df.empty:
+        df["_competitor_query_key"] = df.apply(
+            lambda row: norm_query_key(row.get("keyword_text") or row.get("targeting") or ""),
+            axis=1,
+        )
+        comp_df["query_key"] = comp_df["query_key"].map(norm_query_key)
+        df = df.merge(comp_df, left_on="_competitor_query_key", right_on="query_key", how="left")
+    for col in COMPETITOR_CONTEXT_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0.0
 
     for col in [
         "impressions", "clicks", "spend", "orders", "sales",
@@ -327,6 +392,15 @@ def load(conn):
         "has_competitor_price", "competitor_price_min_brl",
         "competitor_price_gap_pct", "is_price_above_competitor",
         "has_bsr", "bsr_rank", "bsr_delta_7d",
+        "placement_top_adj", "placement_rest_adj", "placement_product_adj",
+        "has_ba_competitor_context", "ba_competitor_count",
+        "ba_top_competitor_click_share", "ba_top_competitor_purchase_share",
+        "ba_avg_competitor_click_share", "ba_avg_competitor_purchase_share",
+        "ba_search_query_volume", "ba_brand_impression_share",
+        "ba_brand_click_share", "ba_brand_purchase_share",
+        "ba_purchase_median_price", "ba_brand_purchase_median_price",
+        "ba_query_ads_cpc",
+        "ba_our_asin_in_top_results", "ba_has_our_ads_on_query",
     ]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
@@ -392,6 +466,15 @@ def build_X(df, target):
         "has_competitor_price", "competitor_price_min_brl",
         "competitor_price_gap_pct", "is_price_above_competitor",
         "has_bsr", "bsr_rank", "bsr_delta_7d",
+        "placement_top_adj", "placement_rest_adj", "placement_product_adj",
+        "has_ba_competitor_context", "ba_competitor_count",
+        "ba_top_competitor_click_share", "ba_top_competitor_purchase_share",
+        "ba_avg_competitor_click_share", "ba_avg_competitor_purchase_share",
+        "ba_search_query_volume", "ba_brand_impression_share",
+        "ba_brand_click_share", "ba_brand_purchase_share",
+        "ba_purchase_median_price", "ba_brand_purchase_median_price",
+        "ba_query_ads_cpc",
+        "ba_our_asin_in_top_results", "ba_has_our_ads_on_query",
     ]
     # ANTI-LEAK (auditoria 18/07): os agregados 30d de pedido/venda/roas/cvr da
     # MESMA entidade (target_orders_30d etc.), da campanha-mae e do produto
