@@ -16,17 +16,19 @@ import (
 // GoldBrandOverview: lista os produtos de marca (1 por ASIN, periodo mais recente).
 func (h *Handler) GoldBrandOverview(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(r.Context(), `
-		SELECT DISTINCT ON (asin)
-		       asin, period_start, period_end,
-		       queries_count::float8, active_queries::float8,
-		       queries_with_purchase::float8,
-		       search_impressions::float8, search_clicks::float8, search_cart_adds::float8, search_purchases::float8,
-		       weighted_impression_share::float8, weighted_click_share::float8,
-		       weighted_cart_share::float8, weighted_purchase_share::float8,
-		       search_ctr::float8, search_conversion::float8,
-		       top_query_by_volume, top_query_by_purchase
-		FROM marketcloud_gold.gold_brand_product_weekly_v1
-		ORDER BY asin, period_start DESC`)
+		SELECT DISTINCT ON (p.asin)
+		       p.asin, COALESCE(NULLIF(d.product_name,''), NULLIF(d.listing_title,''),'') AS product_name,
+		       p.period_start, p.period_end,
+		       p.queries_count::float8, p.active_queries::float8,
+		       p.queries_with_purchase::float8,
+		       p.search_impressions::float8, p.search_clicks::float8, p.search_cart_adds::float8, p.search_purchases::float8,
+		       p.weighted_impression_share::float8, p.weighted_click_share::float8,
+		       p.weighted_cart_share::float8, p.weighted_purchase_share::float8,
+		       p.search_ctr::float8, p.search_conversion::float8,
+		       p.top_query_by_volume, p.top_query_by_purchase
+		FROM marketcloud_gold.gold_brand_product_weekly_v1 p
+		LEFT JOIN marketcloud_gold.dim_ba_brand_asin_v1 d ON upper(trim(d.asin)) = upper(trim(p.asin))
+		ORDER BY p.asin, p.period_start DESC`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "brand_overview_failed: "+err.Error())
 		return
@@ -43,18 +45,20 @@ func (h *Handler) GoldBrandOverview(w http.ResponseWriter, r *http.Request) {
 // share/lift/CVR/queries de relance e achar melhor produto / maior oportunidade.
 func (h *Handler) GoldBrandMatrix(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(r.Context(), `
-		SELECT DISTINCT ON (asin)
-		       asin, period_start,
-		       queries_count::float8, active_queries::float8, queries_with_purchase::float8,
-		       search_impressions::float8, search_clicks::float8, search_purchases::float8,
-		       weighted_impression_share::float8, weighted_click_share::float8,
-		       weighted_cart_share::float8, weighted_purchase_share::float8,
-		       search_ctr::float8, search_conversion::float8,
-		       CASE WHEN weighted_impression_share > 0
-		            THEN weighted_purchase_share / NULLIF(weighted_impression_share,0) END::float8 AS purchase_share_lift,
-		       top_query_by_purchase
-		FROM marketcloud_gold.gold_brand_product_weekly_v1
-		ORDER BY asin, period_start DESC`)
+		SELECT DISTINCT ON (p.asin)
+		       p.asin, COALESCE(NULLIF(d.product_name,''), NULLIF(d.listing_title,''),'') AS product_name,
+		       p.period_start,
+		       p.queries_count::float8, p.active_queries::float8, p.queries_with_purchase::float8,
+		       p.search_impressions::float8, p.search_clicks::float8, p.search_purchases::float8,
+		       p.weighted_impression_share::float8, p.weighted_click_share::float8,
+		       p.weighted_cart_share::float8, p.weighted_purchase_share::float8,
+		       p.search_ctr::float8, p.search_conversion::float8,
+		       CASE WHEN p.weighted_impression_share > 0
+		            THEN p.weighted_purchase_share / NULLIF(p.weighted_impression_share,0) END::float8 AS purchase_share_lift,
+		       p.top_query_by_purchase
+		FROM marketcloud_gold.gold_brand_product_weekly_v1 p
+		LEFT JOIN marketcloud_gold.dim_ba_brand_asin_v1 d ON upper(trim(d.asin)) = upper(trim(p.asin))
+		ORDER BY p.asin, p.period_start DESC`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "brand_matrix_failed: "+err.Error())
 		return
@@ -114,16 +118,18 @@ func (h *Handler) GoldBrandOverviewProduct(w http.ResponseWriter, r *http.Reques
 	}
 	var product map[string]any
 	err := h.db.QueryRow(r.Context(), `
-		SELECT to_jsonb(p) FROM (
-			SELECT asin, period_start, period_end,
-			       queries_count, active_queries, queries_with_click, queries_with_purchase,
-			       search_impressions, search_clicks, search_cart_adds, search_purchases,
-			       weighted_impression_share, weighted_click_share, weighted_cart_share, weighted_purchase_share,
-			       search_ctr, search_conversion, top_query_by_volume, top_query_by_purchase
-			FROM marketcloud_gold.gold_brand_product_weekly_v1
-			WHERE upper(trim(asin)) = upper(trim($1))
-			ORDER BY period_start DESC LIMIT 1
-		) p`, asin).Scan(&product)
+		SELECT to_jsonb(pp) FROM (
+			SELECT p.asin, COALESCE(NULLIF(d.product_name,''), NULLIF(d.listing_title,''),'') AS product_name,
+			       p.period_start, p.period_end,
+			       p.queries_count, p.active_queries, p.queries_with_click, p.queries_with_purchase,
+			       p.search_impressions, p.search_clicks, p.search_cart_adds, p.search_purchases,
+			       p.weighted_impression_share, p.weighted_click_share, p.weighted_cart_share, p.weighted_purchase_share,
+			       p.search_ctr, p.search_conversion, p.top_query_by_volume, p.top_query_by_purchase
+			FROM marketcloud_gold.gold_brand_product_weekly_v1 p
+			LEFT JOIN marketcloud_gold.dim_ba_brand_asin_v1 d ON upper(trim(d.asin)) = upper(trim(p.asin))
+			WHERE upper(trim(p.asin)) = upper(trim($1))
+			ORDER BY p.period_start DESC LIMIT 1
+		) pp`, asin).Scan(&product)
 	if err != nil {
 		product = map[string]any{}
 	}

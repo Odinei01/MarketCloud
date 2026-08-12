@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client.js'
 
 const LABEL_COLORS = {
-  SCALE_VISIBILITY: '#166534', DEFEND: '#166534',
-  CONVERSION_GAP: '#92400e', CLICK_GAP: '#92400e', CART_GAP: '#92400e', PRICE_TEST_UP: '#1d4ed8',
-  DISCOVER: '#7c3aed', LOW_SIGNAL: '#64748b', WATCH: '#334155',
+  SCALE_VISIBILITY: '#31d39a', DEFEND: '#31d39a',
+  CONVERSION_GAP: '#ffb454', CLICK_GAP: '#ffb454', CART_GAP: '#ffb454', PRICE_TEST_UP: '#6ea8ff',
+  DISCOVER: '#b892ff', LOW_SIGNAL: '#94a3b8', WATCH: '#94a3b8',
 }
 const SIGNAL_ORDER = { VERY_HIGH: 5, HIGH: 4, MEDIUM: 3, LOW: 2, VERY_LOW: 1 }
 
@@ -71,34 +71,37 @@ export default function BrandProductOverview({ ctx }) {
   return (
     <section className="bpo">
       <style>{`
-        .bpo { display:flex; flex-direction:column; gap:16px; }
+        .bpo { display:flex; flex-direction:column; gap:16px; color:var(--text); }
         .bpo-asins { display:flex; gap:8px; flex-wrap:wrap; }
-        .bpo-asins button { border:1px solid #cbd5e1; background:#fff; border-radius:8px; padding:8px 12px; cursor:pointer; font-size:13px; }
-        .bpo-asins button.active { border-color:#0f172a; background:#0f172a; color:#fff; }
+        .bpo-asins button { border:1px solid var(--line); background:var(--panel-2); color:var(--text); border-radius:10px; padding:8px 12px; cursor:pointer; font-size:13px; max-width:280px; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .bpo-asins button:hover { border-color:var(--blue); }
+        .bpo-asins button.active { border-color:var(--gold); background:var(--panel-3); }
+        .bpo-asins button small { color:var(--muted); }
         .bpo-grid { display:grid; grid-template-columns:repeat(2,minmax(280px,1fr)); gap:14px; }
-        .bpo-card { border:1px solid #e2e8f0; border-radius:10px; background:#fff; padding:14px; }
-        .bpo-card h3 { margin:0 0 10px; font-size:13px; color:#475569; text-transform:uppercase; letter-spacing:.4px; }
+        .bpo-card { border:1px solid var(--line); border-radius:var(--radius); background:var(--panel); padding:16px; box-shadow:var(--shadow); }
+        .bpo-card h3 { margin:0 0 12px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
         .bpo-kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
-        .bpo-kpi span { color:#64748b; font-size:12px; } .bpo-kpi strong { display:block; font-size:20px; color:#0f172a; margin-top:2px; }
-        .bpo-funnel-row { display:grid; grid-template-columns:120px 1fr 90px; align-items:center; gap:8px; margin:6px 0; }
-        .bpo-funnel-label { font-size:12px; color:#475569; } .bpo-funnel-val { font-size:12px; text-align:right; color:#0f172a; font-weight:600; }
-        .bpo-funnel-track { height:16px; background:#f1f5f9; border-radius:4px; overflow:hidden; }
-        .bpo-funnel-fill { height:100%; background:linear-gradient(90deg,#2563eb,#60a5fa); }
-        .bpo-table-wrap { overflow:auto; border:1px solid #e2e8f0; border-radius:10px; background:#fff; }
+        .bpo-kpi span { color:var(--muted); font-size:12px; } .bpo-kpi strong { display:block; font-size:22px; color:var(--text); margin-top:2px; }
+        .bpo-funnel-row { display:grid; grid-template-columns:110px 1fr 90px; align-items:center; gap:8px; margin:7px 0; }
+        .bpo-funnel-label { font-size:12px; color:var(--muted); } .bpo-funnel-val { font-size:12px; text-align:right; color:var(--text); font-weight:600; }
+        .bpo-funnel-track { height:16px; background:var(--panel-3); border-radius:6px; overflow:hidden; }
+        .bpo-funnel-fill { height:100%; background:linear-gradient(90deg,var(--gold-2),var(--gold)); }
+        .bpo-table-wrap { overflow:auto; border:1px solid var(--line); border-radius:var(--radius); background:var(--panel); }
         table.bpo-table { width:100%; border-collapse:collapse; min-width:1000px; }
-        .bpo-table th,.bpo-table td { padding:8px 10px; border-bottom:1px solid #eef2f7; text-align:right; font-size:13px; white-space:nowrap; }
-        .bpo-table th { background:#f8fafc; color:#475569; font-size:12px; position:sticky; top:0; }
+        .bpo-table th,.bpo-table td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:right; font-size:13px; white-space:nowrap; color:var(--text); }
+        .bpo-table th { background:var(--panel-2); color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.3px; position:sticky; top:0; }
+        .bpo-table tbody tr:hover td { background:var(--panel-2); }
         .bpo-table td.q,.bpo-table th.q { text-align:left; max-width:260px; overflow:hidden; text-overflow:ellipsis; }
-        .bpo-tag { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; color:#fff; }
-        .bpo-sig { font-size:11px; color:#334155; }
-        .bpo-muted { color:#64748b; font-size:12px; }
+        .bpo-tag { display:inline-block; padding:3px 9px; border-radius:999px; font-size:11px; font-weight:700; }
+        .bpo-sig { font-size:11px; color:var(--muted); }
+        .bpo-muted { color:var(--muted); font-size:12px; }
         @media (max-width:820px){ .bpo-grid{grid-template-columns:1fr} .bpo-kpis{grid-template-columns:repeat(2,1fr)} }
       `}</style>
 
       <div className="bpo-asins">
         {list.map(it => (
-          <button key={it.asin} className={asin === it.asin ? 'active' : ''} onClick={() => setAsin(it.asin)}>
-            {it.asin} · {num(it.search_purchases)} compras
+          <button key={it.asin} className={asin === it.asin ? 'active' : ''} onClick={() => setAsin(it.asin)} title={`${it.product_name || ''} — ${it.asin}`}>
+            {it.product_name ? `${it.product_name} — ${it.asin}` : it.asin}<br /><small>{num(it.search_purchases)} compras</small>
           </button>
         ))}
         {!list.length && <span className="bpo-muted">Nenhum produto de marca com dado de query ainda.</span>}
@@ -110,7 +113,7 @@ export default function BrandProductOverview({ ctx }) {
       {data && (
         <>
           <div className="bpo-card">
-            <h3>{asin} — Funil de busca (semana {p.period_start || '—'})</h3>
+            <h3>{p.product_name ? `${p.product_name} — ${asin}` : asin} · Funil de busca (semana {p.period_start || '—'})</h3>
             <div className="bpo-kpis">
               <div className="bpo-kpi"><span>Queries ativas</span><strong>{num(p.active_queries)}</strong></div>
               <div className="bpo-kpi"><span>Search CTR</span><strong>{pct((p.search_ctr || 0) * 100)}</strong></div>
@@ -164,7 +167,7 @@ export default function BrandProductOverview({ ctx }) {
                       <td>{ratio(q.purchase_share_lift)}</td>
                       <td>{ratio(q.purchase_price_index)}</td>
                       <td className="bpo-sig">{q.signal_strength}</td>
-                      <td className="q"><span className="bpo-tag" style={{ background: LABEL_COLORS[q.funnel_label] || '#334155' }}>{q.funnel_label}</span></td>
+                      <td className="q"><span className="bpo-tag" style={{ background: LABEL_COLORS[q.funnel_label] || '#94a3b8', color: '#0b1020' }}>{q.funnel_label}</span></td>
                     </tr>
                   ))}
                 </tbody>

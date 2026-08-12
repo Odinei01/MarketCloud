@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client.js'
 
 const CLASS_COLORS = {
-  HIGHLY_CONCENTRATED: '#991b1b', CONCENTRATED: '#b45309',
-  FRAGMENTED: '#166534', HIGHLY_FRAGMENTED: '#065f46',
+  HIGHLY_CONCENTRATED: '#ff6b6b', CONCENTRATED: '#ffb454',
+  FRAGMENTED: '#31d39a', HIGHLY_FRAGMENTED: '#6ea8ff',
 }
 function num(v, d = 0) { return v === null || v === undefined ? '—' : Number(v).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d }) }
 function pct(v, d = 2) { return v === null || v === undefined ? '—' : `${(Number(v) * 100).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d })}%` }
@@ -39,19 +39,21 @@ export default function BrandMarketMatrix({ ctx }) {
   return (
     <section className="bmm">
       <style>{`
-        .bmm { display:flex; flex-direction:column; gap:14px; }
+        .bmm { display:flex; flex-direction:column; gap:14px; color:var(--text); }
         .bmm-tabs { display:flex; gap:8px; }
-        .bmm-tabs button { border:1px solid #cbd5e1; background:#fff; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13px; }
-        .bmm-tabs button.active { background:#0f172a; color:#fff; border-color:#0f172a; }
+        .bmm-tabs button { border:1px solid var(--line); background:var(--panel-2); color:var(--text); border-radius:10px; padding:8px 14px; cursor:pointer; font-size:13px; }
+        .bmm-tabs button.active { background:var(--panel-3); color:var(--text); border-color:var(--gold); }
         .bmm-tools { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-        .bmm-tools select,.bmm-tools input { border:1px solid #cbd5e1; border-radius:8px; padding:7px 10px; font-size:13px; }
-        .bmm-wrap { overflow:auto; border:1px solid #e2e8f0; border-radius:10px; background:#fff; }
+        .bmm-tools select,.bmm-tools input { border:1px solid var(--line); background:var(--panel-2); color:var(--text); border-radius:10px; padding:7px 10px; font-size:13px; }
+        .bmm-wrap { overflow:auto; border:1px solid var(--line); border-radius:var(--radius); background:var(--panel); box-shadow:var(--shadow); }
         table.bmm-t { width:100%; border-collapse:collapse; min-width:900px; }
-        .bmm-t th,.bmm-t td { padding:8px 10px; border-bottom:1px solid #eef2f7; text-align:right; font-size:13px; white-space:nowrap; }
-        .bmm-t th { background:#f8fafc; color:#475569; font-size:12px; position:sticky; top:0; }
+        .bmm-t th,.bmm-t td { padding:9px 12px; border-bottom:1px solid var(--line); text-align:right; font-size:13px; white-space:nowrap; color:var(--text); }
+        .bmm-t th { background:var(--panel-2); color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.3px; position:sticky; top:0; }
+        .bmm-t tbody tr:hover td { background:var(--panel-2); }
         .bmm-t td.l,.bmm-t th.l { text-align:left; }
-        .bmm-tag { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; color:#fff; }
-        .bmm-muted { color:#64748b; font-size:12px; }
+        .bmm-t td.name { max-width:320px; overflow:hidden; text-overflow:ellipsis; }
+        .bmm-tag { display:inline-block; padding:3px 9px; border-radius:999px; font-size:11px; font-weight:700; color:#0b1020; }
+        .bmm-muted { color:var(--muted); font-size:12px; }
       `}</style>
 
       <div className="bmm-tabs">
@@ -66,13 +68,13 @@ export default function BrandMarketMatrix({ ctx }) {
         <div className="bmm-wrap">
           <table className="bmm-t">
             <thead><tr>
-              <th className="l">ASIN</th><th>Queries</th><th>Ativas</th><th>Compras</th>
+              <th className="l">Produto</th><th>Queries</th><th>Ativas</th><th>Compras</th>
               <th>Impr sh</th><th>Click sh</th><th>Purch sh</th><th>Purch lift</th><th>CTR</th><th>CVR</th><th className="l">Top query (compra)</th>
             </tr></thead>
             <tbody>
               {matrixSorted.map((m, i) => (
                 <tr key={i}>
-                  <td className="l">{m.asin}</td>
+                  <td className="l name" title={`${m.product_name || ''} — ${m.asin}`}>{m.product_name ? `${m.product_name} — ${m.asin}` : m.asin}</td>
                   <td>{num(m.queries_count)}</td>
                   <td>{num(m.active_queries)}</td>
                   <td>{num(m.search_purchases)}</td>
