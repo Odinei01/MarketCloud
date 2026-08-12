@@ -2,6 +2,7 @@ package query
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -28,6 +29,72 @@ func (h *Handler) GoldBrandOverview(w http.ResponseWriter, r *http.Request) {
 		ORDER BY asin, period_start DESC`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "brand_overview_failed: "+err.Error())
+		return
+	}
+	items, err := pgx.CollectRows(rows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+// GoldBrandMatrix (§90): matriz de produtos da marca — 1 linha por ASIN, pra comparar
+// share/lift/CVR/queries de relance e achar melhor produto / maior oportunidade.
+func (h *Handler) GoldBrandMatrix(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.db.Query(r.Context(), `
+		SELECT DISTINCT ON (asin)
+		       asin, period_start,
+		       queries_count::float8, active_queries::float8, queries_with_purchase::float8,
+		       search_impressions::float8, search_clicks::float8, search_purchases::float8,
+		       weighted_impression_share::float8, weighted_click_share::float8,
+		       weighted_cart_share::float8, weighted_purchase_share::float8,
+		       search_ctr::float8, search_conversion::float8,
+		       CASE WHEN weighted_impression_share > 0
+		            THEN weighted_purchase_share / NULLIF(weighted_impression_share,0) END::float8 AS purchase_share_lift,
+		       top_query_by_purchase
+		FROM marketcloud_gold.gold_brand_product_weekly_v1
+		ORDER BY asin, period_start DESC`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "brand_matrix_failed: "+err.Error())
+		return
+	}
+	items, err := pgx.CollectRows(rows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+// GoldMarketSearch (§43): visao de mercado por termo — frequencia, top1/2/3, concentracao
+// e classe. Independe de a ZANOM vender (fundacao do Product Discovery). Dedup: 1 linha
+// por termo (periodo mais recente). Filtro opcional por classe de concentracao.
+func (h *Handler) GoldMarketSearch(w http.ResponseWriter, r *http.Request) {
+	limit := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+	cls := r.URL.Query().Get("class")
+	rows, err := h.db.Query(r.Context(), `
+		SELECT * FROM (
+			SELECT DISTINCT ON (search_query)
+			       search_query, period_start,
+			       search_frequency_rank::float8 AS search_frequency_rank,
+			       top1_asin, top1_click_share::float8 AS top1_click_share, top1_conversion_share::float8 AS top1_conversion_share,
+			       top2_asin, top3_asin,
+			       top3_click_concentration::float8 AS top3_click_concentration, top3_conversion_concentration::float8 AS top3_conversion_concentration,
+			       market_concentration_class, rank_change_wow::float8 AS rank_change_wow
+			FROM marketcloud_gold.gold_market_search_weekly_v1
+			WHERE ($1 = '' OR market_concentration_class = $1)
+			ORDER BY search_query, period_start DESC
+		) x
+		ORDER BY search_frequency_rank ASC NULLS LAST
+		LIMIT `+strconv.Itoa(limit), cls)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "market_search_failed: "+err.Error())
 		return
 	}
 	items, err := pgx.CollectRows(rows, pgx.RowToMap)

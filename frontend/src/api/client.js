@@ -161,6 +161,12 @@ export const api = {
   goldPartnerCampaignMonitor: (tid) => req('GET', '/gold/partner-campaign-monitor', null, tid),
   goldBrandOverview: (tid) => req('GET', '/gold/brand-overview', null, tid),
   goldBrandOverviewProduct: (tid, asin) => req('GET', `/gold/brand-overview/${encodeURIComponent(asin)}`, null, tid),
+  goldBrandMatrix: (tid) => req('GET', '/gold/brand-matrix', null, tid),
+  goldMarketSearch: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/market-search?${p}`, null, tid)
+  },
   goldSearchIntelligence: (tid, filters = {}) => {
     const p = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
