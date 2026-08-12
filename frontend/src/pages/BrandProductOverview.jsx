@@ -43,7 +43,7 @@ export default function BrandProductOverview({ ctx }) {
     (async () => {
       try {
         const res = await api.goldBrandOverview(ctx.tenantID)
-        const items = res?.items || []
+        const items = (res.ok ? res.data.items : []) || []
         setList(items)
         if (items.length && !asin) setAsin(items[0].asin)
       } catch (e) { setError(e?.message || 'falha ao carregar produtos') }
@@ -54,7 +54,8 @@ export default function BrandProductOverview({ ctx }) {
     if (!asin) return
     setLoading(true); setError('')
     api.goldBrandOverviewProduct(ctx.tenantID, asin)
-      .then(setData).catch(e => setError(e?.message || 'falha ao carregar produto'))
+      .then(res => setData(res.ok ? res.data : { product: {}, queries: [] }))
+      .catch(e => setError(e?.message || 'falha ao carregar produto'))
       .finally(() => setLoading(false))
   }, [asin, ctx.tenantID])
 

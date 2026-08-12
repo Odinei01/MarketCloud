@@ -23,8 +23,10 @@ export default function BrandMarketMatrix({ ctx }) {
     Promise.all([
       api.goldBrandMatrix(ctx.tenantID),
       api.goldMarketSearch(ctx.tenantID, { limit: 300 }),
-    ]).then(([m, s]) => { setMatrix(m?.items || []); setMarket(s?.items || []) })
-      .catch(e => setError(e?.message || 'falha ao carregar'))
+    ]).then(([m, s]) => {
+      setMatrix((m.ok ? m.data.items : []) || [])
+      setMarket((s.ok ? s.data.items : []) || [])
+    }).catch(e => setError(e?.message || 'falha ao carregar'))
       .finally(() => setLoading(false))
   }, [ctx.tenantID])
 
