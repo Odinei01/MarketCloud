@@ -156,8 +156,18 @@ func main() {
 		r.Get("/partner-campaign-monitor", queryH.GoldPartnerCampaignMonitor)
 		r.Get("/amc-alerts", queryH.GoldAMCAlerts)
 		r.Get("/search-intelligence", queryH.GoldSearchIntelligence)
+		r.Get("/search-intelligence/coverage", queryH.GoldSearchIntelligenceCoverage)
+		r.Get("/search-intelligence/competitors", queryH.GoldSearchIntelligenceCompetitors)
+		r.Get("/search-intelligence/query-doctor", queryH.GoldSearchIntelligenceQueryDoctor)
+		r.Get("/search-intelligence/query-opportunities", queryH.GoldSearchIntelligenceQueryOpportunities)
 		r.Get("/search-intelligence/market-queries", queryH.GoldSearchIntelligenceMarketQueries)
+		r.Get("/search-intelligence/brand-queries", queryH.GoldSearchIntelligenceBrandQueries)
+		r.Get("/brand-overview", queryH.GoldBrandOverview)
+		r.Get("/brand-overview/{asin}", queryH.GoldBrandOverviewProduct)
 		r.Get("/search-intelligence/products/{asin}", queryH.GoldSearchIntelligenceProduct)
+		r.Get("/search-intelligence/products/{asin}/ads-terms", queryH.GoldSearchIntelligenceProductAdsTerms)
+		r.Get("/search-intelligence/products/{asin}/query-doctor", queryH.GoldSearchIntelligenceProductQueryDoctor)
+		r.Get("/search-intelligence/products/{asin}/query-opportunities", queryH.GoldSearchIntelligenceProductQueryOpportunities)
 	})
 
 	// --- Config Center / seller health ---

@@ -11,6 +11,7 @@ import MetricasDayparting from './pages/MetricasDayparting.jsx'
 import StatusAmsMl from './pages/StatusAmsMl.jsx'
 import PartnerCampaignMonitor from './pages/PartnerCampaignMonitor.jsx'
 import SearchIntelligence from './pages/SearchIntelligence.jsx'
+import BrandProductOverview from './pages/BrandProductOverview.jsx'
 
 export default function App() {
   const [authed, setAuthed]   = useState(!!getToken())
@@ -98,6 +99,9 @@ export default function App() {
           <button className={page === 'search-intelligence' ? 'active' : ''} onClick={() => setPage('search-intelligence')}>
             <span>SI Search Intelligence</span><span className="dot" />
           </button>
+          <button className={page === 'brand-overview' ? 'active' : ''} onClick={() => setPage('brand-overview')}>
+            <span>BA Produto (marca)</span><span className="dot" />
+          </button>
           <button className={page === 'status-ams-ml' ? 'active' : ''} onClick={() => setPage('status-ams-ml')}>
             <span>ST  Status AMS + ML</span><span className="dot" />
           </button>
@@ -126,6 +130,7 @@ export default function App() {
         {page === 'dayparting-metrics' && <MetricasDayparting ctx={ctx} key={`dayparting-metrics-${storeID}`} />}
         {page === 'partner-monitor' && <PartnerCampaignMonitor ctx={ctx} key={`partner-monitor-${storeID}`} />}
         {page === 'search-intelligence' && <SearchIntelligence ctx={ctx} key={`search-intelligence-${storeID}`} />}
+        {page === 'brand-overview' && <BrandProductOverview ctx={ctx} key={`brand-overview-${storeID}`} />}
         {page === 'status-ams-ml' && <StatusAmsMl ctx={ctx} key={`status-ams-ml-${storeID}`} />}
         {page === 'amc-alerts' && <AmcAlerts ctx={ctx} key={`amc-alerts-${storeID}`} />}
         {page === 'queries'  && <Queries  ctx={ctx} key={`queries-${storeID}`} />}

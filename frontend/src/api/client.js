@@ -159,19 +159,61 @@ export const api = {
   setFullControlKeyword: (tid, body) => req('PUT', '/settings/full-control-keyword', body, tid),
   fullControlMonitor: (tid) => req('GET', '/settings/full-control-monitor', null, tid),
   goldPartnerCampaignMonitor: (tid) => req('GET', '/gold/partner-campaign-monitor', null, tid),
+  goldBrandOverview: (tid) => req('GET', '/gold/brand-overview', null, tid),
+  goldBrandOverviewProduct: (tid, asin) => req('GET', `/gold/brand-overview/${encodeURIComponent(asin)}`, null, tid),
   goldSearchIntelligence: (tid, filters = {}) => {
     const p = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
     return req('GET', `/gold/search-intelligence?${p}`, null, tid)
+  },
+  goldSearchIntelligenceCompetitors: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence/competitors?${p}`, null, tid)
+  },
+  goldSearchIntelligenceCoverage: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence/coverage?${p}`, null, tid)
+  },
+  goldSearchIntelligenceQueryDoctor: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence/query-doctor?${p}`, null, tid)
+  },
+  goldSearchIntelligenceQueryOpportunities: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence/query-opportunities?${p}`, null, tid)
   },
   goldSearchIntelligenceProduct: (tid, asin, filters = {}) => {
     const p = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
     return req('GET', `/gold/search-intelligence/products/${encodeURIComponent(asin)}?${p}`, null, tid)
   },
+  goldSearchIntelligenceProductAdsTerms: (tid, asin, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence/products/${encodeURIComponent(asin)}/ads-terms?${p}`, null, tid)
+  },
+  goldSearchIntelligenceProductQueryOpportunities: (tid, asin, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence/products/${encodeURIComponent(asin)}/query-opportunities?${p}`, null, tid)
+  },
+  goldSearchIntelligenceProductQueryDoctor: (tid, asin, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence/products/${encodeURIComponent(asin)}/query-doctor?${p}`, null, tid)
+  },
   goldSearchIntelligenceMarketQueries: (tid, filters = {}) => {
     const p = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
     return req('GET', `/gold/search-intelligence/market-queries?${p}`, null, tid)
+  },
+  goldSearchIntelligenceBrandQueries: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
+    return req('GET', `/gold/search-intelligence/brand-queries?${p}`, null, tid)
   },
 }
