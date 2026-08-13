@@ -26,17 +26,20 @@ SELECT
 	query_family,
 	'dpv/atc por ASIN x dia para o funil por produto (diario).',
 	$SQL$
+-- NB: no conversions_with_relevance o ASIN relevante e `tracked_item` (o `tracked_asin`
+-- existe mas vem NULL nesses eventos de meio-funil vindos do DSP retargeting). Data =
+-- `event_date` (o `conversion_event_date` e do attributed_events, outra tabela).
 SELECT
-    conversion_event_date AS data_date,
-    tracked_asin          AS asin,
+    event_date   AS data_date,
+    tracked_item AS asin,
     COUNT(DISTINCT CASE WHEN event_subtype = 'detailPageView' THEN conversion_id END) AS detail_page_views,
     COUNT(DISTINCT CASE WHEN event_subtype = 'shoppingCart'   THEN conversion_id END) AS cart_adds
 FROM conversions_with_relevance
 WHERE user_id IS NOT NULL
   AND event_subtype IN ('detailPageView','shoppingCart')
-  AND tracked_asin IS NOT NULL
-  AND conversion_event_date IS NOT NULL
-GROUP BY conversion_event_date, tracked_asin
+  AND tracked_item IS NOT NULL
+  AND event_date IS NOT NULL
+GROUP BY event_date, tracked_item
 $SQL$,
 	parameters_schema, min_lookback_days, max_lookback_days, supported_campaign_types,
 	supported_marketplaces, 1, 'ACTIVE'
