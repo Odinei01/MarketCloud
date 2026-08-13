@@ -166,6 +166,7 @@ func main() {
 		r.Get("/brand-overview/{asin}", queryH.GoldBrandOverviewProduct)
 		r.Get("/brand-matrix", queryH.GoldBrandMatrix)
 		r.Get("/market-search", queryH.GoldMarketSearch)
+		r.Get("/hourly-delivery-radar", queryH.GoldHourlyDeliveryRadar)
 		r.Get("/search-intelligence/products/{asin}", queryH.GoldSearchIntelligenceProduct)
 		r.Get("/search-intelligence/products/{asin}/ads-terms", queryH.GoldSearchIntelligenceProductAdsTerms)
 		r.Get("/search-intelligence/products/{asin}/query-doctor", queryH.GoldSearchIntelligenceProductQueryDoctor)

@@ -162,6 +162,11 @@ export const api = {
   goldBrandOverview: (tid) => req('GET', '/gold/brand-overview', null, tid),
   goldBrandOverviewProduct: (tid, asin) => req('GET', `/gold/brand-overview/${encodeURIComponent(asin)}`, null, tid),
   goldBrandMatrix: (tid) => req('GET', '/gold/brand-matrix', null, tid),
+  goldHourlyDeliveryRadar: (tid, filters = {}) => {
+    const p = new URLSearchParams()
+    Object.entries(filters).forEach(([k, v]) => (v || v === 0) && p.set(k, v))
+    return req('GET', `/gold/hourly-delivery-radar?${p}`, null, tid)
+  },
   goldMarketSearch: (tid, filters = {}) => {
     const p = new URLSearchParams()
     Object.entries(filters).forEach(([k, v]) => v && p.set(k, v))
