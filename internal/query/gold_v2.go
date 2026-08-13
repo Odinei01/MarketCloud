@@ -581,15 +581,25 @@ func (h *Handler) GoldDaypartingPilotProfiles(w http.ResponseWriter, r *http.Req
 	}
 	var q string
 	if scope == "CAMPAIGN" {
-		// Lista do seletor = campanhas ATIVAS nos ultimos 30 dias (fonte fresca do bronze),
-		// nao a curva de calibracao (que exclui os ultimos 7d p/ maturar atribuicao e vira
-		// historico infinito -> some campanha recente). Nao toca na curva/ROAS da calibracao.
+		// Lista do seletor = campanhas ATIVAS (status atual ENABLED) com clique nos ultimos
+		// 30 dias, fonte fresca do bronze. Nao a curva de calibracao (que exclui os ultimos
+		// 7d p/ maturar atribuicao e vira historico infinito -> some campanha recente e
+		// mostra pausada/arquivada). Nao toca na curva/ROAS da calibracao.
 		q = `
+			WITH latest_status AS (
+				-- status vive no swarm_src.campaigns_daily (o campaign_status do bronze horario
+				-- vem vazio). Pega o status mais recente por campanha.
+				SELECT DISTINCT ON (campaign_name) campaign_name, UPPER(TRIM(campaign_status)) AS st
+				FROM swarm_src.amazon_ads_campaigns_daily
+				WHERE COALESCE(campaign_name,'') <> ''
+				ORDER BY campaign_name, date DESC
+			)
 			SELECT ''::text AS id, 'CAMPAIGN'::text AS scope, h.campaign_name AS campaign_name,
 				''::text AS entity_label, ''::text AS entity_id,
 				COALESCE(bool_or(p.dayparting_synced), false) AS synced,
 				sum(h.clicks)::int AS clicks
 			FROM marketcloud_bronze.bronze_amazon_ads_hourly h
+			JOIN latest_status ls ON ls.campaign_name = h.campaign_name AND ls.st = 'ENABLED'
 			LEFT JOIN swarm_src.zanom_ads_bid_schedule_profiles p
 				ON p.scope='CAMPAIGN' AND p.campaign_name=h.campaign_name AND p.status='PUBLISHED' AND p.is_active=true
 			WHERE h.data_date >= CURRENT_DATE - 30 AND COALESCE(h.campaign_name,'') <> ''
