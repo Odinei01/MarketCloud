@@ -66,6 +66,7 @@ func main() {
 	r.Post("/internal/amc/ingest/q019/{execution_id}", s.ingestQ019)
 	r.Post("/internal/amc/ingest/q041/{execution_id}", s.ingestQ041)
 	r.Post("/internal/amc/ingest/q042/{execution_id}", s.ingestQ042)
+	r.Post("/internal/amc/ingest/q043/{execution_id}", s.ingestQ043)
 	r.Post("/internal/amc/ingest/e001/{execution_id}", s.ingestE001)
 	r.Post("/internal/amc/ingest/e002/{execution_id}", s.ingestE002)
 	r.Post("/internal/amc/ingest/e003/{execution_id}", s.ingestE003)

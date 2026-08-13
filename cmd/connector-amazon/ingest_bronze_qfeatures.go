@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -140,5 +141,36 @@ func (s *connectorServer) ingestQ042(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	log.Printf("ingest q042: inserted=%d", n)
+	writeJSON(w, http.StatusOK, map[string]any{"inserted": n})
+}
+
+// POST /internal/amc/ingest/q043/{execution_id} -> bronze_amc_midfunnel_asin_daily
+// Meio-funil (DPV/ATC) por ASIN x dia. Upsert por (data_date,asin): acumula historico,
+// re-run da mesma janela so atualiza. CSV: data_date, asin, detail_page_views, cart_adds.
+func (s *connectorServer) ingestQ043(w http.ResponseWriter, r *http.Request) {
+	cr, done, ok := s.fetchQResultCSV(w, r)
+	if !ok {
+		return
+	}
+	defer done()
+	n := 0
+	readCSVRows(cr, 4, func(row []string) {
+		if strings.TrimSpace(row[0]) == "" || strings.TrimSpace(row[1]) == "" {
+			return
+		}
+		_, err := s.db.Exec(r.Context(), `
+			INSERT INTO marketcloud_bronze.bronze_amc_midfunnel_asin_daily
+				(data_date, asin, detail_page_views, cart_adds, updated_at)
+			VALUES ($1::date, upper(trim($2)), $3, $4, now())
+			ON CONFLICT (data_date, asin) DO UPDATE SET
+				detail_page_views = EXCLUDED.detail_page_views,
+				cart_adds = EXCLUDED.cart_adds,
+				updated_at = now()`,
+			row[0], row[1], q005num(row[2]), q005num(row[3]))
+		if err == nil {
+			n++
+		}
+	})
+	log.Printf("ingest q043: upserted=%d", n)
 	writeJSON(w, http.StatusOK, map[string]any{"inserted": n})
 }
