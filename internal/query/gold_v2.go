@@ -581,16 +581,21 @@ func (h *Handler) GoldDaypartingPilotProfiles(w http.ResponseWriter, r *http.Req
 	}
 	var q string
 	if scope == "CAMPAIGN" {
+		// Lista do seletor = campanhas ATIVAS nos ultimos 30 dias (fonte fresca do bronze),
+		// nao a curva de calibracao (que exclui os ultimos 7d p/ maturar atribuicao e vira
+		// historico infinito -> some campanha recente). Nao toca na curva/ROAS da calibracao.
 		q = `
-			SELECT ''::text AS id, 'CAMPAIGN'::text AS scope, v.campaign_name AS campaign_name,
+			SELECT ''::text AS id, 'CAMPAIGN'::text AS scope, h.campaign_name AS campaign_name,
 				''::text AS entity_label, ''::text AS entity_id,
 				COALESCE(bool_or(p.dayparting_synced), false) AS synced,
-				sum(v.clicks)::int AS clicks
-			FROM marketcloud_gold.v_daypart_calibration_campaign_rich v
+				sum(h.clicks)::int AS clicks
+			FROM marketcloud_bronze.bronze_amazon_ads_hourly h
 			LEFT JOIN swarm_src.zanom_ads_bid_schedule_profiles p
-				ON p.scope='CAMPAIGN' AND p.campaign_name=v.campaign_name AND p.status='PUBLISHED' AND p.is_active=true
-			GROUP BY v.campaign_name
-			ORDER BY clicks DESC NULLS LAST, v.campaign_name`
+				ON p.scope='CAMPAIGN' AND p.campaign_name=h.campaign_name AND p.status='PUBLISHED' AND p.is_active=true
+			WHERE h.data_date >= CURRENT_DATE - 30 AND COALESCE(h.campaign_name,'') <> ''
+			GROUP BY h.campaign_name
+			HAVING sum(h.clicks) > 0
+			ORDER BY clicks DESC NULLS LAST, h.campaign_name`
 	} else {
 		q = `
 			SELECT p.id, 'ENTITY'::text AS scope, COALESCE(p.campaign_name,'') AS campaign_name,
