@@ -13,6 +13,7 @@ import PartnerCampaignMonitor from './pages/PartnerCampaignMonitor.jsx'
 import SearchIntelligence from './pages/SearchIntelligence.jsx'
 import BrandProductOverview from './pages/BrandProductOverview.jsx'
 import BrandMarketMatrix from './pages/BrandMarketMatrix.jsx'
+import CompetitiveLandscape from './pages/CompetitiveLandscape.jsx'
 import HourlyDeliveryRadar from './pages/HourlyDeliveryRadar.jsx'
 
 export default function App() {
@@ -107,6 +108,9 @@ export default function App() {
           <button className={page === 'brand-market' ? 'active' : ''} onClick={() => setPage('brand-market')}>
             <span>BA Mercado & Matriz</span><span className="dot" />
           </button>
+          <button className={page === 'competitive' ? 'active' : ''} onClick={() => setPage('competitive')}>
+            <span>BA Concorrentes reais</span><span className="dot" />
+          </button>
           <button className={page === 'delivery-radar' ? 'active' : ''} onClick={() => setPage('delivery-radar')}>
             <span>Radar de Entrega Horária</span><span className="dot" />
           </button>
@@ -140,6 +144,7 @@ export default function App() {
         {page === 'search-intelligence' && <SearchIntelligence ctx={ctx} key={`search-intelligence-${storeID}`} />}
         {page === 'brand-overview' && <BrandProductOverview ctx={ctx} key={`brand-overview-${storeID}`} />}
         {page === 'brand-market' && <BrandMarketMatrix ctx={ctx} key={`brand-market-${storeID}`} />}
+        {page === 'competitive' && <CompetitiveLandscape ctx={ctx} key={`competitive-${storeID}`} />}
         {page === 'delivery-radar' && <HourlyDeliveryRadar ctx={ctx} key={`delivery-radar-${storeID}`} />}
         {page === 'status-ams-ml' && <StatusAmsMl ctx={ctx} key={`status-ams-ml-${storeID}`} />}
         {page === 'amc-alerts' && <AmcAlerts ctx={ctx} key={`amc-alerts-${storeID}`} />}

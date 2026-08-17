@@ -158,3 +158,32 @@ func (h *Handler) GoldBrandOverviewProduct(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"asin": asin, "product": product, "queries": queries, "count": len(queries)})
 }
+
+// GoldCompetitorOverlap (§47/§48): concorrentes reais da ZANOM por comportamento de
+// busca + as buscas compartilhadas de cada um (drill-down do §46).
+func (h *Handler) GoldCompetitorOverlap(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	scoreRows, err := h.db.Query(ctx, `
+		SELECT competitor_asin, queries_shared_with_zanom::int, queries_where_top1::int,
+		       queries_where_top3::int, avg_click_share::float8, avg_conversion_share::float8,
+		       weighted_overlap::float8
+		FROM marketcloud_gold.gold_competitor_overlap_score_v1 LIMIT 50`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "competitor_overlap_failed: "+err.Error())
+		return
+	}
+	competitors, err := pgx.CollectRows(scoreRows, pgx.RowToMap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
+		return
+	}
+	// as buscas compartilhadas (query x competidor) p/ o drill-down por concorrente
+	qRows, _ := h.db.Query(ctx, `
+		SELECT search_query, competitor_asin, competitor_rank::int,
+		       competitor_click_share::float8, competitor_conversion_share::float8, search_frequency_rank::int
+		FROM marketcloud_gold.gold_query_competitor_weekly_v1
+		WHERE NOT is_zanom
+		ORDER BY search_frequency_rank NULLS LAST, competitor_rank`)
+	shared, _ := pgx.CollectRows(qRows, pgx.RowToMap)
+	writeJSON(w, http.StatusOK, map[string]any{"competitors": competitors, "shared_queries": shared})
+}
