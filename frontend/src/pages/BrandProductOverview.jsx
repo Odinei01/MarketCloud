@@ -2,11 +2,32 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client.js'
 
 const LABEL_COLORS = {
-  SCALE_VISIBILITY: '#31d39a', DEFEND: '#31d39a',
+  SCALE_VISIBILITY: '#31d39a', DEFEND: '#31d39a', LONG_TAIL_WINNER: '#22c55e',
   CONVERSION_GAP: '#ffb454', CLICK_GAP: '#ffb454', CART_GAP: '#ffb454', PRICE_TEST_UP: '#6ea8ff',
   DISCOVER: '#b892ff', LOW_SIGNAL: '#94a3b8', WATCH: '#94a3b8',
 }
 const SIGNAL_ORDER = { VERY_HIGH: 5, HIGH: 4, MEDIUM: 3, LOW: 2, VERY_LOW: 1 }
+const CONF_COLORS = { HIGH: '#31d39a', MEDIUM: '#ffb454', LOW: '#94a3b8' }
+
+// §39: filtros do query portfolio. (gaining/losing-share dependem de WoW — sem dado
+// multi-semana ainda, ficam de fora ate a marca maturar.)
+const PORTFOLIO_FILTERS = [
+  ['all', 'Todas'], ['purchased', 'Compraram'], ['carted', 'Carrinho'],
+  ['clicked', 'Clicaram'], ['impression-only', 'Só impressão'],
+  ['winners', 'Vencedoras'], ['high-volume', 'Alto volume'], ['long-tail', 'Cauda longa'],
+]
+function matchesPortfolioFilter(q, f) {
+  switch (f) {
+    case 'purchased': return Number(q.brand_purchases || 0) > 0
+    case 'carted': return Number(q.brand_cart_adds || 0) > 0
+    case 'clicked': return Number(q.brand_clicks || 0) > 0
+    case 'impression-only': return Number(q.brand_impressions || 0) > 0 && Number(q.brand_clicks || 0) === 0
+    case 'winners': return ['SCALE_VISIBILITY', 'LONG_TAIL_WINNER', 'DEFEND'].includes(q.funnel_label)
+    case 'high-volume': return Number(q.search_query_volume || 0) >= 50
+    case 'long-tail': return Number(q.search_query_volume || 0) > 0 && Number(q.search_query_volume || 0) < 50
+    default: return true
+  }
+}
 
 function pct(v, d = 2) {
   if (v === null || v === undefined) return '—'
@@ -38,6 +59,7 @@ export default function BrandProductOverview({ ctx }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [qFilter, setQFilter] = useState('all')
 
   useEffect(() => {
     (async () => {
@@ -60,11 +82,13 @@ export default function BrandProductOverview({ ctx }) {
   }, [asin, ctx.tenantID])
 
   const p = data?.product || {}
-  const queries = useMemo(() => (data?.queries || []).slice().sort((a, b) => {
-    const sd = (SIGNAL_ORDER[b.signal_strength] || 0) - (SIGNAL_ORDER[a.signal_strength] || 0)
-    if (sd) return sd
-    return (b.brand_purchases || 0) - (a.brand_purchases || 0)
-  }), [data])
+  const queries = useMemo(() => (data?.queries || [])
+    .filter(q => matchesPortfolioFilter(q, qFilter))
+    .slice().sort((a, b) => {
+      const sd = (SIGNAL_ORDER[b.signal_strength] || 0) - (SIGNAL_ORDER[a.signal_strength] || 0)
+      if (sd) return sd
+      return (b.brand_purchases || 0) - (a.brand_purchases || 0)
+    }), [data, qFilter])
 
   const absMax = Math.max(Number(p.search_impressions || 0), 1)
 
@@ -141,16 +165,30 @@ export default function BrandProductOverview({ ctx }) {
           </div>
 
           <div className="bpo-card" style={{ padding: 0 }}>
-            <div style={{ padding: '12px 14px 0' }}><h3>Query portfolio ({queries.length})</h3></div>
+            <div style={{ padding: '12px 14px 0', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <h3 style={{ margin: 0 }}>Query portfolio ({queries.length})</h3>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {PORTFOLIO_FILTERS.map(([key, label]) => (
+                  <button key={key} onClick={() => setQFilter(key)}
+                    style={{
+                      fontSize: 11.5, padding: '3px 9px', borderRadius: 6, cursor: 'pointer',
+                      border: '1px solid var(--border,#2a3550)',
+                      background: qFilter === key ? 'var(--gold,#d4a531)' : 'transparent',
+                      color: qFilter === key ? '#0b1020' : 'var(--muted,#94a3b8)',
+                      fontWeight: qFilter === key ? 700 : 400,
+                    }}>{label}</button>
+                ))}
+              </div>
+            </div>
             <div className="bpo-table-wrap">
               <table className="bpo-table">
                 <thead>
                   <tr>
                     <th className="q">Query</th><th>Volume</th>
                     <th>Impr</th><th>Clk</th><th>Compras</th>
-                    <th>Impr sh</th><th>Click sh</th><th>Purch sh</th>
+                    <th>Impr sh</th><th>Click sh</th><th>Cart sh</th><th>Purch sh</th>
                     <th>Purch lift</th><th>Price idx</th>
-                    <th>Sinal</th><th className="q">Rótulo</th>
+                    <th>Sinal</th><th className="q">Rótulo</th><th>Conf</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -163,11 +201,13 @@ export default function BrandProductOverview({ ctx }) {
                       <td>{num(q.brand_purchases)}</td>
                       <td>{pct(q.brand_impression_share, 2)}</td>
                       <td>{pct(q.brand_click_share, 2)}</td>
+                      <td>{pct(q.brand_cart_add_share, 2)}</td>
                       <td>{pct(q.brand_purchase_share, 2)}</td>
                       <td>{ratio(q.purchase_share_lift)}</td>
                       <td>{ratio(q.purchase_price_index)}</td>
                       <td className="bpo-sig">{q.signal_strength}</td>
                       <td className="q"><span className="bpo-tag" style={{ background: LABEL_COLORS[q.funnel_label] || '#94a3b8', color: '#0b1020' }}>{q.funnel_label}</span></td>
+                      <td style={{ color: CONF_COLORS[q.classification_confidence] || '#94a3b8', fontWeight: 600, fontSize: 11.5 }}>{q.classification_confidence || '—'}</td>
                     </tr>
                   ))}
                 </tbody>

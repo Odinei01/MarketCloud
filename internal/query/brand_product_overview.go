@@ -138,11 +138,11 @@ func (h *Handler) GoldBrandOverviewProduct(w http.ResponseWriter, r *http.Reques
 		       search_query_volume::float8, search_query_score::float8,
 		       brand_impressions::float8, brand_clicks::float8, brand_cart_adds::float8, brand_purchases::float8,
 		       market_impressions::float8, market_purchases::float8,
-		       brand_impression_share::float8, brand_click_share::float8, brand_purchase_share::float8,
+		       brand_impression_share::float8, brand_click_share::float8, brand_cart_add_share::float8, brand_purchase_share::float8,
 		       click_share_lift::float8, purchase_share_lift::float8,
 		       click_price_index::float8, purchase_price_index::float8,
 		       brand_search_conversion::float8,
-		       signal_strength, funnel_label
+		       signal_strength, funnel_label, classification_confidence
 		FROM marketcloud_gold.gold_brand_query_weekly_v1
 		WHERE upper(trim(asin)) = upper(trim($1))
 		ORDER BY brand_purchases DESC NULLS LAST, brand_clicks DESC NULLS LAST, search_query_volume DESC NULLS LAST
