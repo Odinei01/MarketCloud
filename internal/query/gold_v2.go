@@ -505,7 +505,10 @@ func (h *Handler) GoldDaypartingCalibration(w http.ResponseWriter, r *http.Reque
 			(c.recommended_multiplier*100)::int AS sugerido_pct,
 			c.action, c.scope, c.baseline_scope, c.weeks_of_data,
 			c.hour_roas::float8 AS roas, c.scope_avg_roas::float8 AS ref_roas,
-			c.clicks::float8 AS clicks, c.reason
+			c.clicks::float8 AS clicks, c.reason,
+			-- entranhas do blend ML x dayparting (migration 200): brain visivel
+			c.kw_roas_raw::float8 AS kw_roas, c.prior_roas::float8 AS prior_roas,
+			c.ml_factor::float8 AS ml_factor, c.blend_weight::float8 AS blend_weight
 		FROM marketcloud_gold.gold_keyword_hourly_calibration_latest_v1 c
 		JOIN kw_rec USING (keyword_id)
 		ORDER BY c.keyword_text, c.event_hour`)

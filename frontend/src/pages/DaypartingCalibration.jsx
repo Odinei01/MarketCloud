@@ -276,21 +276,35 @@ export default function DaypartingCalibration({ ctx }) {
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
                   <thead><tr style={{ ...muted, textAlign: 'left' }}>
-                    <th style={{ padding: '3px 8px' }}>Hora</th><th>Atual</th><th>Sugerido</th><th>Scope</th><th>ROAS</th><th>Ref</th><th>Sem</th><th>Prova</th>
+                    <th style={{ padding: '3px 8px' }}>Hora</th><th>Atual</th><th>Sugerido</th><th>Scope</th>
+                    <th title="ROAS real observado da keyword nesta hora (nao tocado pelo ML)">KW ROAS</th>
+                    <th title="Nudge do ML na direcao do prior: cp da hora / media cp da keyword, clamp [0.6,1.4]. >1 ML gosta da hora">×ML</th>
+                    <th title="Prior pooled (campanha/global) antes do ML">Prior</th>
+                    <th title="Peso da observacao propria: cliques/(cliques+k). Alto = confia no dado da keyword; baixo = ML/prior decide">Peso</th>
+                    <th title="ROAS blendado = Peso·KW + (1-Peso)·(Prior·ML)">Blend</th>
+                    <th>Ref</th><th>Sem</th><th>Prova</th>
                   </tr></thead>
                   <tbody>
-                    {Object.values(curve).filter(r => r.action !== 'HOLD').sort((a, b) => a.event_hour - b.event_hour).map((r, i) => (
+                    {Object.values(curve).filter(r => r.action !== 'HOLD').sort((a, b) => a.event_hour - b.event_hour).map((r, i) => {
+                      const mlf = r.ml_factor ?? 1
+                      const mlColor = mlf > 1.001 ? '#86efac' : mlf < 0.999 ? '#fca5a5' : 'var(--muted,#9fb0c8)'
+                      return (
                       <tr key={i} style={{ borderTop: '1px solid var(--border,#22304a)' }}>
                         <td style={{ padding: '3px 8px' }}>{String(r.event_hour).padStart(2, '0')}h</td>
                         <td>{r.atual_pct}%</td>
                         <td style={{ fontWeight: 700, color: r.action === 'DOWN' ? '#fca5a5' : '#86efac' }}>{r.action === 'DOWN' ? '▼' : '▲'} {r.sugerido_pct}%</td>
                         <td style={muted}>{r.scope}</td>
-                        <td>{(r.roas ?? 0).toFixed(1)}</td>
+                        <td>{(r.kw_roas ?? 0).toFixed(1)}</td>
+                        <td style={{ color: mlColor, fontWeight: 600 }}>{mlf.toFixed(2)}×</td>
+                        <td style={muted}>{(r.prior_roas ?? 0).toFixed(1)}</td>
+                        <td style={muted}>{Math.round((r.blend_weight ?? 0) * 100)}%</td>
+                        <td style={{ fontWeight: 600 }}>{(r.roas ?? 0).toFixed(1)}</td>
                         <td style={muted}>{(r.ref_roas ?? 0).toFixed(1)}</td>
                         <td>{r.weeks_of_data}</td>
-                        <td style={{ ...muted, maxWidth: 340, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.reason}>{r.reason}</td>
+                        <td style={{ ...muted, maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.reason}>{r.reason}</td>
                       </tr>
-                    ))}
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
