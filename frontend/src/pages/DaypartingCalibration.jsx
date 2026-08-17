@@ -119,6 +119,39 @@ export default function DaypartingCalibration({ ctx }) {
         <button className="btn" onClick={load} style={{ fontSize: 12 }}>Atualizar</button>
       </div>
 
+      {(() => {
+        const mo = data.ml_outcome || {}
+        const sb = (mo.scoreboard || []).filter(r => (r.julgaveis ?? 0) > 0)
+        const judged = sb.reduce((a, r) => a + (r.julgaveis || 0), 0)
+        return (
+          <div style={{ marginTop: 14, border: '1px solid var(--border,#2a3550)', borderRadius: 12, padding: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <b>Aprendizado do ML — o nudge ganha o pao?</b>
+              <span style={{ ...muted, fontSize: 12 }}>direcao do ML (hoje) vs ROAS realizado da hora (janela D+1..D+7)</span>
+            </div>
+            {judged === 0 ? (
+              <div style={{ ...muted, fontSize: 12.5, marginTop: 8 }}>
+                Coletando verdade — ledger com <b>{mo.ledger_days ?? 0}</b> dia(s) / <b>{(mo.ledger_rows ?? 0).toLocaleString('pt-BR')}</b> decisoes.
+                Cada decisao so vira julgavel apos ~14 dias (janela forward + atribuicao 7d). Primeira leitura confiavel em ~2 semanas.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 24, marginTop: 10, flexWrap: 'wrap' }}>
+                {sb.map(r => (
+                  <div key={r.ml_direction} style={{ minWidth: 150 }}>
+                    <div style={{ ...muted, fontSize: 11.5 }}>ML disse {r.ml_direction}</div>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: (r.pct_acerto ?? 0) >= 60 ? '#86efac' : (r.pct_acerto ?? 0) >= 45 ? '#fcd34d' : '#fca5a5' }}>
+                      {r.pct_acerto != null ? `${r.pct_acerto}%` : '—'}
+                    </div>
+                    <div style={{ ...muted, fontSize: 11 }}>{r.acertos}/{r.julgaveis} acertos · ROAS fwd {(r.roas_forward_medio ?? 0).toFixed(1)}</div>
+                  </div>
+                ))}
+                <div style={{ ...muted, fontSize: 11, alignSelf: 'flex-end' }}>50% = ML nao ajuda; &gt;60% = nudge ganha o pao</div>
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
       <div style={{ marginTop: 14, border: '1px solid var(--border,#2a3550)', borderRadius: 12, padding: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <b>Aprovacao — o que entra no automatico</b>

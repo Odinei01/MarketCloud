@@ -553,9 +553,27 @@ func (h *Handler) GoldDaypartingCalibration(w http.ResponseWriter, r *http.Reque
 		cands, _ = pgx.CollectRows(candRows, pgx.RowToMap)
 	}
 
+	// Outcome loop do blend ML (migration 202): placar de acerto da direcao do ML
+	// contra o ROAS realizado, + status de maturacao do ledger (quando comeca a valer).
+	var mlScore []map[string]any
+	if scoreRows, e := h.db.Query(ctx, `
+		SELECT ml_direction, celulas_maduras, julgaveis, acertos, pct_acerto, roas_forward_medio
+		FROM marketcloud_gold.v_dayparting_ml_outcome_scoreboard`); e == nil {
+		mlScore, _ = pgx.CollectRows(scoreRows, pgx.RowToMap)
+	}
+	var ledgerDays, ledgerRows, maduros int
+	_ = h.db.QueryRow(ctx, `
+		SELECT count(DISTINCT snapshot_date), count(*),
+			count(*) FILTER (WHERE snapshot_date <= (SELECT max(data_date) FROM marketcloud_bronze.bronze_ams_hourly_target) - 14)
+		FROM marketcloud_gold.dayparting_ml_outcome_ledger`).Scan(&ledgerDays, &ledgerRows, &maduros)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"recommendations": recs, "heatmap": hm, "candidates": cands,
 		"keywords": kws, "kw_com_rec": recCount,
+		"ml_outcome": map[string]any{
+			"scoreboard": mlScore, "ledger_days": ledgerDays,
+			"ledger_rows": ledgerRows, "ledger_maduros": maduros,
+		},
 	})
 }
 

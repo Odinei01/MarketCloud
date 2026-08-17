@@ -81,6 +81,15 @@ def run_calibration(conn):
         # (2) recalibra
         cur.execute("SELECT marketcloud_gold.refresh_keyword_hourly_calibration(%s)", (WINDOW_DAYS,))
         n = cur.fetchone()["refresh_keyword_hourly_calibration"]
+        # (2b) OUTCOME LOOP: congela a decisao do ML (ml_factor) do dia no ledger,
+        # para casar com o ROAS realizado das horas semanas depois (migration 202).
+        # Gera a propria verdade -> calibrar o clamp com dado, nao achismo.
+        try:
+            cur.execute("SELECT marketcloud_gold.snapshot_dayparting_ml_outcome()")
+            snap_ml = cur.fetchone()["snapshot_dayparting_ml_outcome"]
+            log.info("snapshot outcome ML: %s celulas congeladas", snap_ml)
+        except Exception as exc:
+            log.warning("snapshot outcome ML falhou: %s", exc)
         # (3) PASSO 2 semi-auto: aplica SO os cortes da calibracao rica (campanha x hora).
         # apply_rich_calibration(dry_run=false, signal_only=true, cuts_only=true) — o
         # write real do bid passa pelo automator com risk guard (F1). Backup em
