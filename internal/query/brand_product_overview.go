@@ -156,7 +156,14 @@ func (h *Handler) GoldBrandOverviewProduct(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "scan_failed: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"asin": asin, "product": product, "queries": queries, "count": len(queries)})
+	// §67 Recommendation Engine V1: recomendacoes acionaveis deste ASIN (Observe->Explain->Recommend).
+	recRows, _ := h.db.Query(r.Context(), `
+		SELECT search_query, funnel_label, rec_action, rec_reason, rec_evidence, rec_confidence, rec_priority::int
+		FROM marketcloud_gold.gold_brand_query_recommendation_v1
+		WHERE upper(trim(asin)) = upper(trim($1)) AND is_actionable
+		ORDER BY rec_priority DESC, brand_purchases DESC NULLS LAST LIMIT 30`, asin)
+	recommendations, _ := pgx.CollectRows(recRows, pgx.RowToMap)
+	writeJSON(w, http.StatusOK, map[string]any{"asin": asin, "product": product, "queries": queries, "count": len(queries), "recommendations": recommendations})
 }
 
 // GoldCompetitorOverlap (§47/§48): concorrentes reais da ZANOM por comportamento de

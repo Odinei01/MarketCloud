@@ -82,6 +82,7 @@ export default function BrandProductOverview({ ctx }) {
   }, [asin, ctx.tenantID])
 
   const p = data?.product || {}
+  const recs = data?.recommendations || []
   const queries = useMemo(() => (data?.queries || [])
     .filter(q => matchesPortfolioFilter(q, qFilter))
     .slice().sort((a, b) => {
@@ -163,6 +164,27 @@ export default function BrandProductOverview({ ctx }) {
               <FunnelBar label="Purchases" value={p.search_purchases} max={absMax} absolute />
             </div>
           </div>
+
+          {recs.length > 0 && (
+            <div className="bpo-card" style={{ padding: '12px 14px' }}>
+              <h3 style={{ margin: '0 0 4px' }}>Recomendações <span style={{ fontSize: 11.5, fontWeight: 400, color: 'var(--muted)' }}>· Observe → Explain → Recommend (não executa)</span></h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                {recs.slice(0, 8).map((rc, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 10px', borderRadius: 8, background: 'var(--panel-3,#16233c)' }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', marginTop: 5, flexShrink: 0, background: CONF_COLORS[rc.rec_confidence] || '#94a3b8' }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{rc.rec_action}
+                        <span style={{ marginLeft: 8, fontSize: 11, color: CONF_COLORS[rc.rec_confidence] || '#94a3b8' }}>{rc.rec_confidence}</span>
+                        <span style={{ marginLeft: 8, fontSize: 11.5, color: 'var(--muted)', fontWeight: 400 }}>· “{rc.search_query}”</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--muted,#94a3b8)' }}>{rc.rec_reason}</div>
+                      <div style={{ fontSize: 10.5, color: 'var(--muted,#64748b)', fontFamily: 'monospace', marginTop: 2 }}>{rc.rec_evidence}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="bpo-card" style={{ padding: 0 }}>
             <div style={{ padding: '12px 14px 0', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
