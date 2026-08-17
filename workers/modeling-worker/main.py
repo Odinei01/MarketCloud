@@ -151,6 +151,28 @@ def run_dayparting_calibration_daily():
         log.exception("dayparting-calibration scheduler error: %s", exc)
 
 
+_last_ba_refresh_date = None
+
+
+def refresh_brand_analytics_gold_daily():
+    # FASE 4: refresca as MVs do Brand Analytics (migration 203) 1x/dia. BA e semanal,
+    # entao diario sobra; CONCURRENTLY nao trava a tela. Seguro: so materializa leitura.
+    global _last_ba_refresh_date
+    from datetime import datetime, timezone, timedelta
+    today_brt = (datetime.now(timezone.utc) - timedelta(hours=3)).date()
+    if _last_ba_refresh_date == today_brt:
+        return
+    _last_ba_refresh_date = today_brt
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT marketcloud_gold.refresh_brand_analytics_gold() AS r")
+                row = cur.fetchone()
+                log.info("brand-analytics gold refresh: %s", row["r"] if row else "ok")
+    except Exception as exc:
+        log.exception("brand-analytics gold refresh failed: %s", exc)
+
+
 def hourly_real_ml_loop():
     if not HOURLY_REAL_ML_ENABLED:
         log.info("Hourly real ML scheduler disabled")
@@ -194,6 +216,7 @@ def hourly_real_ml_loop():
         run_negative_keyword_daily()
         run_dayparting_calibration_daily()
         refresh_learning_outcomes()
+        refresh_brand_analytics_gold_daily()
 
 
 def pick_pending_runs(cur) -> list[dict]:
