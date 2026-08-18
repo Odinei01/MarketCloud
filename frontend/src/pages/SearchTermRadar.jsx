@@ -15,6 +15,28 @@ const ACTION_META = {
 }
 const fmtBRL = (v) => (v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }))
 
+// Relevância V1 — veredito determinístico termo↔ASIN (atributos do catalog).
+const REL_META = {
+  RELEVANTE: { label: 'Relevante', tone: '#22c55e', bg: '#22c55e22' },
+  PARCIAL: { label: 'Parcial', tone: '#eab308', bg: '#eab30822' },
+  IRRELEVANTE: { label: 'Não combina', tone: '#ef4444', bg: '#ef444422' },
+  SEM_SINAL: { label: 'Genérico', tone: '#94a3b8', bg: '#94a3b822' },
+}
+function RelevanceBadge({ r }) {
+  const v = r.relevance_verdict
+  if (!v) return <span style={{ color: 'var(--muted,#9fb0c8)' }}>—</span>
+  const m = REL_META[v] || { label: v, tone: '#94a3b8', bg: '#94a3b822' }
+  const pct = r.relevance != null ? ` ${Math.round(r.relevance * 100)}%` : ''
+  const title = v === 'IRRELEVANTE' && r.termos_ausentes
+    ? `Não bate com ${r.best_asin || 'o produto'}: "${r.termos_ausentes}" não está nos atributos`
+    : r.best_asin ? `vs ${r.best_asin}` : ''
+  return (
+    <span title={title} style={{ background: m.bg, color: m.tone, borderRadius: 6, padding: '2px 7px', fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap' }}>
+      {m.label}{pct}
+    </span>
+  )
+}
+
 export default function SearchTermRadar({ ctx }) {
   const [data, setData] = useState({ items: [], counts: {}, total: 0 })
   const [loading, setLoading] = useState(true)
@@ -31,8 +53,12 @@ export default function SearchTermRadar({ ctx }) {
 
   const waste = ['BREAKEVEN_NEGATIVE', 'PRUNE']
   const shown = useMemo(() => (data.items || []).filter((r) =>
-    filter === 'ALL' ? true : filter === 'WASTE' ? waste.includes(r.action) : r.action === filter), [data, filter])
+    filter === 'ALL' ? true
+      : filter === 'WASTE' ? waste.includes(r.action)
+      : filter === 'MISMATCH' ? r.relevance_verdict === 'IRRELEVANTE'
+      : r.action === filter), [data, filter])
   const wasteCount = (data.counts?.BREAKEVEN_NEGATIVE || 0) + (data.counts?.PRUNE || 0)
+  const mismatchCount = (data.items || []).filter((r) => r.relevance_verdict === 'IRRELEVANTE').length
   const muted = { color: 'var(--muted,#9fb0c8)' }
 
   return (
@@ -43,11 +69,14 @@ export default function SearchTermRadar({ ctx }) {
         {wasteCount > 0 && (
           <span style={{ background: '#ef444422', color: '#f87171', borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700 }}>🔴 {wasteCount} termos queimando</span>
         )}
+        {mismatchCount > 0 && (
+          <span style={{ background: '#f9731622', color: '#fb923c', borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700 }}>🧩 {mismatchCount} não combinam com o produto</span>
+        )}
         <div style={{ flex: 1 }} />
         <button className="btn" onClick={load} style={{ fontSize: 12 }}>Atualizar</button>
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-        {[['WASTE', 'Desperdício'], ['ALL', 'Tudo'], ['HARVEST_PROMOTE', 'Vencedores'], ['ADD_NEGATIVE', 'Rotear'], ['BID_HOLD', 'Lances']].map(([k, l]) => (
+        {[['WASTE', 'Desperdício'], ['MISMATCH', 'Não combina'], ['ALL', 'Tudo'], ['HARVEST_PROMOTE', 'Vencedores'], ['ADD_NEGATIVE', 'Rotear'], ['BID_HOLD', 'Lances']].map(([k, l]) => (
           <button key={k} onClick={() => setFilter(k)} style={{
             fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid var(--border,#2a3550)',
             background: filter === k ? 'var(--gold,#d4a531)' : 'transparent',
@@ -61,7 +90,7 @@ export default function SearchTermRadar({ ctx }) {
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
               <thead><tr style={{ ...muted, textAlign: 'left' }}>
-                <th style={{ padding: '4px 8px' }}>Ação</th><th>Campanha</th><th>Termo</th><th>ACoS</th><th>Gasto</th><th>Venda</th><th>Cliques</th>
+                <th style={{ padding: '4px 8px' }}>Ação</th><th>Campanha</th><th>Termo</th><th>Relevância</th><th>ACoS</th><th>Gasto</th><th>Venda</th><th>Cliques</th>
               </tr></thead>
               <tbody>
                 {shown.map((r, i) => {
@@ -72,6 +101,7 @@ export default function SearchTermRadar({ ctx }) {
                       <td style={{ padding: '5px 8px' }}><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: m.tone, marginRight: 6 }} />{m.label}</td>
                       <td style={muted}>{r.campaign_name}</td>
                       <td style={{ fontWeight: 600 }}>{r.search_term}</td>
+                      <td><RelevanceBadge r={r} /></td>
                       <td style={{ color: e.acos_pct > 31 ? '#f87171' : 'inherit', fontWeight: 700 }}>{e.acos_pct != null ? `${e.acos_pct}%` : '—'}</td>
                       <td>{fmtBRL(e.cost)}</td>
                       <td>{fmtBRL(e.sales)}</td>

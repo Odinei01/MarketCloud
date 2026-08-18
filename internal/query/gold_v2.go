@@ -1085,14 +1085,17 @@ func (h *Handler) GoldSearchTermRadar(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	rows, err := h.db.Query(ctx, `
 		WITH last AS (SELECT max(created_at) mx FROM swarm_src.m19_clone_recommendations WHERE status='SHADOW')
-		SELECT action, COALESCE(campaign_name,''), COALESCE(entity_label,''), COALESCE(match_type,''),
-		       COALESCE(to_value,''), COALESCE(reason_code,''), COALESCE(evidence, '{}'::jsonb),
-		       to_char(created_at,'YYYY-MM-DD HH24:MI')
-		FROM swarm_src.m19_clone_recommendations
-		WHERE status='SHADOW' AND created_at >= (SELECT mx FROM last) - interval '10 min'
-		ORDER BY CASE action WHEN 'BREAKEVEN_NEGATIVE' THEN 0 WHEN 'PRUNE' THEN 1
+		SELECT r.action, COALESCE(r.campaign_name,''), COALESCE(r.entity_label,''), COALESCE(r.match_type,''),
+		       COALESCE(r.to_value,''), COALESCE(r.reason_code,''), COALESCE(r.evidence, '{}'::jsonb),
+		       to_char(r.created_at,'YYYY-MM-DD HH24:MI'),
+		       COALESCE(rel.verdict,''), rel.relevance, COALESCE(rel.best_asin,''), COALESCE(rel.termos_ausentes,'')
+		FROM swarm_src.m19_clone_recommendations r
+		LEFT JOIN swarm_src.zm19_term_relevance rel
+		       ON rel.campaign_name = r.campaign_name AND rel.entity_label = r.entity_label
+		WHERE r.status='SHADOW' AND r.created_at >= (SELECT mx FROM last) - interval '10 min'
+		ORDER BY CASE r.action WHEN 'BREAKEVEN_NEGATIVE' THEN 0 WHEN 'PRUNE' THEN 1
 		         WHEN 'HARVEST_PROMOTE' THEN 2 WHEN 'ADD_NEGATIVE' THEN 3 ELSE 5 END,
-		         created_at DESC LIMIT 300`)
+		         r.created_at DESC LIMIT 300`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "search_term_radar_failed: "+err.Error())
 		return
@@ -1102,13 +1105,18 @@ func (h *Handler) GoldSearchTermRadar(w http.ResponseWriter, r *http.Request) {
 	counts := map[string]int{}
 	for rows.Next() {
 		var action, camp, term, match, toVal, reason, when string
+		var verdict, bestAsin, missing string
+		var relevance *float64
 		var evi map[string]any
-		if rows.Scan(&action, &camp, &term, &match, &toVal, &reason, &evi, &when) != nil {
+		if rows.Scan(&action, &camp, &term, &match, &toVal, &reason, &evi, &when,
+			&verdict, &relevance, &bestAsin, &missing) != nil {
 			continue
 		}
 		items = append(items, map[string]any{
 			"action": action, "campaign_name": camp, "search_term": term, "match_type": match,
 			"recommendation": toVal, "reason_code": reason, "evidence": evi, "created_at": when,
+			"relevance_verdict": verdict, "relevance": relevance, "best_asin": bestAsin,
+			"termos_ausentes": missing,
 		})
 		counts[action]++
 	}
