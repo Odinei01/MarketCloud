@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import SearchTermRadar from './SearchTermRadar.jsx'
 import { api } from '../api/client.js'
 
 const DAYPARTS = [
@@ -118,6 +119,8 @@ export default function DaypartingCalibration({ ctx }) {
         </div>
         <button className="btn" onClick={load} style={{ fontSize: 12 }}>Atualizar</button>
       </div>
+
+      <SearchTermRadar ctx={ctx} />
 
       {(() => {
         const mo = data.ml_outcome || {}

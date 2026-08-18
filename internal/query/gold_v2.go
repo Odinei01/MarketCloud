@@ -1077,3 +1077,40 @@ func (h *Handler) GoldDaypartCurveRich(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{"campaign": campaign, "global": global})
 }
+
+// GoldSearchTermRadar (:3001): ESPELHA o feed de recomendacoes do cerebro ZM19
+// (mercado-data-app) via FDW swarm_src — NAO recalcula (um cerebro so). Ultimo run,
+// prioriza desperdicio (BREAKEVEN/PRUNE). Advisory: so mostra.
+func (h *Handler) GoldSearchTermRadar(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rows, err := h.db.Query(ctx, `
+		WITH last AS (SELECT max(created_at) mx FROM swarm_src.m19_clone_recommendations WHERE status='SHADOW')
+		SELECT action, COALESCE(campaign_name,''), COALESCE(entity_label,''), COALESCE(match_type,''),
+		       COALESCE(to_value,''), COALESCE(reason_code,''), COALESCE(evidence, '{}'::jsonb),
+		       to_char(created_at,'YYYY-MM-DD HH24:MI')
+		FROM swarm_src.m19_clone_recommendations
+		WHERE status='SHADOW' AND created_at >= (SELECT mx FROM last) - interval '10 min'
+		ORDER BY CASE action WHEN 'BREAKEVEN_NEGATIVE' THEN 0 WHEN 'PRUNE' THEN 1
+		         WHEN 'HARVEST_PROMOTE' THEN 2 WHEN 'ADD_NEGATIVE' THEN 3 ELSE 5 END,
+		         created_at DESC LIMIT 300`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "search_term_radar_failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	counts := map[string]int{}
+	for rows.Next() {
+		var action, camp, term, match, toVal, reason, when string
+		var evi map[string]any
+		if rows.Scan(&action, &camp, &term, &match, &toVal, &reason, &evi, &when) != nil {
+			continue
+		}
+		items = append(items, map[string]any{
+			"action": action, "campaign_name": camp, "search_term": term, "match_type": match,
+			"recommendation": toVal, "reason_code": reason, "evidence": evi, "created_at": when,
+		})
+		counts[action]++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "counts": counts, "total": len(items)})
+}

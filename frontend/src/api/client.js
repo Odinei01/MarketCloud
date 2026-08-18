@@ -135,6 +135,7 @@ export const api = {
   },
   goldKeywordHourlyExplain: (tid, id) => req('GET', `/gold/keyword-hourly-real/${encodeURIComponent(id)}/explain`, null, tid),
   goldDaypartingCalibration: (tid) => req('GET', '/gold/dayparting-calibration', null, tid),
+  goldSearchTermRadar: (tid) => req('GET', '/gold/search-term-radar', null, tid),
   goldDaypartingPilotProfiles: (tid, scope) => req('GET', `/gold/dayparting-pilot?scope=${encodeURIComponent(scope || 'ENTITY')}`, null, tid),
   goldDaypartingPilotToggle: (tid, body) => req('POST', '/gold/dayparting-pilot', body, tid),
   goldDaypartingApply: (tid, keyword_id, dry_run) => req('POST', '/gold/dayparting-calibration/apply', { keyword_id, dry_run }, tid),
