@@ -77,6 +77,26 @@ COMPETITOR_CONTEXT_COLUMNS = [
     "ba_has_our_ads_on_query",
 ]
 
+ZM19_DECISION_V2_FEATURE_COLUMNS = [
+    "has_zm19_v2_context",
+    "zm19_brand_impression_share",
+    "zm19_brand_click_share",
+    "zm19_brand_cart_add_share",
+    "zm19_brand_purchase_share",
+    "zm19_purchase_share_lift",
+    "zm19_capital_tier_score",
+    "zm19_ppc_score",
+    "zm19_learning_allowance_brl",
+    "zm19_scale_budget_cap_brl",
+    "zm19_hard_cpc_brl",
+    "zm19_capital_policy_score",
+    "zm19_action_samples",
+    "zm19_action_wins",
+    "zm19_action_losses",
+    "zm19_action_avg_win_rate",
+    "zm19_action_avg_contribution_delta",
+]
+
 
 def norm_query_key(value):
     raw = "" if value is None else str(value)
@@ -145,6 +165,7 @@ def load(conn):
                 ELSE 0
             END::float AS robot_proposed_to_amazon_median_ratio,
             CASE WHEN COALESCE(NULLIF(r.recommended_bid_median, 0), NULLIF(d.amazon_recommended_bid_median, 0), 0) > 0 THEN 1 ELSE 0 END::float AS has_amazon_bid_recommendation
+            , COALESCE(NULLIF(p.product_asin,''), '') AS product_asin
             , COALESCE(q.quality_orders_30d,0)::float AS quality_orders_30d
             , COALESCE(q.quality_units_sold_30d,0)::float AS quality_units_sold_30d
             , COALESCE(q.refund_total_30d,0)::float AS refund_total_30d
@@ -349,6 +370,51 @@ def load(conn):
         if col not in df.columns:
             df[col] = 0.0
 
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT asin,
+                   query_key,
+                   has_zm19_v2_context,
+                   zm19_brand_impression_share,
+                   zm19_brand_click_share,
+                   zm19_brand_cart_add_share,
+                   zm19_brand_purchase_share,
+                   zm19_purchase_share_lift,
+                   zm19_capital_tier_score,
+                   zm19_ppc_score,
+                   zm19_learning_allowance_brl,
+                   zm19_scale_budget_cap_brl,
+                   zm19_hard_cpc_brl,
+                   zm19_capital_policy_score,
+                   zm19_action_samples,
+                   zm19_action_wins,
+                   zm19_action_losses,
+                   zm19_action_avg_win_rate,
+                   zm19_action_avg_contribution_delta
+            FROM marketcloud_features.feature_zm19_decision_v2_context_v1
+            """
+        )
+        zm19_df = pd.DataFrame([dict(r) for r in cur.fetchall()])
+    if not zm19_df.empty:
+        df["_zm19_query_key"] = df.apply(
+            lambda row: norm_query_key(row.get("keyword_text") or row.get("targeting") or ""),
+            axis=1,
+        )
+        df["_zm19_asin"] = df["product_asin"].fillna("").astype(str).str.strip()
+        zm19_df["query_key"] = zm19_df["query_key"].map(norm_query_key)
+        zm19_df["asin"] = zm19_df["asin"].fillna("").astype(str).str.strip()
+        df = df.merge(
+            zm19_df,
+            left_on=["_zm19_asin", "_zm19_query_key"],
+            right_on=["asin", "query_key"],
+            how="left",
+            suffixes=("", "_zm19"),
+        )
+    for col in ZM19_DECISION_V2_FEATURE_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0.0
+
     for col in [
         "impressions", "clicks", "spend", "orders", "sales",
         "source_confidence",
@@ -401,6 +467,14 @@ def load(conn):
         "ba_purchase_median_price", "ba_brand_purchase_median_price",
         "ba_query_ads_cpc",
         "ba_our_asin_in_top_results", "ba_has_our_ads_on_query",
+        "has_zm19_v2_context", "zm19_brand_impression_share",
+        "zm19_brand_click_share", "zm19_brand_cart_add_share",
+        "zm19_brand_purchase_share", "zm19_purchase_share_lift",
+        "zm19_capital_tier_score", "zm19_ppc_score",
+        "zm19_learning_allowance_brl", "zm19_scale_budget_cap_brl",
+        "zm19_hard_cpc_brl", "zm19_capital_policy_score",
+        "zm19_action_samples", "zm19_action_wins", "zm19_action_losses",
+        "zm19_action_avg_win_rate", "zm19_action_avg_contribution_delta",
     ]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
@@ -475,6 +549,14 @@ def build_X(df, target):
         "ba_purchase_median_price", "ba_brand_purchase_median_price",
         "ba_query_ads_cpc",
         "ba_our_asin_in_top_results", "ba_has_our_ads_on_query",
+        "has_zm19_v2_context", "zm19_brand_impression_share",
+        "zm19_brand_click_share", "zm19_brand_cart_add_share",
+        "zm19_brand_purchase_share", "zm19_purchase_share_lift",
+        "zm19_capital_tier_score", "zm19_ppc_score",
+        "zm19_learning_allowance_brl", "zm19_scale_budget_cap_brl",
+        "zm19_hard_cpc_brl", "zm19_capital_policy_score",
+        "zm19_action_samples", "zm19_action_wins", "zm19_action_losses",
+        "zm19_action_avg_win_rate", "zm19_action_avg_contribution_delta",
     ]
     # ANTI-LEAK (auditoria 18/07): os agregados 30d de pedido/venda/roas/cvr da
     # MESMA entidade (target_orders_30d etc.), da campanha-mae e do produto

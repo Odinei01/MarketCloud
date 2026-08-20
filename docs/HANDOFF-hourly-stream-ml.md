@@ -9520,3 +9520,1073 @@ Correcao posterior - P1 de auditoria Big4: dominios BA separados:
 - Parecer:
   - P1 fechado: nao ha mais mistura semantica entre demanda/concorrencia de mercado e funil proprietario.
   - P2 de linguagem: nao dizer "Brand Analytics nao trouxe dado"; o correto e "SCP/catalogo trouxe dado proprietario por ASIN; SQP proprietario por query ainda nao trouxe linhas uteis".
+
+Correcao UX posterior - funil de busca SCP:
+
+- Problema reportado:
+  - card `Funil de busca` mostrava `pendente BA` para impression/click/cart/purchase share, mas ao mesmo tempo mostrava `Conversao busca`.
+  - Isso parecia bug, porque uma parte do funil aparecia e outra nao.
+- Diagnostico:
+  - O report oficial SCP recebido para `B0HBZJG89G` contem apenas:
+    - `impressionData`
+    - `clickData`
+    - `cartAddData`
+    - `purchaseData`
+  - Nao ha campos de share no payload SCP simples atual.
+  - Portanto a conversao de busca e real (`purchases / clicks`), mas os shares realmente nao vieram nesse report.
+- Correcao aplicada:
+  - `marketcloud/internal/query/search_intelligence.go` agora expoe no detalhe:
+    - `ba_impressions`
+    - `ba_clicks`
+    - `ba_cart_adds`
+    - `ba_purchases`
+  - `marketcloud/frontend/src/pages/SearchIntelligence.jsx` agora mostra primeiro o funil absoluto SCP:
+    - impressoes SCP
+    - cliques SCP
+    - carrinhos SCP
+    - compras SCP
+    - conversao busca
+  - Os campos de share ficam separados e rotulados como `nao veio no report`, em vez de `pendente BA`.
+- Validacao:
+  - `B0HBZJG89G`: `3341` impressoes, `67` cliques, `24` carrinhos, `8` compras, conversao `11,94%`.
+  - `go build ./cmd/api` passou.
+  - `marketcloud_api` rebuildado/recriado e `/health` retornou `{"status":"ok","service":"marketcloud-api"}`.
+
+Correcao posterior - Brand Analytics 100% dos campos no Lake:
+
+- Pedido do usuario:
+  - A base deve ter a mesma robustez dos relatorios exportados.
+  - Objetivo: 100% dos campos disponiveis no Lake, nao apenas os campos que a tela usa hoje.
+- Diagnostico:
+  - O raw da API SCP ja trazia mais campos que a gold/tela:
+    - `clickData.clickRate`
+    - `impressionData.impressionMedianPrice.amount`
+    - `clickData.clickedMedianPrice.amount`
+    - `cartAddData.cartAddedMedianPrice.amount`
+    - `purchaseData.searchTrafficSales.amount`
+    - `purchaseData.conversionRate`
+    - `purchaseData.purchaseMedianPrice.amount`
+    - contagens por prazo de entrega (`sameDay`, `oneDay`, `twoDay`) em impressoes, cliques, carrinhos e compras.
+  - Esses campos estavam preservados em `raw_json_sanitized`, mas nao estavam promovidos para colunas nem facilmente consultaveis no Lake.
+- Correcao aplicada na origem SWARM/pricing:
+  - `mercado-data-app/internal/services/amazon_brand_analytics.go` passou a criar/preencher colunas canonicas do SCP:
+    - `impression_median_price`
+    - `same_day_shipping_impression_count`
+    - `one_day_shipping_impression_count`
+    - `two_day_shipping_impression_count`
+    - `click_rate`
+    - `clicked_median_price`
+    - `same_day_shipping_click_count`
+    - `one_day_shipping_click_count`
+    - `two_day_shipping_click_count`
+    - `cart_added_median_price`
+    - `same_day_shipping_cart_add_count`
+    - `one_day_shipping_cart_add_count`
+    - `two_day_shipping_cart_add_count`
+    - `search_traffic_sales`
+    - `conversion_rate`
+    - `purchase_median_price`
+    - `same_day_shipping_purchase_count`
+    - `one_day_shipping_purchase_count`
+    - `two_day_shipping_purchase_count`
+  - Backfill aplicado em `pricing_db` recalculando as `9` linhas SCP existentes a partir do `raw_json_sanitized`.
+- Correcao aplicada no MarketCloud:
+  - nova migration `migrations/181_brand_analytics_full_field_lake.sql`.
+  - FDW `swarm_src.amazon_brand_analytics_search_catalog_performance` recebeu as novas colunas.
+  - nova view `marketcloud_gold.gold_brand_analytics_search_catalog_full_v1` com SCP completo.
+  - novas views field-level:
+    - `marketcloud_bronze.bronze_brand_analytics_search_catalog_field_v1`
+    - `marketcloud_bronze.bronze_brand_analytics_search_query_field_v1`
+  - Essas views explodem `raw_json_sanitized` em:
+    - `field_path`
+    - `field_json`
+    - `field_value_text`
+    - `field_value_numeric`
+  - Decisao: esta e a garantia de 100% dos campos. Se a Amazon trouxer campo novo no JSON, ele aparece no Lake sem precisar mudar schema antes.
+- UI/API:
+  - `marketcloud/internal/query/search_intelligence.go` passou a expor no detalhe do produto:
+    - `ba_search_traffic_sales`
+    - `ba_click_rate`
+    - `ba_conversion_rate`
+    - precos medianos BA.
+  - `marketcloud/frontend/src/pages/SearchIntelligence.jsx` passou a mostrar no funil:
+    - `Vendas SCP`
+    - `CTR SCP`
+    - `Preco mediano compra`.
+- Validacao:
+  - Para `B0HBZJG89G`, field-level retorna:
+    - `clickData.clickRate = 0.0201`
+    - `impressionData.impressionMedianPrice.amount = 37.9`
+    - `purchaseData.searchTrafficSales.amount = 321.66`
+    - `purchaseData.conversionRate = 0.1194`
+    - `purchaseData.purchaseMedianPrice.amount = 35.63`
+  - `marketcloud_bronze.bronze_brand_analytics_search_catalog_field_v1`:
+    - `269` linhas de campo.
+    - `34` campos distintos.
+  - `marketcloud_bronze.bronze_brand_analytics_search_query_field_v1`:
+    - `90152` linhas de campo.
+    - `8` campos distintos.
+  - Origem canônica valida:
+    - `search_traffic_sales=321.66`
+    - `click_rate=0.0201`
+    - `conversion_rate=0.1194`
+    - `purchase_median_price=35.63`
+  - `go build ./cmd/api` passou nos dois repos.
+  - `pricing_api` e `marketcloud_api` rebuildados/recriados.
+  - frontend `npm run build` passou.
+- Parecer:
+  - A base agora tem paridade estrutural com o export: colunas canonicas para o que ja conhecemos e field-level para 100% do payload bruto.
+  - O que a API nao devolver continua impossivel de inventar; mas tudo que ela devolver fica no Lake.
+
+Correcao posterior - Relatorio Exibicao de marca Abrangente na tela e no Lake:
+
+- Pedido do usuario:
+  - Mostrar tudo na tela.
+  - Incluir o relatorio `BR_Desempenho_da_consulta_de_pesquisa_Exibição_de_marca_Abrangente_Week_2026_08_08`.
+  - Proximo passo depois disso: construir o `Doutor SEO` em cima desses dados.
+- Fonte carregada:
+  - CSV oficial exportado do Seller Central:
+    - `C:\Users\odine\Downloads\BR_Desempenho_da_consulta_de_pesquisa_Exibição_de_marca_Abrangente_Week_2026_08_08.csv`
+  - Periodo: semana `2026-08-02..2026-08-08`.
+  - Marca: `ZANOM`.
+- Origem SWARM/pricing:
+  - criada tabela `amazon_brand_analytics_search_query_brand_performance`.
+  - 71 queries importadas.
+  - Percentuais normalizados para decimal.
+  - `raw_json_sanitized` preserva a linha original do CSV.
+  - encoding corrigido para UTF-8 real; exemplo validado: `porta capsula de café`.
+- MarketCloud:
+  - nova migration `migrations/182_brand_analytics_brand_query_comprehensive.sql`.
+  - nova FDW `swarm_src.amazon_brand_analytics_search_query_brand_performance`.
+  - novas views:
+    - `marketcloud_bronze.bronze_brand_analytics_search_query_brand_performance_v1`
+    - `marketcloud_gold.gold_brand_analytics_brand_query_comprehensive_v1`
+    - `marketcloud_bronze.bronze_brand_analytics_search_query_brand_field_v1`
+  - field-level preserva 100% dos campos do CSV em `field_path/value`.
+- API MarketCloud:
+  - novo endpoint `GET /api/v1/gold/search-intelligence/brand-queries`.
+  - retorna:
+    - volume de consulta.
+    - impressoes total/marca/share.
+    - cliques total/marca/share/CTR.
+    - carrinho total/marca/share/taxa.
+    - compras total/marca/share/taxa.
+    - precos medianos.
+    - lift de share de compra vs impressao.
+- UI:
+  - `frontend/src/pages/SearchIntelligence.jsx` ganhou secao `Exibicao de marca Abrangente`.
+  - mostra KPIs:
+    - volume consultas.
+    - impressoes da marca e share.
+    - cliques da marca e share.
+    - compras da marca e share.
+  - mostra tabela por query com:
+    - volume.
+    - total/marca em impressoes, cliques, carrinho e compras.
+    - share de compra.
+    - precos medianos.
+- Validacao:
+  - `marketcloud_gold.gold_brand_analytics_brand_query_comprehensive_v1`:
+    - 71 queries.
+    - volume total `51743`.
+    - compras da marca `10`.
+  - top queries:
+    - `cozedor de ovos eletrico 220v`: volume `1694`, compras marca `6`, share compra `4,65%`.
+    - `escova sanitaria`: volume `2897`, compras marca `1`, share compra `0,76%`.
+    - `cozedor de ovos eletrico 220v preto`: volume `65`, compras marca `1`, share compra `16,67%`.
+    - `cozeror de ovos 220`: volume `4`, compras marca `1`, share compra `100%`.
+    - `porta capsula de café`: volume `15`, compras marca `1`, share compra `100%`.
+  - field-level do relatorio abrangente:
+    - 2414 linhas de campo.
+    - 34 campos distintos.
+  - `go build ./cmd/api` passou.
+  - frontend `npm run build` passou.
+  - `marketcloud_api` rebuildado/recriado e `/health` retornou ok.
+- Ressalva:
+  - Esta carga inicial veio do CSV oficial manual porque a SP-API ainda nao entregou esse report no mesmo formato.
+  - O Lake agora esta preparado para consultar e exibir o relatorio; o proximo refinamento e automatizar a coleta quando a fonte API/arquivo estiver disponivel de forma recorrente.
+
+### UX Search Intelligence - separacao didatica SCP vs query share (2026-08-10)
+
+- Motivo:
+  - A tela misturava metricas de `Search Catalog Performance` por ASIN com metricas de share competitivo por query.
+  - Isso fazia campos como `Impression share`, `Click share`, `Cart share`, `Purchase share` e `Lift compra vs impressao` parecerem dados ausentes do produto, quando na pratica eles nao existem no SCP por ASIN.
+- Ajuste:
+  - `frontend/src/pages/SearchIntelligence.jsx` agora separa:
+    - `Funil do produto no Search Catalog Performance`: impressoes, cliques, carrinhos, compras, vendas SCP, CTR, conversao e preco mediano de compra do ASIN selecionado.
+    - `Exibicao de marca Abrangente - share por query`: share total/marca por termo pesquisado.
+  - Incluida explicacao na propria UI:
+    - share competitivo nao vem do SCP por ASIN.
+    - quando `Compras SCP = 0`, `Vendas SCP` e `Preco mediano compra` ficam zerados/vazios por falta de compra atribuida naquele recorte.
+- Impacto:
+  - A tela deixa claro por que ha dado de funil do produto, mas nao ha share competitivo no mesmo bloco.
+  - O dado de concorrencia/search share passa a ser interpretado no grao correto: query, nao ASIN.
+
+### Fontes minimas obrigatorias antes de automatizar decisoes (2026-08-10)
+
+- Pedido:
+  - Completar as 4 fontes minimas antes de automatizar decisoes:
+    1. Financeiro do ASIN.
+    2. Search Catalog Performance.
+    3. Search Query Performance.
+    4. Search Terms de Ads.
+- Implementacao:
+  - nova migration `migrations/183_search_intelligence_minimum_decision_sources.sql`.
+  - nova view `marketcloud_gold.gold_ads_search_term_daily_v1`:
+    - grao: data/campanha/grupo/keyword-target/customer_search_term.
+    - campos: impressoes, cliques, spend, CPC, pedidos Ads, vendas Ads, ACOS, ROAS, CTR, CVR.
+    - resolve ASIN por:
+      - `amazon_ads_campaigns_daily.advertised_asin`;
+      - ASIN no nome do ad group;
+      - ASIN inferido de `amazon_ads_targeting_inventory`.
+    - registra `asin_resolution_status` e `search_term_status`.
+    - ressalva: `placement` ainda fica `NULL`, com evidência `MISSING_IN_CURRENT_SOURCE`, porque a fonte atual de search terms nao traz placement no mesmo grao.
+  - nova view `marketcloud_gold.gold_search_intelligence_minimum_source_status_v1`:
+    - status agregado das 4 fontes minimas (`READY`, `PARTIAL`, `MISSING`).
+  - nova view `marketcloud_gold.gold_search_intelligence_minimum_decision_matrix_v1`:
+    - matriz por ASIN com financeiro + SCP + Ads Search Terms.
+    - classifica cada ASIN como:
+      - `READY_FOR_DECISION`;
+      - `OBSERVE_ONLY`;
+      - `INSUFFICIENT_DATA`.
+    - SQP/Brand Query permanece fonte por query, entao seu status fica no painel agregado e nao e forçado como coluna por ASIN.
+- API/UI:
+  - `internal/query/search_intelligence.go` agora inclui em `coverage`:
+    - `minimum_sources`;
+    - `minimum_matrix`.
+  - `frontend/src/pages/SearchIntelligence.jsx` ganhou bloco:
+    - `Fontes minimas para automatizar decisao`.
+    - mostra status e evidencia das 4 fontes.
+    - mostra quantos ASINs estao prontos, em observacao ou insuficientes.
+- Validacao em banco:
+  - `marketcloud_gold.gold_search_intelligence_minimum_source_status_v1`:
+    - `FINANCEIRO_ASIN`: `READY`, `902` linhas, `31` ASINs.
+    - `SEARCH_CATALOG_PERFORMANCE`: `READY`, `9` linhas, `7` ASINs.
+    - `SEARCH_QUERY_PERFORMANCE`: `READY`, `71` queries.
+    - `ADS_SEARCH_TERMS`: `READY`, `13544` linhas, `3445` termos, `28` ASINs resolvidos.
+  - `marketcloud_gold.gold_search_intelligence_minimum_decision_matrix_v1`:
+    - `READY_FOR_DECISION`: `3` ASINs.
+    - `OBSERVE_ONLY`: `1` ASIN.
+    - `INSUFFICIENT_DATA`: `27` ASINs.
+  - Diagnostico atual:
+    - As 4 fontes estao prontas no agregado.
+    - O gargalo para automacao por ASIN e cobertura SCP: varios top sellers ainda nao possuem SCP por ASIN.
+    - Ads Search Terms existe e tem volume, mas placement ainda nao esta disponivel nesse grao.
+- Validacao tecnica:
+  - migration 183 aplicada no Postgres local.
+  - `docker compose build api` passou.
+  - `docker compose up -d --force-recreate api frontend` executado.
+  - `/health` da API retornou `{"status":"ok","service":"marketcloud-api"}`.
+  - frontend `npm run build` passou.
+
+### Correcao de performance - Search Intelligence parecia sem dado (2026-08-10)
+
+- Sintoma:
+  - Usuario reportou que "nao veio nenhum dado" apos abrir a tela.
+- Diagnostico:
+  - Logs mostraram endpoints retornando `200`, porem lentos:
+    - `/gold/search-intelligence`: cerca de `13,6s`.
+    - `/gold/search-intelligence/brand-queries`: cerca de `26,4s`.
+  - Medicao direta no banco:
+    - `gold_brand_analytics_market_query_v1` demorava cerca de `43s` para contar `3757` queries.
+    - `gold_search_intelligence_minimum_source_status_v1` demorava cerca de `8,7s`.
+  - Causa: leitura recorrente em views sobre FDW/joins pesados; o dado existia, mas a UX parecia vazia/lenta.
+- Correcao:
+  - nova migration `migrations/184_search_intelligence_fast_cache.sql`.
+  - criados caches locais:
+    - `marketcloud_gold.mv_brand_analytics_market_query_v1`
+    - `marketcloud_gold.mv_brand_analytics_brand_query_comprehensive_v1`
+    - `marketcloud_gold.mv_search_intelligence_minimum_source_status_v1`
+  - criada funcao:
+    - `marketcloud_gold.refresh_search_intelligence_cache_v1()`
+  - `internal/query/search_intelligence.go` passou a ler dos caches materializados nas rotas pesadas.
+- Validacao:
+  - materializacao inicial:
+    - `mv_brand_analytics_market_query_v1`: `3757` linhas.
+    - `mv_brand_analytics_brand_query_comprehensive_v1`: `71` linhas.
+    - `mv_search_intelligence_minimum_source_status_v1`: `4` linhas.
+  - Performance apos cache:
+    - market queries count: `2,5ms`.
+    - brand query comprehensive count: `1,9ms`.
+    - minimum source status count: `0,7ms`.
+  - `docker compose build api` passou.
+  - `docker compose up -d --force-recreate api frontend` executado.
+  - `/health` retornou ok.
+- Ressalva operacional:
+  - Quando novos relatorios Brand Analytics forem carregados/pollados, chamar `SELECT marketcloud_gold.refresh_search_intelligence_cache_v1();` para atualizar a tela imediatamente.
+  - Proximo passo recomendado: acoplar esse refresh automaticamente ao fim do poll/import de Brand Analytics.
+
+### UX Search Intelligence - carteira por ASIN e detalhe em modal (2026-08-10)
+
+- Pedido:
+  - A tela estava poluida.
+  - Separar ASINs da marca ZANOM de ASINs genericos/outros.
+  - Ao clicar no produto, abrir detalhes em modal em vez de manter tudo sempre exposto.
+- Diagnostico de dados:
+  - Na camada financeira por ASIN, todos os `31` ASINs atuais estao com `brand = ZANOM`.
+  - Portanto o filtro `ASINs genericos/outros` fica preparado, mas vazio ate existirem ASINs concorrentes/genericos nessa camada financeira.
+  - ASINs concorrentes hoje aparecem no bloco de query/concorrencia, nao no ranking financeiro do portfolio.
+- Ajuste aplicado:
+  - `frontend/src/pages/SearchIntelligence.jsx`:
+    - adiciona painel `Carteira de ASINs`.
+    - filtros:
+      - `Marca ZANOM`.
+      - `ASINs genericos/outros`.
+      - `Todos`.
+    - mostra KPIs filtrados: receita, itens, pedidos, Ads e EBITDA.
+    - ranking usa o filtro selecionado.
+    - detalhe do ASIN abre em modal ao clicar no produto.
+    - modal contem economia, EBITDA, funil SCP, explicacao de campos vazios e dia-a-dia.
+- Validacao:
+  - `npm run build` do frontend passou.
+  - `docker compose up -d --force-recreate frontend` executado.
+- Como aumentar cobertura:
+  - O maior gargalo segue sendo SCP por ASIN (`SCP faltando`).
+  - Para aumentar cobertura real, precisamos solicitar/pollar/backfill de Search Catalog Performance para os ASINs faltantes, depois rodar `marketcloud_gold.refresh_search_intelligence_cache_v1()`.
+  - Para `Ads terms faltando`, melhorar/validar a resolucao `search term -> campaign/ad group -> ASIN`, especialmente quando campanha nao tem `advertised_asin` ou nome de grupo com ASIN.
+
+### Search Intelligence - modal opaco/largo + Ads Search Terms por ASIN (2026-08-10)
+
+- Pedido:
+  - Modal estava transparente demais.
+  - Alargar a tela/modal.
+  - Trazer termos de busca do ASIN selecionado.
+- Backend:
+  - novo handler `GoldSearchIntelligenceProductAdsTerms`.
+  - nova rota:
+    - `GET /api/v1/gold/search-intelligence/products/{asin}/ads-terms`
+  - fonte:
+    - `marketcloud_gold.gold_ads_search_term_daily_v1`
+  - agrega por `customer_search_term` no periodo:
+    - campanha.
+    - grupo.
+    - keyword/target.
+    - match type.
+    - impressoes.
+    - cliques.
+    - gasto.
+    - CPC.
+    - pedidos Ads.
+    - vendas Ads.
+    - ROAS.
+    - CTR.
+    - CVR.
+- Frontend:
+  - `frontend/src/api/client.js` adiciona `goldSearchIntelligenceProductAdsTerms`.
+  - `frontend/src/pages/SearchIntelligence.jsx`:
+    - modal mais largo (`1240px`) e fundo mais opaco.
+    - ao clicar no ASIN, carrega detalhe financeiro/SCP e search terms Ads.
+    - adiciona tabela `Termos de busca Ads deste ASIN`.
+- Validacao de dado:
+  - Para `B0HBZJG89G`:
+    - `55` linhas de Ads Search Terms.
+    - `24` termos distintos.
+    - `R$ 22,88` de gasto no periodo.
+    - termo de maior gasto: `cozedor de ovos eletrico 220v`, campanha exact M19, grupo `B0HBZJG89G_exact`.
+- Validacao tecnica:
+  - frontend `npm run build` passou.
+  - `docker compose build api` passou.
+  - `docker compose up -d --force-recreate api frontend` executado.
+  - `/health` retornou ok.
+
+### Search Intelligence - blocos de decisao no modal do ASIN (2026-08-10)
+
+- Pedido:
+  - No modal do produto, abaixo do bloco financeiro, trazer os dados que transformam leitura em acao:
+    - SCP: impressoes, cliques, CTR, carrinhos, compras e CVR.
+    - Ads: receita Ads, pedidos Ads, ACOS, ROAS, CPC, cliques e CVR Ads.
+    - Search Query: query/volume/share competitivo quando existir query associada ao ASIN.
+    - Preco: preco atual, preco medio vendido, historico de preco e promocao/cupom.
+  - A tela deve ajudar a distinguir hipoteses diferentes:
+    - produto converte bem e pode testar preco.
+    - economia e boa mas aquisicao Ads esta ruim.
+    - produto esta comprando ranking e aceita margem menor temporariamente.
+- Backend:
+  - `internal/query/search_intelligence.go` passou a devolver no agregado e no detalhe:
+    - `current_price`.
+    - `unit_cost`.
+    - `unit_amazon_fee_estimated`.
+    - `avg_realized_price`.
+  - O detalhe do ASIN cruza `gold_brand_analytics_search_catalog_full_v1` para expor campos SCP absolutos no dia.
+- Frontend:
+  - `frontend/src/pages/SearchIntelligence.jsx`:
+    - adiciona card de diagnostico operacional do ASIN.
+    - adiciona grid de decisao com blocos `SCP`, `Ads`, `Search Query` e `Preco`.
+    - calcula no cliente:
+      - ACOS = `ads_spend / ads_sales`.
+      - ROAS = `ads_sales / ads_spend`.
+      - CPC = `ads_spend / ads_clicks`.
+      - CVR Ads = `ads_orders / ads_clicks`.
+    - classificacoes iniciais:
+      - `Economia pressionada`: EBITDA baixo e Ads com gasto.
+      - `Produto com tracao`: SCP converte e EBITDA tem margem.
+      - `Aquisicao ineficiente`: Ads com ROAS abaixo de 3.
+      - `Diagnostico aberto`: precisa combinar SCP, Ads e query share antes de automatizar acao.
+- Ressalva de dado:
+  - `historico de preco` e `promocao/cupom` ficaram explicitamente como `pendente`, porque ainda nao ha fonte confiavel/canonica no MarketCloud para esses dois campos.
+  - Share competitivo por query so aparece quando a camada Brand Analytics/SQP trouxer query associada ao ASIN; quando nao houver, a tela mostra ausencia de query em vez de inventar dado.
+- Validacao tecnica:
+  - `gofmt -w internal/query/search_intelligence.go` executado.
+  - frontend `npm run build` passou.
+  - `docker compose build api` passou.
+  - `docker compose up -d --force-recreate api frontend` executado.
+  - `docker compose ps api frontend` confirmou ambos `Up`.
+  - `/health` retornou `{"status":"ok","service":"marketcloud-api"}`.
+
+### Search Intelligence - fechamento SCP + SQP + Ads Search Terms por ASIN (2026-08-10)
+
+- Pedido:
+  - Fechar as tres fontes parciais antes de automatizar decisao:
+    - Search Catalog Performance por ASIN.
+    - Search Query Performance por ASIN/query.
+    - Ads Search Terms por ASIN.
+- Achados:
+  - `SEARCH_CATALOG_PERFORMANCE` existe, mas so cobre `7` ASINs / `9` linhas no MarketCloud atual.
+  - `SEARCH_QUERY_PERFORMANCE` proprietario por ASIN esta `MISSING`: `0` ASINs / `0` linhas. A fonte que estava `READY` antes era `Brand Query Comprehensive`, ou seja, dado brand/query abrangente, nao SQP proprietario por ASIN.
+  - `ADS_SEARCH_TERMS` tinha volume alto, mas a resolucao para ASIN estava fraca porque campanhas antigas nao traziam `advertised_asin` no report.
+- Correcao MarketCloud:
+  - nova migration `migrations/185_close_search_intelligence_asin_sources.sql`.
+  - `marketcloud_gold.gold_ads_search_term_daily_v1` agora resolve ASIN por ordem:
+    1. `advertised_asin` do report de produto Ads.
+    2. ASIN presente no `ad_group_name` do proprio Search Term report.
+    3. ASIN presente no inventory/ad group.
+    4. ASIN inferido por target expression.
+    5. alias legado auditavel para campanhas antigas univocas.
+  - O status de resolucao agora distingue:
+    - `ASIN_RESOLVED_ADS_PRODUCT`.
+    - `ASIN_RESOLVED_ADGROUP_NAME`.
+    - `ASIN_RESOLVED_INVENTORY_ADGROUP`.
+    - `ASIN_RESOLVED_TARGET_EXPRESSION`.
+    - `ASIN_INFERRED_BY_ALIAS`.
+    - `ASIN_MISSING`.
+  - `gold_search_intelligence_minimum_source_status_v1` separa:
+    - `SEARCH_QUERY_PERFORMANCE` = SQP proprietario por ASIN.
+    - `BRAND_QUERY_COMPREHENSIVE` = dado brand/query abrangente de mercado.
+  - `gold_search_intelligence_minimum_decision_matrix_v1` agora tem colunas SQP por ASIN:
+    - `sqp_periods`.
+    - `sqp_query_rows`.
+    - `sqp_impressions`.
+    - `sqp_clicks`.
+    - `sqp_cart_adds`.
+    - `sqp_purchases`.
+    - shares medios.
+    - `sqp_status`.
+  - `READY_FOR_DECISION` agora exige as 4 fontes no ASIN:
+    - financeiro.
+    - SCP.
+    - SQP proprietario.
+    - Ads Search Terms.
+- Correcao frontend/API:
+  - `internal/query/search_intelligence.go` inclui `sqp_missing` em `minimum_matrix`.
+  - `frontend/src/pages/SearchIntelligence.jsx` mostra `SQP faltando`.
+  - resumo de `SEARCH_QUERY_PERFORMANCE` agora fala em ASINs/impressoes/cliques/compras, nao em queries de mercado.
+- Correcao SWARM/conector Brand Analytics:
+  - `mercado-data-app/internal/services/amazon_brand_analytics.go` recebeu `asin_batch_key` em `amazon_brand_analytics_report_jobs`.
+  - deduplicacao de jobs passou a considerar `report_type + period + data + asin_batch_key`.
+  - worker diario agora divide ASINs em lotes de ate `200` caracteres, em vez de truncar a lista.
+  - `reportOptions.asin` passa a ser usado para SQP e SCP quando houver lote.
+- Jobs disparados em producao local:
+  - semana `2026-08-02` a `2026-08-08`.
+  - `2` jobs SQP por lote de ASIN:
+    - `52255020676`.
+    - `52253020676`.
+  - `2` jobs SCP por lote de ASIN:
+    - `52256020676`.
+    - `52254020676`.
+  - `2` jobs SQP `DEFAULT` criados por payload de terminal malformado foram arquivados como `ARCHIVED_BAD_REQUEST`.
+- Status validado apos correcao:
+  - Ads Terms:
+    - `13.544` linhas.
+    - `3.445` termos.
+    - `27` ASINs com Ads Search Terms na matriz viva (`ads_search_terms > 0`) em revalidacao posterior.
+    - `R$ 3.084,42` de spend mapeado na fonte.
+  - Matriz por ASIN:
+    - `5` ASINs em `OBSERVE_ONLY`: possuem financeiro + SCP + Ads Terms, mas ainda sem SQP proprietario.
+    - `0` ASINs em `READY_FOR_DECISION`, porque SQP proprietario segue zerado.
+  - Jobs Brand Analytics recem-criados:
+    - SCP: `1` em `IN_PROGRESS`, `1` em `IN_QUEUE`.
+    - SQP: `2` em `IN_QUEUE`.
+- Validacao tecnica:
+  - `gofmt -w internal/query/search_intelligence.go` executado.
+  - `gofmt -w mercado-data-app/internal/services/amazon_brand_analytics.go` executado.
+  - `docker compose build api frontend` em `marketcloud` passou.
+  - `docker compose build go-backend` em `mercado-data-app` passou.
+  - `docker compose up -d --force-recreate api frontend` executado em `marketcloud`.
+  - `docker compose up -d --force-recreate go-backend` executado em `mercado-data-app`.
+  - `/health` MarketCloud retornou ok.
+  - frontend `npm run build` passou.
+- Ressalva:
+  - SCP/SQP nao podem ser inventados. O pipeline agora esta corrigido para pedir por lote e nao bloquear lotes por dedupe incorreta; a cobertura final so sobe quando a Amazon concluir os quatro jobs e devolver linhas.
+  - Proximo acompanhamento: pollar os jobs `52255020676`, `52253020676`, `52256020676`, `52254020676`; depois rodar `SELECT marketcloud_gold.refresh_search_intelligence_cache_v1();` e reavaliar `gold_search_intelligence_minimum_decision_matrix_v1`.
+
+#### Reauditoria dos numeros da matriz Search Intelligence (2026-08-10)
+
+- Auditoria ao vivo corrigiu os numeros operacionais:
+  - `OBSERVE_ONLY`: `5`.
+  - `INSUFFICIENT_DATA`: `26`.
+  - `READY_FOR_DECISION`: `0`.
+  - ASINs com Ads Search Terms na matriz: `27`.
+- ASINs em `OBSERVE_ONLY`:
+  - `B0H887XGCJ`.
+  - `B0HBLS7BPG`.
+  - `B0HBZJG89G`.
+  - `B0HCQ8ZVPF`.
+  - `B0HCQGF4DS`.
+- A diferenca entre `33` e `27` veio de contagem em camada/fonte versus a matriz final por ASIN; para decisao operacional vale a matriz viva.
+- Alias legado auditavel em `migrations/185_close_search_intelligence_asin_sources.sql`:
+  - `Abridor de Vinho` -> `B0H2TXK1YG`.
+  - `Vinho automatica` -> `B0H2TXK1YG`.
+  - `Seladora` -> `B0H2SRPWF9`.
+  - `Forma Silicone` / `Forma Silicone_PAUSED` -> `B0H2VVZ73C`.
+  - `Hub USB` / `PAUSED_Hub USB` -> `B0H2TBRYQR`.
+  - `Suporte de Celular` / `Suporte de Celular_PAUSED` -> `B0H2QWNRSB`.
+  - `Porta Capsula de Cafe` -> `B0HBLS7BPG`.
+  - `Cozedor de ovos` -> `B0HBZJG89G`.
+  - `Moedor de Cafe` -> `B0H9BXSH35`.
+  - `Parafusadeira Ampla` -> `B0HB7671Z1`.
+  - `Carregador 30W` / `PAUSED_Carregador 30W` / `Carregadores 30W` -> `B0H2SLZ9XC`.
+  - `Carregadores 20W` / `Carregador 20W - Dual` / `Automatica -Carregador 20W` / `Carregadores Automatica 20W USB-C - USB` -> `B0H2XNTDVL`.
+  - `Fone` -> `B0H2ZBJ727`.
+  - `KIt Perfume portatil` -> `B0H4YK4S3H`.
+  - `Esponja Gota` / `PAUSED_Esponja Gota` -> `B0H4ZS8F5R`.
+  - `Kit Kadukli Manga` -> `B0H4ZY78D4`.
+  - `Afiador de facas` -> `B0H2NJSMNW`.
+  - `Pau de Selfie` / `Pau de Selfie_PAUSED` -> `B0H2TV1X2G`.
+- Ressalva de auditoria: alias legado e util para recuperar historico, mas e uma atribuicao humana campanha -> ASIN. Antes de usar para decisao automatica, conferir visualmente se cada campanha antiga era realmente univoca para aquele ASIN.
+
+### Search Intelligence - matriz acionavel de decisao comercial (2026-08-10)
+
+- Pedido:
+  - responder operacionalmente:
+    - onde brigar.
+    - quanto gastar.
+    - quando cortar.
+    - quando subir preco/rever margem.
+    - contra quem estamos competindo.
+- Implementado:
+  - nova migration `migrations/186_search_intelligence_action_matrix.sql`.
+  - nova view `marketcloud_gold.gold_search_intelligence_action_matrix_v1`.
+  - novo endpoint `GET /api/v1/gold/search-intelligence/actions`.
+  - frontend `SearchIntelligence.jsx` ganhou bloco:
+    - `Decisao comercial: onde brigar, gastar, cortar e precificar`.
+    - KPIs de brigar/escalar/proteger, cortar desperdicio, rever preco/margem e concorrentes identificados.
+    - colunas:
+      - `Onde brigar / quanto gastar`.
+      - quando nao houver briga agressiva liberada, a coluna vira `Brigas condicionais` e mostra termos com demanda BA que precisam corrigir margem/ROAS/estoque antes de escalar.
+      - `Quando cortar`.
+      - `Quando subir preco / margem`.
+      - `Contra quem estamos competindo`.
+- Criterio da matriz:
+  - grao: `ASIN + termo de busca`.
+  - fontes cruzadas:
+    - economia do ASIN (`gold_search_intelligence_product_daily_v1`).
+    - Ads Search Terms (`gold_ads_search_term_daily_v1`).
+    - Brand Analytics abrangente por query (`mv_brand_analytics_brand_query_comprehensive_v1`) quando o texto da query bate.
+    - concorrentes/top ASINs (`mv_brand_analytics_market_query_v1`) quando disponivel.
+  - `source_confidence`:
+    - `BA_MATCHED`: termo Ads cruzou com Brand Analytics.
+    - `ADS_ONLY`: decisao baseada so em Ads + economia, sem share competitivo.
+- Acoes geradas:
+  - `BRIGAR_POR_SHARE`.
+  - `ESCALAR_TERMOS_VENCEDORES`.
+  - `PROTEGER_TERMO`.
+  - `TESTAR_AUMENTO_PRECO`.
+  - `REVISAR_PRECO_MARGEM`.
+  - `CORTAR_DESPERDICIO`.
+  - `NAO_BRIGAR_SEM_ESTOQUE`.
+  - `OBSERVAR`.
+- Validacao viva apos aplicacao:
+  - `OBSERVAR`: `1.554` termos.
+  - `NAO_BRIGAR_SEM_ESTOQUE`: `689` termos.
+  - `REVISAR_PRECO_MARGEM`: `50` termos.
+  - `CORTAR_DESPERDICIO`: `19` termos.
+  - No snapshot atual, nao apareceu escala agressiva liberada; o diagnostico majoritario e defensivo: cortar desperdicio, nao comprar sem estoque e rever margem/preco antes de escalar.
+- Exemplos relevantes:
+  - `abridor de vinho eletrico` / `B0H2TXK1YG`: `REVISAR_PRECO_MARGEM`, BA matched, ROAS Ads ~`2,02`, volume BA ~`2.446`.
+  - `cozedor de ovos eletrico 220v` / `B0HBZJG89G`: `REVISAR_PRECO_MARGEM`, BA matched, ROAS Ads ~`2,86`, purchase share marca ~`4,65%`.
+  - `cozedor de ovos` / `B0HBZJG89G`: `CORTAR_DESPERDICIO`, BA matched, gasto com zero venda.
+  - `parafusadeira e furadeira` / `B0HB7671Z1`: `CORTAR_DESPERDICIO`, BA matched, concorrentes/top ASINs aparecem no BA.
+- Concorrentes identificados em query BA:
+  - `parafusadeira e furadeira`: top ASINs incluem `B09V1SM8QB` (WAP) e `B0GWY89VFX`.
+  - `furadeira e parafusadeira`: top ASINs incluem `B09V1SM8QB` e `B0GWY89VFX`.
+  - `escova sanitaria`: top ASINs incluem `B08F83J7TT` (CasaMia) e `B0B5YJS2PR` (SIMPLUS).
+- Validacao tecnica:
+  - migration 186 aplicada com sucesso.
+  - `gofmt -w internal/query/search_intelligence.go cmd/api/main.go`.
+  - `docker compose build api` passou.
+  - `docker compose up -d --force-recreate api frontend` executado.
+  - `docker exec marketcloud_frontend sh -lc "cd /app && npm run build"` passou.
+  - endpoint sem token retorna `401 missing authorization header`, esperado por estar protegido.
+- Ressalva:
+  - A matriz nao inventa SQP proprietario por ASIN. Enquanto SQP segue zerado, a decisao de concorrencia e por match de termo Ads com Brand Analytics abrangente.
+  - Para automatizar gasto agressivo, ainda exigir review humano quando `source_confidence='ADS_ONLY'` ou quando a margem/estoque estiverem ruins.
+
+### Search Intelligence - Radar real de concorrentes (2026-08-10)
+
+- Correcao de direcao:
+  - A camada anterior ainda parecia recomendacao/ML.
+  - O pedido correto e informacao nova de mercado: quem sao os concorrentes, em quais queries aparecem, qual share capturam e como isso cruza com nosso gasto.
+- Implementado:
+  - nova migration `migrations/187_search_intelligence_competitor_radar.sql`.
+  - nova view `marketcloud_gold.gold_search_intelligence_competitor_radar_v1`.
+  - novo endpoint `GET /api/v1/gold/search-intelligence/competitors`.
+  - frontend `SearchIntelligence.jsx` ganhou bloco `Radar de concorrentes`.
+- Fonte:
+  - `mv_brand_analytics_market_query_v1.top_asins` explode os top ASINs por query:
+    - `competitor_asin`.
+    - `competitor_item_name`.
+    - `competitor_click_share`.
+    - `competitor_purchase_share`.
+    - `rank`.
+  - cruza com `gold_ads_search_term_daily_v1` para identificar onde a ZANOM tambem gastou Ads na mesma query.
+- Filtro operacional da tela:
+  - por padrao mostra apenas queries onde houve gasto Ads ZANOM.
+  - Isso evita ruido de Brand Analytics fora do portfolio.
+- Validacao viva:
+  - Brand Analytics contem `11.269` linhas de top ASINs concorrentes em `3.757` queries.
+  - Em queries onde a ZANOM gastou Ads:
+    - `195` linhas com sinal `CONCORRENTE_CONVERTENDO_NOSSO_ADS_NAO`.
+    - `151` ASINs concorrentes.
+    - `65` queries.
+    - `R$ 1.737,66` de gasto nosso com `R$ 0,00` de venda Ads nessas queries.
+  - Outras `12` linhas estao em `MONITORAR`, com `R$ 1.395,03` de gasto e `R$ 4.420,20` de venda Ads.
+- Exemplos de concorrentes reais ja mapeados:
+  - Query `fone de ouvido bluetooth`:
+    - `B0DVMQVVDY` PHILIPS.
+    - `B0FXNJCLRP`.
+    - `B0DHL93XCN` JBL.
+    - ZANOM gastou ~`R$ 139,73` e nao vendeu nessa query.
+  - Query `carregador samsung`:
+    - `B0FQ6TVMCZ`.
+    - `B088JP5WT4` Samsung TA800 25W.
+    - `B0DDTYB5KT` Samsung 45W.
+    - ZANOM gastou ~`R$ 56,04` e nao vendeu.
+  - Query `carregador tipo c`:
+    - `B0H12J7P5G`.
+    - `B0FR5M7Y1Y`.
+    - `B0GFYHXTF4`.
+    - ZANOM gastou ~`R$ 38,10` e nao vendeu.
+  - Query `abridor de vinho`:
+    - `B076VNKX76` Mimo Style.
+    - `B076JMGMYF` Mimo Style.
+    - `B0BQH4KC3N`.
+    - ZANOM tambem vende nessa query; fica em monitoramento competitivo, nao corte automatico.
+- Validacao tecnica:
+  - migration 187 aplicada.
+  - `gofmt -w internal/query/search_intelligence.go cmd/api/main.go`.
+  - `docker compose build api` passou.
+  - `docker exec marketcloud_frontend sh -lc "cd /app && npm run build"` passou.
+  - `docker compose up -d --force-recreate api frontend` executado.
+- Ressalva:
+  - O radar mostra concorrencia observada no Brand Analytics, nao preco realtime concorrente/Buy Box.
+  - Quando `search_query_volume` vem vazio nessa camada, ainda assim temos share de clique/compra dos top ASINs do report de mercado.
+
+### Search Intelligence - Correcao arquitetural ML-only (2026-08-10)
+
+- Decisao do produto:
+  - Toda decisao de lance, corte, budget, preco ou escala deve sair do ML/guardrails existentes.
+  - Search Intelligence nao pode virar um motor paralelo de regra rasa.
+  - Brand Analytics, SCP/SQP, concorrentes e Ads Search Terms entram como fatos, explicacoes e features de treino.
+- Correcao feita:
+  - removido o endpoint `GET /api/v1/gold/search-intelligence/actions`.
+  - removida a secao de UI "Decisao comercial: onde brigar, gastar, cortar e precificar".
+  - removida do repositorio a migration da matriz de acao por regra (`186_search_intelligence_action_matrix.sql`).
+  - aplicada a migration `188_competitor_context_features_for_ml.sql`, que derruba a view antiga `gold_search_intelligence_action_matrix_v1`.
+  - ajustada a view `gold_search_intelligence_competitor_radar_v1` para guardar somente fatos de concorrencia; sem `competitor_signal`/`competitor_reason`.
+- Nova fonte de aprendizado:
+  - criada `marketcloud_features.feature_target_competitor_context_v1`.
+  - campos principais para o ML:
+    - `ba_competitor_count`.
+    - `ba_top_competitor_click_share`.
+    - `ba_top_competitor_purchase_share`.
+    - `ba_avg_competitor_click_share`.
+    - `ba_avg_competitor_purchase_share`.
+    - `ba_search_query_volume`.
+    - `ba_brand_impression_share`.
+    - `ba_brand_click_share`.
+    - `ba_brand_purchase_share`.
+    - `ba_purchase_median_price`.
+    - `ba_brand_purchase_median_price`.
+    - `ba_query_ads_spend`.
+    - `ba_query_ads_sales`.
+    - `ba_query_ads_orders`.
+    - `ba_query_ads_roas`.
+    - `ba_query_ads_cpc`.
+    - `ba_competitor_converts_when_our_ads_no_sale`.
+    - `ba_our_asin_in_top_results`.
+    - `ba_has_our_ads_on_query`.
+- Worker ML:
+  - `HourlyTargetRealV3` passa a carregar essas features por `query_key` a partir de `keyword_text`/`targeting`.
+  - Ajuste aplicado nas duas copias historicas do worker:
+    - `workers/modeling-worker/marketcloud_ml_worker_hourly_target_real_v3.py`.
+    - `workers/ml-worker/marketcloud_ml_worker_hourly_target_real_v3.py`.
+- Validacao viva:
+  - `gold_search_intelligence_action_matrix_v1` inexistente no banco.
+  - `gold_search_intelligence_competitor_radar_v1`: `11.269` linhas de concorrentes.
+  - `feature_target_competitor_context_v1`: `3.757` queries com contexto competitivo.
+  - `competitor_signal` e `competitor_reason` nao existem mais na view do radar.
+- Treino executado apos a correcao:
+  - `hourly_target_real_v3` executado manualmente em `2026-08-11 02:47 UTC`.
+  - `training_rows=16.487`.
+  - `positive_click_rows=1.345`.
+  - `positive_order_rows=282`.
+  - `predictions_written=16.487`.
+  - `HourlyTargetClickRealV3`: `AUC=0,871` vs baseline `0,586`.
+  - `HourlyTargetConversionRealV3`: `AUC=0,943`, `AUC_clicked=0,784` vs baseline `0,603`.
+  - `HourlyTargetExpectedRoasRealV3`: `MAE=0,306` vs baseline `0,394`.
+  - Os tres modelos registraram `has_competitor_features=true` via `feature_columns_json`.
+- Regra de manutencao:
+  - Nao reintroduzir action matrix por SQL/CASE.
+  - Se precisar responder "onde brigar/cortar/subir", isso deve ser feature + label/outcome dentro do ML, ou uma explicacao de uma predicao do ML, nunca uma recomendacao autônoma por view.
+
+### Search Intelligence - Anti-leakage das features competitivas (2026-08-11)
+
+- Problema identificado:
+  - A feature view de concorrencia carregava tambem agregados cumulativos da nossa propria performance Ads por query.
+  - Isso podia vazar label/outcome no treino target-hora quando a query batia com keyword/target.
+- Features removidas do ML e da view `feature_target_competitor_context_v1`:
+  - `ba_query_ads_spend`.
+  - `ba_query_ads_sales`.
+  - `ba_query_ads_orders`.
+  - `ba_query_ads_roas`.
+  - `ba_competitor_converts_when_our_ads_no_sale`.
+- Features mantidas:
+  - sinais externos/Brand Analytics e concorrencia:
+    - shares de clique/compra de concorrentes.
+    - volume de query.
+    - shares de marca no Brand Analytics.
+    - preco mediano BA.
+    - presenca do nosso ASIN nos top produtos.
+  - `ba_query_ads_cpc` e `ba_has_our_ads_on_query` ficaram como contexto de compra de midia, sem pedido/venda/ROAS.
+- Normalizacao:
+  - migration `187_search_intelligence_competitor_radar.sql` agora cria `unaccent` e normaliza `query_key` com `lower(trim(public.unaccent(...)))`.
+  - O worker nao usa mais `unaccent` no SQL quente do treino; ele carrega a feature view e faz merge em Python com `unicodedata`, evitando gargalo no Postgres/FDW.
+- Validacao viva:
+  - `unaccent` instalado no schema `public`.
+  - overlap target/texto contra query BA:
+    - plain: `39`.
+    - com unaccent: `44`.
+  - `feature_target_competitor_context_v1`: `3.662` queries.
+  - `with_our_ads_query=69`.
+  - colunas vazadas ausentes na view.
+  - grep na copia viva do container sem:
+    - `ba_query_ads_spend`.
+    - `ba_query_ads_sales`.
+    - `ba_query_ads_orders`.
+    - `ba_query_ads_roas`.
+    - `ba_competitor_converts_when_our_ads_no_sale`.
+- Treino executado apos anti-leakage:
+  - `hourly_target_real_v3` COMPLETED em `2026-08-11 03:29 UTC`.
+  - `training_rows=16.528`.
+  - `positive_click_rows=1.346`.
+  - `positive_order_rows=283`.
+  - `predictions_written=16.528`.
+  - `HourlyTargetClickRealV3`: `AUC=0,870` vs baseline `0,586`.
+  - `HourlyTargetConversionRealV3`: `AUC=0,943`, `AUC_clicked=0,753` vs baseline `0,602`.
+  - `HourlyTargetExpectedRoasRealV3`: `MAE=0,292` vs baseline `0,396`.
+  - Registry confirmou:
+    - `has_leaked_sales=false`.
+    - `has_leaked_roas=false`.
+    - `has_leaked_flag=false`.
+    - `has_clean_comp_features=true`.
+- Proxima evolucao correta:
+  - Se quisermos recuperar historico da nossa performance por query, criar view point-in-time/lagged:
+    - janela trailing 7/14/28d.
+    - terminando em `as_of_date - 1`.
+    - join por `event_date`.
+  - Nunca usar agregado cumulativo presente da propria query como feature do label atual.
+
+### Search Intelligence - Fase 2 ML Query Layer (2026-08-11)
+
+- Objetivo da fase:
+  - Fechar a ponte `ASIN x query` para responder "em quais buscas/contra quem estamos competindo" sem criar uma matriz de decisao paralela.
+  - Decisao continua sendo do ML; a camada nova mostra evidencia e contexto por ASIN/query.
+- Migration criada/aplicada:
+  - `migrations/190_search_intelligence_phase2_ml_query_layer.sql`.
+  - Renumerada de `189` para `190` em `2026-08-11` para eliminar colisao com `189_ml_recommendation_confidence.sql`.
+- Views criadas:
+  - `marketcloud_features.feature_query_ads_history_lagged_v1`:
+    - historico Ads por query em janelas D-1 `7d/14d/28d`;
+    - usa `as_of_date` e nunca usa o resultado do proprio dia como feature.
+  - `marketcloud_gold.gold_search_intelligence_asin_query_v1`:
+    - cruza Ads Search Terms, economia do ASIN, SCP/SQP, Brand Analytics por query, radar de concorrentes, predicoes V3 e historico D-1.
+  - `marketcloud_gold.gold_search_intelligence_ml_query_explain_v1`:
+    - JSON compacto de explicacao por `ASIN/query`.
+- Correcao critica durante a fase:
+  - Primeiro desenho juntava ML por `query_key` apenas.
+  - Isso contaminava ASIN/campanha com predicao de outra campanha quando o mesmo termo aparecia em varios contextos.
+  - Corrigido para:
+    - Ads no grao `asin + campaign_id + query_key`.
+    - ML no grao `campaign_id + query_key`.
+    - join final `m.campaign_id = a.campaign_id AND m.query_key = a.query_key`.
+  - Caso validado: `rastreador de mala` deixou de herdar `72` celulas ML indevidas e ficou `ml_cells=0 / CONTEXT_ONLY` nos ASINs/campanhas sem predicao propria.
+- Labels:
+  - `ml_explain_label` e apenas explicativo, nao recomendacao:
+    - `ML_SIGNAL_WITH_MARGIN`.
+    - `ML_SIGNAL_WEAK_ON_PAID_QUERY`.
+    - `COMPETITOR_CONTEXT_NO_ML_MATCH`.
+    - `ADS_FACT_NO_SALE`.
+    - `CONTEXT_ONLY`.
+- Validacao viva em `2026-08-11`:
+  - `feature_query_ads_history_lagged_v1`: `38.195` linhas.
+  - `gold_search_intelligence_asin_query_v1`: `2.888` linhas, `33` ASINs.
+  - Linhas com ML: `165`.
+  - Linhas com concorrente BA: `220`.
+  - Linhas com query BA/SQP: `51`.
+  - Labels:
+    - `ADS_FACT_NO_SALE`: `203`.
+    - `COMPETITOR_CONTEXT_NO_ML_MATCH`: `160`.
+    - `CONTEXT_ONLY`: `2.466`.
+    - `ML_SIGNAL_WEAK_ON_PAID_QUERY`: `34`.
+    - `ML_SIGNAL_WITH_MARGIN`: `25`.
+- Backend/API:
+  - `GET /api/v1/gold/search-intelligence/query-opportunities`.
+  - `GET /api/v1/gold/search-intelligence/products/{asin}/query-opportunities`.
+  - Endpoints autenticados testados com `admin@zanom.com`:
+    - portfolio retornou `2` itens no limite e totais `rows=2.888`, `with_ml=165`, `with_competitor=220`.
+    - `B0HBZJG89G` retornou `54` linhas, `11` com ML, `20` com query BA, `1` com concorrente.
+- Frontend:
+  - `frontend/src/pages/SearchIntelligence.jsx` ganhou:
+    - bloco "ASIN x Query - evidencias para o ML" no portfolio.
+    - bloco "ASIN x Query - explicacao ML" no modal do produto.
+    - linguagem revisada para "leitura/evidencia", sem vender a tela como motor de decisao.
+- Build/deploy:
+  - `docker compose build api` OK.
+  - `docker compose up -d --force-recreate api` OK.
+  - `docker exec marketcloud_frontend sh -lc "cd /app && npm run build"` OK.
+- Ressalvas:
+  - A view lagged esta pronta para um V4 point-in-time; o V3 atual ainda e agregado hora/target e nao consome `as_of_date` diretamente.
+  - Product names com mojibake ainda existem na origem para alguns ASINs (`ElÃ©trico`); nao foi corrigido nesta fase.
+  - Nao foi criada action matrix. Qualquer "onde brigar, quanto gastar, quando cortar/subir" deve continuar vindo do ML ou de explicacao de predicao ML.
+
+### Search Intelligence - Fase 3/4 Query Doctor + cobertura BA (2026-08-11)
+
+- Pedido:
+  - Fazer os proximos passos 3 e 4 da especificacao:
+    - tela de "Doutor de Query / SEO / Concorrencia";
+    - fechamento de cobertura Brand Analytics.
+  - Importante: nao criar motor paralelo de decisao. A tela mostra fatos, evidencias e lacunas; a decisao continua sendo do ML.
+- Migration criada/aplicada:
+  - `migrations/191_search_intelligence_doctor_and_ba_coverage.sql`.
+- Views criadas:
+  - `marketcloud_gold.gold_search_intelligence_asin_source_coverage_v1`:
+    - mede por ASIN quais fontes existem/faltam:
+      - financeiro do ASIN;
+      - SCP/Search Catalog Performance;
+      - SQP/Search Query Performance proprietario;
+      - Ads Search Terms.
+    - expõe `finance_status`, `scp_status`, `sqp_status`, `ads_search_terms_status`, `minimum_decision_status`, `ready_source_count`, `missing_sources_json` e `coverage_label`.
+  - `marketcloud_gold.gold_search_intelligence_ba_coverage_summary_v1`:
+    - resumo agregado das fontes:
+      - `FINANCEIRO_ASIN`;
+      - `SEARCH_CATALOG_PERFORMANCE`;
+      - `SEARCH_QUERY_PERFORMANCE`;
+      - `ADS_SEARCH_TERMS`;
+      - `BRAND_QUERY_COMPREHENSIVE`.
+  - `marketcloud_gold.gold_search_intelligence_query_doctor_v1`:
+    - camada explicativa ASIN/query cruzando:
+      - `gold_search_intelligence_asin_query_v1`;
+      - cobertura de fonte por ASIN;
+      - predicoes ML;
+      - Ads Search Terms;
+      - Brand Analytics por query;
+      - concorrentes;
+      - historico lagged D-1.
+    - classificacao explicativa `doctor_evidence_class`:
+      - `ML_COMPETITION_AND_MARKET`;
+      - `ML_ONLY`;
+      - `MARKET_COMPETITION_ONLY`;
+      - `ADS_FACT_ONLY`;
+      - `LOW_SIGNAL`.
+    - `doctor_json` e apenas leitura de evidencia, nao recomendacao deterministica.
+- Validacao viva no banco:
+  - `gold_search_intelligence_query_doctor_v1`: `2.888` linhas.
+  - `gold_search_intelligence_asin_source_coverage_v1`: `36` ASINs.
+  - Cobertura agregada:
+    - `ADS_SEARCH_TERMS`: `27` ASINs prontos / `9` faltando / `90` compras.
+    - `BRAND_QUERY_COMPREHENSIVE`: `71` chaves/linhas prontas / `0` faltando / `1.133.930` impressoes / `23.288` cliques / `1.639` compras.
+    - `FINANCEIRO_ASIN`: `28` ASINs prontos / `8` faltando.
+    - `SEARCH_CATALOG_PERFORMANCE`: `7` ASINs prontos / `29` faltando / `6.557` impressoes / `146` cliques / `10` compras.
+    - `SEARCH_QUERY_PERFORMANCE`: `0` ASINs prontos / `36` faltando / `0` linhas. Continua sendo a maior lacuna oficial.
+  - Labels de cobertura por ASIN:
+    - `ADS_E_FINANCEIRO_SEM_BA_COMPLETO`: `19`.
+    - `COBERTURA_INSUFICIENTE`: `8`.
+    - `COBERTURA_OPERACIONAL_SEM_SQP`: `5`.
+    - `FINANCEIRO_APENAS`: `4`.
+  - Classes do Doutor de Query:
+    - `LOW_SIGNAL`: `2.493`.
+    - `ADS_FACT_ONLY`: `225`.
+    - `ML_ONLY`: `160`.
+    - `MARKET_COMPETITION_ONLY`: `5`.
+    - `ML_COMPETITION_AND_MARKET`: `5`.
+- Backend/API:
+  - `GET /api/v1/gold/search-intelligence/coverage`.
+  - `GET /api/v1/gold/search-intelligence/query-doctor`.
+  - `GET /api/v1/gold/search-intelligence/products/{asin}/query-doctor`.
+  - Endpoints autenticados testados com `admin@zanom.com`:
+    - `coverage?limit=3` retornou summary das 5 fontes.
+    - `query-doctor?limit=3` retornou exemplos com `ML_COMPETITION_AND_MARKET`.
+    - `products/B0HBZJG89G/query-doctor?limit=2` retornou:
+      - `cozedor de ovos eletrico 220v`, `ML_ONLY`, `ml_cells=39`, `search_query_volume=1694`;
+      - `cozedor de ovos eletrico 110v`, `ML_ONLY`, `ml_cells=22`, `search_query_volume=1329`.
+- Frontend:
+  - `frontend/src/pages/SearchIntelligence.jsx`:
+    - bloco de portfolio renomeado para `Doutor de Query - SEO e concorrencia`;
+    - usa o endpoint novo de query doctor;
+    - mostra classe de evidencia, cobertura, status SQP, ML, BA/concorrencia e historico lagged;
+    - painel `Cobertura Brand Analytics e fontes do ML` passa a mostrar resumo por fonte e matriz por ASIN;
+    - modal do produto passa a carregar `query-doctor` por ASIN.
+  - A tela continua evitando recomendacao final por regra. Ela responde "o que sabemos e o que falta"; o "o que fazer" deve vir do modelo/decision engine.
+- Build/deploy:
+  - `docker compose build api` OK.
+  - `docker compose up -d --force-recreate api` OK.
+  - `docker exec marketcloud_frontend sh -lc "cd /app && npm run build"` OK.
+- Ressalvas:
+  - SQP proprietario por ASIN/query segue zerado. A Amazon ainda nao devolveu esse recorte util; nao foi inventado.
+  - Brand Query Comprehensive ja traz dado real de mercado/concorrencia por query, mas nao substitui SQP proprietario do ASIN.
+  - O V3 atual ainda nao consome toda a camada `query doctor` como feature final; a ponte correta para isso e o V4 point-in-time.
+  - Alguns textos de produto ainda carregam mojibake na origem; esta fase nao corrigiu nomes historicos.
+
+### Diagnostico - Share horario vs supressao de anuncios (2026-08-13)
+
+- Pergunta de negocio:
+  - O movimento cai em alguns dias/horas por queda de demanda ou porque os anuncios estao sendo suprimidos por budget, lance, stop-loss/dayparting ou perda de leilao?
+- Limite da Amazon:
+  - `topOfSearchImpressionShare` nao vem em grao horario.
+  - O conector Ads v3 ja registra isso no codigo: impression share so vem em relatorio `SUMMARY`, nao `DAILY` horario.
+  - A view `marketcloud_gold.v_campaign_impression_share_daily` existe, mas esta vazia agora:
+    - `marketcloud_ops.ads_reporting_sp_campaign_daily_v3`: `1066` linhas entre `2026-06-19` e `2026-08-12`.
+    - `top_of_search_is`: `0` linhas preenchidas.
+- O que existe para responder hora a hora:
+  - `marketcloud_bronze.bronze_amazon_ads_hourly` contem:
+    - `data_date`;
+    - `event_hour`;
+    - `campaign_name`;
+    - `budget`;
+    - `impressions`;
+    - `clicks`;
+    - `spend`;
+    - `orders_7d`;
+    - `sales_7d`;
+    - `roas`.
+- Diagnostico inicial com baseline horario:
+  - Metodo:
+    - comparar cada campanha/hora contra a mediana da propria campanha naquela mesma hora nos ultimos dias.
+    - `imp_ratio = impressions / mediana_impressions_da_mesma_hora`.
+  - Achados recentes:
+    - `2026-08-12`, `Localizador`, 10h-15h: varias horas ficaram muito abaixo do baseline:
+      - 11h: `1` impressao vs mediana `49` (`0,02x`).
+      - 13h: `6` vs `92` (`0,07x`).
+      - 10h: `17` vs `78` (`0,22x`).
+      - 14h: `17` vs `63` (`0,27x`).
+      - 15h: `24` vs `76` (`0,32x`).
+    - `2026-08-09`, campanhas M19 phrase/auto tambem tiveram blocos com `0,13x` a `0,33x` do baseline.
+    - Isso e sinal de possivel supressao/estrangulamento por campanha, nao apenas variacao normal de demanda.
+- Resposta correta para produto:
+  - Nao temos "share hora a hora" oficial da Amazon.
+  - Temos como construir um `Radar de Supressao Horaria` com proxy auditavel:
+    - queda de impressao vs baseline da mesma campanha/hora;
+    - gasto zerado ou CPC anormal;
+    - consumo de budget diario;
+    - status do stop-loss/cooldown/dayparting;
+    - bid atual vs bid sugerido Amazon;
+    - conversao/ROAS da hora.
+  - A tela deve responder:
+    - `queda de demanda`;
+    - `perda de leilao/lance baixo`;
+    - `budget limitando`;
+    - `travado por stop-loss/cooldown`;
+    - `agenda/dayparting reduziu exposicao`;
+    - `sem evidencia suficiente`.
+- Pendencias:
+  - Corrigir/reprocessar relatorio Ads `SUMMARY` para popular `topOfSearchImpressionShare` diario.
+  - Criar view gold de `hourly_suppression_radar_v1`.
+  - Expor na tela de Ads/Risk ou Status AMS+ML como painel horario por campanha/keyword.
+
+## 165. ZM19 Decision Engine V2 consumido pelo ML Target V3 - 2026-08-15
+
+- Objetivo:
+  - Fechar a regra arquitetural definida: ZM19 gera contexto, evidencia, outcome e politica de capital; quem decide continua sendo o ML.
+  - Evitar motor paralelo deterministico dando recomendacao comercial rasa.
+- Mercado-data-app / SWARM:
+  - Backend ZM19 Decision Engine V2 validado via `POST /api/amazon/ads/m19-clone/decision-v2`.
+  - Estado vivo apos refresh:
+    - `asin_states=11`;
+    - `bottlenecks=11`;
+    - `query_states=638`;
+    - `placements=23`;
+    - `opportunities=37`;
+    - `outcomes=791`;
+    - `action_yields=17`;
+    - `capital_allocations=11`;
+    - `ml_evidence_rows=40`;
+    - `open_micro_bets=0`.
+  - Fix importante:
+    - `amazon_ads_placement_daily` e campanha-level.
+    - Quando uma campanha tem mais de um ASIN/ad group, o placement agora cai em `PORTFOLIO`, evitando fan-out falso para cada ASIN.
+- MarketCloud / Lake:
+  - Criada migration `migrations/192_zm19_decision_v2_ml_features.sql`.
+  - Novas foreign tables via FDW:
+    - `swarm_src.zm19_query_state_daily`;
+    - `swarm_src.zm19_capital_allocation_daily`;
+    - `swarm_src.zm19_action_yield_daily`.
+  - Nova view:
+    - `marketcloud_features.feature_zm19_decision_v2_context_v1`.
+  - Validacao da view:
+    - `638` linhas;
+    - `11` ASINs;
+    - `595` queries;
+    - `638` linhas com `zm19_hard_cpc_brl`;
+    - `5` linhas com `zm19_brand_purchase_share > 0`.
+- Worker ML:
+  - Alterados os dois arquivos para evitar drift entre copia viva e copia de modelagem:
+    - `workers/ml-worker/marketcloud_ml_worker_hourly_target_real_v3.py`;
+    - `workers/modeling-worker/marketcloud_ml_worker_hourly_target_real_v3.py`.
+  - O Dockerfile do worker usa a copia de `workers/ml-worker` para `marketcloud_ml_worker_hourly_target_real_v3.py`.
+  - O dataset de treino agora traz `product_asin` e faz merge ASIN + query normalizada (`unaccent/lower/split`) contra a view ZM19 V2.
+  - Features ZM19 V2 consumidas pelo modelo:
+    - `has_zm19_v2_context`;
+    - `zm19_brand_impression_share`;
+    - `zm19_brand_click_share`;
+    - `zm19_brand_cart_add_share`;
+    - `zm19_brand_purchase_share`;
+    - `zm19_purchase_share_lift`;
+    - `zm19_capital_tier_score`;
+    - `zm19_ppc_score`;
+    - `zm19_learning_allowance_brl`;
+    - `zm19_scale_budget_cap_brl`;
+    - `zm19_hard_cpc_brl`;
+    - `zm19_capital_policy_score`;
+    - `zm19_action_samples`;
+    - `zm19_action_wins`;
+    - `zm19_action_losses`;
+    - `zm19_action_avg_win_rate`;
+    - `zm19_action_avg_contribution_delta`.
+- Anti-leak / honestidade:
+  - A view mantem campos auditaveis de query (`orders_14d`, `sales_14d`, `spend_14d`, etc.), mas esses campos NAO foram colocados no vetor final de treino.
+  - Motivo: sao acumulados de resultado por query e poderiam virar atalho para o label.
+  - O ML consome contexto competitivo/BA, politica de capital e historico agregado de yield; os acumulados de resultado ficam para explicabilidade/evidencia e para futura versao point-in-time estrita.
+- Deploy e validacao:
+  - `docker compose build modeling-worker` OK.
+  - `docker compose up -d modeling-worker` OK.
+  - `python -m py_compile /app/marketcloud_ml_worker_hourly_target_real_v3.py` dentro da imagem OK.
+  - Rodada real `hourly_target_real_v3` concluida:
+    - run `2015`;
+    - `17766` linhas de treino;
+    - `1491` celulas com clique;
+    - `308` celulas com pedido;
+    - `17766` predicoes gravadas.
+  - `model_registry` confirmou `17` features `zm19_*` em cada modelo:
+    - `HourlyTargetClickRealV3`;
+    - `HourlyTargetConversionRealV3`;
+    - `HourlyTargetExpectedRoasRealV3`.
+  - Metricas da rodada:
+    - Click: AUC `0.8682` vs baseline `0.5823`;
+    - Conversion: AUC `0.9558`, clicked-only `0.7781`, baseline `0.6047`;
+    - ROAS: MAE `0.286`.
+- Estado honesto:
+  - Backend ZM19 V2, lake FDW e worker ML estao conectados.
+  - As features entraram no treino e predicao.
+  - Ainda nao apareceu `zm19_*` entre as top 8 importancias do modelo; isso indica que o modelo ainda da mais peso a impressao/dias/historico de campanha/qualidade.
+  - Isso e esperado no primeiro treino: o sinal esta disponivel, mas precisa de mais outcomes e repeticao para ganhar peso.
+  - Proxima etapa futura: V4 point-in-time estrito para usar historicos de query com janela `as_of_date - 1`, sem vazar resultado corrente.
