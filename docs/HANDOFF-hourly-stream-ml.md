@@ -10590,3 +10590,134 @@ Correcao posterior - Relatorio Exibicao de marca Abrangente na tela e no Lake:
   - Ainda nao apareceu `zm19_*` entre as top 8 importancias do modelo; isso indica que o modelo ainda da mais peso a impressao/dias/historico de campanha/qualidade.
   - Isso e esperado no primeiro treino: o sinal esta disponivel, mas precisa de mais outcomes e repeticao para ganhar peso.
   - Proxima etapa futura: V4 point-in-time estrito para usar historicos de query com janela `as_of_date - 1`, sem vazar resultado corrente.
+
+### Search Intelligence - correcao de frescor BA/Ads Terms (2026-08-21)
+
+Contexto:
+- Diagnostico vivo mostrou fontes com datas diferentes:
+  - SCP e SQP proprietarios ate `2026-08-15`: correto, pois sao reports semanais e a semana `2026-08-16..2026-08-22` ainda estava aberta; a Amazon recusou esse periodo com erro de parametro invalido.
+  - Brand Query Comprehensive preso em `2026-08-08`: desalinhamento nosso; a fonte E003 `amazon_brand_analytics_search_terms` ja tinha mercado/concorrencia ate `2026-08-15`.
+  - Ads Search Terms no Gold do MarketCloud preso em `2026-08-19`, enquanto o Pricing/SWARM ja tinha `amazon_ads_search_terms_daily` ate `2026-08-21`.
+
+Correcao aplicada:
+- Nova migration `migrations/215_search_intelligence_freshness_fix.sql`.
+- Criada FDW `swarm_src.amazon_ads_search_terms_daily`.
+- `marketcloud_gold.gold_ads_search_term_daily_v1` agora une:
+  - `marketcloud_silver.silver_search_term_daily` como fonte principal;
+  - `swarm_src.amazon_ads_search_terms_daily` somente para datas mais novas que ainda nao chegaram pelo silver/AMC.
+  - Isso evita duplicar dias e remove o atraso artificial D-2 quando o Pricing ja esta mais fresco.
+- `marketcloud_gold.gold_brand_analytics_brand_query_comprehensive_v1` foi repontada para a fonte fresca E003 (`amazon_brand_analytics_search_terms`) como camada compativel de mercado/concorrencia.
+  - Campos que E003 nao entrega (`search_query_volume`, impressoes totais, funil completo) ficam `NULL`/nao inventados.
+  - A fonte passa a se declarar no status como `BA_SEARCH_TERMS_E003`.
+- `marketcloud_gold.gold_search_intelligence_minimum_source_status_v1` foi ajustada para nao marcar E003 como `PARTIAL` apenas por nao conter campos comprehensive-only.
+- `marketcloud_gold.refresh_brand_analytics_gold()` e `refresh_search_intelligence_cache_v1()` agora tambem atualizam:
+  - `mv_brand_analytics_brand_query_comprehensive_v1`;
+  - `mv_search_intelligence_minimum_source_status_v1`;
+  - as MVs pesadas de Search Intelligence.
+
+Validacao apos `SELECT marketcloud_gold.refresh_brand_analytics_gold()`:
+- `ADS_SEARCH_TERMS`: `READY`, `16.329` linhas, `3.823` termos, `180` pedidos, `R$ 4.004,26` spend, max_date `2026-08-21`.
+- `BRAND_QUERY_COMPREHENSIVE`: `READY`, `31.142` linhas, `20.265` queries, max_date `2026-08-15`, fonte `BA_SEARCH_TERMS_E003`.
+- `SEARCH_CATALOG_PERFORMANCE`: `READY`, `48` linhas, `13` ASINs, max_date `2026-08-15`.
+- `SEARCH_QUERY_PERFORMANCE`: `READY`, `3.717` linhas, `13` ASINs, max_date `2026-08-15`.
+- Matriz por ASIN: `10 READY_FOR_DECISION`, `26 INSUFFICIENT_DATA`.
+
+Leitura correta:
+- Frescor das fontes foi corrigido.
+- Cobertura por ASIN ainda nao e 100%: SCP/SQP continuam cobrindo `13` ASINs porque dependem da Amazon devolver reports semanais proprietarios por ASIN.
+- A proxima semana SCP/SQP valida so deve ser requisitada/avaliada depois do fechamento de `2026-08-16..2026-08-22`.
+
+### Status AMS + ML - performance e erro 500 (2026-08-24)
+
+Sintoma:
+- Tela `Status AMS + ML` demorava muito e podia aparecer como erro 500/timeout no frontend.
+- Logs da API antes da correcao mostravam abas `ams`, `robot` e `ml` levando entre 3 e 4 minutos.
+
+Causa raiz:
+- Endpoint `GET /api/v1/gold/ml-ams-status` carregava views pesadas de todas as abas mesmo quando o usuario abria apenas uma aba.
+- Exemplo: `view=ams` tambem carregava learning loop, audit 360 e full control; `view=ml` tambem carregava qualidade AMS e reprocessamento.
+
+Correcao aplicada:
+- `internal/query/ml_ams_status.go` ganhou retorno leve por aba:
+  - `overview`: registry, runs, AMS horas/totais e resumo agregado de learning.
+  - `ams`: AMS horas/totais e payload leve, sem views de learning/robot.
+  - `audit`: modelos/runs/volumes leves, sem views de learning/robot/AMS quality.
+  - `ml`: learning/outcomes/holdout, sem audit 360 nem qualidade AMS.
+  - `robot`: audit 360/full control, sem qualidade AMS/reprocessamento.
+- A tela deixa de pagar o custo das abas que nao estao visiveis.
+
+Deploy/validacao:
+- `docker compose up -d --build api` concluido e `marketcloud_api` recriado.
+- Validacao autenticada com `superadmin@marketcloud.io`:
+  - `overview`: HTTP 200 em `2942 ms`, `25288` bytes.
+  - `ams`: HTTP 200 em `1025 ms`, `24995` bytes.
+  - `robot`: HTTP 200 em `3290 ms`, `49687` bytes.
+  - `ml`: HTTP 200 em `1840 ms`, `25544` bytes.
+  - `audit`: HTTP 200 em `2102 ms`, `24995` bytes.
+
+Ressalva honesta:
+- A qualidade profunda AMS x Ads e as tabelas de reprocessamento continuam existindo, mas foram retiradas do caminho inicial pesado. Se precisarmos delas novamente na aba `ams`, o correto e materializar/resumir em tabela leve, nao chamar as views caras no request interativo.
+
+### Status AMS + ML - correcao do atalho vazio (2026-08-24)
+
+Sintoma apos a primeira otimizacao:
+- As abas carregavam sem 500, mas `AMS / Dados` vinha com `quality=0`, `targetq=0`, `reprocess=0`.
+- `ML / Aprendizado` calculava o learning loop, mas devolvia `learning_outcomes=[]`.
+- `Robo / Acoes` vinha vazio porque `v_auto_apply_audit_360_v1` nao refletia a fonte viva de decisoes.
+
+Causa:
+- O corte por aba foi agressivo demais: removeu as views pesadas, mas tambem removeu os dados reais que a UI exibe.
+- A qualidade fina `v_ams_target_ads_reconciliation_daily_v1` levou aproximadamente `28s` so para o resumo; nao pode ficar no request interativo.
+- A fonte viva de acoes recentes esta em `marketcloud_recommendations.recommendation_decisions` (`680` decisoes, ultima em `2026-08-24 13:49 UTC`), enquanto a view 360 antiga retornava zero para o tenant da sessao.
+
+Correcao aplicada:
+- `view=ams` volta a entregar dados reais:
+  - `ams_quality_summary`;
+  - `ams_quality_divergences`;
+  - `ads_reprocess_requests`;
+  - `ads_reprocess_health`;
+  - resumo target leve por `bronze_ams_hourly_target` x `ads_reporting_sp_targeting_daily_v3`.
+- A reconciliacao fina target continua disponivel para auditoria, mas nao bloqueia a tela; o resumo interativo usa status `FAST_COVERAGE`.
+- `view=ml` agora devolve `learning_outcomes` de verdade.
+- `view=robot` ganhou fallback em `recommendation_decisions` quando a view 360 vier vazia.
+- Deploy rapido final feito por binario Linux local + `docker cp .tmp/api marketcloud_api:/bin/api` + `docker restart marketcloud_api`.
+
+Validacao autenticada final:
+- `overview`: HTTP 200 em `1129 ms`, `36` horas AMS, `24` runs.
+- `ams`: HTTP 200 em `8100 ms`, `quality=6`, `targetq=2`, `reprocess=40`.
+- `robot`: HTTP 200 em `1477 ms`, `robot=40`, `learning=36`.
+- `ml`: HTTP 200 em `1869 ms`, `learning=36`.
+- `audit`: HTTP 200 em `886 ms`, `24` runs.
+
+Ressalva:
+- `AMS / Dados` ainda e a aba mais pesada por causa do `v_ads_reporting_reprocess_health_v1` (~5s) e da qualidade campanha (~0.8s). Esta funcional, mas o proximo ganho de performance deve materializar/cachear o health oficial em tabela leve.
+
+### Status AMS + ML - performance sem amputar dados (2026-08-24)
+
+Correcao da correcao:
+- A primeira tentativa de performance quebrou o contrato visual: algumas abas ficaram rapidas porque vieram sem os dados que a UI espera.
+- Isso foi corrigido sem voltar ao endpoint monolitico pesado.
+
+O que mudou:
+- Frontend `StatusAmsMl.jsx` agora mescla o payload por aba no estado, em vez de substituir a tela inteira por um recorte parcial.
+  - Exemplo: carregar `ML / Aprendizado` nao apaga mais os dados ja carregados de `AMS / Dados` ou `Robo / Acoes`.
+  - A tela tambem aquece `ams`, `robot`, `ml` e `audit` em segundo plano apos abrir, para os contadores nao parecerem zerados.
+- Backend `ml_ams_status.go` manteve retorno por aba, mas com dados reais:
+  - `AMS / Dados`: qualidade, divergencias, reprocessamento e resumo target.
+  - `Robo / Acoes`: fallback direto em `recommendation_decisions` quando a view 360 vier vazia.
+  - `ML / Aprendizado`: `learning_outcomes` real.
+- O health oficial de reprocessamento deixou de chamar `marketcloud_gold.v_ads_reporting_reprocess_health_v1` no request interativo.
+  - A view custava cerca de `5s`.
+  - O caminho novo calcula o mesmo resumo sobre as 10 janelas recentes com CTEs agregadas e mediu cerca de `37ms`.
+- A reconciliacao target fina de `28s` continua fora do caminho interativo; a aba mostra resumo `FAST_COVERAGE` e deixa a investigacao profunda para auditoria/reprocessamento.
+
+Validacao final autenticada, rodada quente:
+- `overview`: HTTP 200 em `368 ms`.
+- `ams`: HTTP 200 em `827 ms`, com `quality=6`, `diverg=30`, `targetq=2`, `reprocess=40`.
+- `robot`: HTTP 200 em `832 ms`, com `robot=40`, `learning=36`.
+- `ml`: HTTP 200 em `946 ms`, com `learning=36`.
+- `audit`: HTTP 200 em `595 ms`.
+
+Status honesto:
+- Performance corrigida sem esconder dados das abas.
+- Ainda existe uma reconciliacao target profunda cara para auditoria tecnica; nao deve rodar no render da tela principal.

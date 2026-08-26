@@ -189,6 +189,55 @@ function maeClass(v) {
 
 const DEFAULT_STATUS_DATA = { totals: {}, models: [], ml_runs: [], ams_hours: [], learning_outcomes: [], audit_360: [], audit_360_summary: {}, full_control_360_summary: {}, full_control_360: [], ams_quality_summary: [], ams_quality_divergences: [], ads_reprocess_requests: [], ads_reprocess_health: [], ml_training_volume: [], ams_target_quality_summary: [], ams_target_quality_divergences: [], operational_alerts: [] }
 
+function mergeStatusData(prev, next, view) {
+  const merged = {
+    ...prev,
+    totals: next?.totals || prev.totals || {},
+    models: next?.models || prev.models || [],
+    ml_runs: next?.ml_runs || prev.ml_runs || [],
+    ams_hours: next?.ams_hours || prev.ams_hours || [],
+  }
+
+  if (view === 'ams') {
+    merged.ams_quality_summary = next.ams_quality_summary || []
+    merged.ams_quality_divergences = next.ams_quality_divergences || []
+    merged.ads_reprocess_requests = next.ads_reprocess_requests || []
+    merged.ads_reprocess_health = next.ads_reprocess_health || []
+    merged.ams_target_quality_summary = next.ams_target_quality_summary || []
+    merged.ams_target_quality_divergences = next.ams_target_quality_divergences || []
+  }
+
+  if (view === 'robot') {
+    merged.audit_360_summary = next.audit_360_summary || {}
+    merged.audit_360 = next.audit_360 || []
+    merged.full_control_360_summary = next.full_control_360_summary || {}
+    merged.full_control_360 = next.full_control_360 || []
+    merged.learning_outcomes = next.learning_outcomes || merged.learning_outcomes || []
+    merged.learning_summary = next.learning_summary || merged.learning_summary || {}
+    merged.holdout = next.holdout || merged.holdout || {}
+  }
+
+  if (view === 'ml') {
+    merged.learning_outcomes = next.learning_outcomes || []
+    merged.learning_summary = next.learning_summary || {}
+    merged.holdout = next.holdout || {}
+    if (next.ml_training_volume?.length) merged.ml_training_volume = next.ml_training_volume
+  }
+
+  if (view === 'audit') {
+    merged.ml_training_volume = next.ml_training_volume || []
+    merged.operational_alerts = next.operational_alerts || merged.operational_alerts || []
+  }
+
+  if (view === 'overview') {
+    merged.learning_summary = next.learning_summary || merged.learning_summary || {}
+    if (next.ml_training_volume?.length) merged.ml_training_volume = next.ml_training_volume
+    merged.operational_alerts = next.operational_alerts || merged.operational_alerts || []
+  }
+
+  return { ...DEFAULT_STATUS_DATA, ...merged }
+}
+
 export default function StatusAmsMl({ ctx }) {
   const { tenantID } = ctx
   const [data, setData] = useState(DEFAULT_STATUS_DATA)
@@ -201,7 +250,7 @@ export default function StatusAmsMl({ ctx }) {
     setError('')
     const res = await api.goldMlAmsStatus(tenantID, activeTab)
     if (res.ok) {
-      setData(res.data || DEFAULT_STATUS_DATA)
+      setData(prev => mergeStatusData(prev, res.data || DEFAULT_STATUS_DATA, activeTab))
       setUpdatedAt(new Date())
     } else {
       setError(res.data?.error || `Falha ao carregar (${res.status})`)
@@ -214,6 +263,21 @@ export default function StatusAmsMl({ ctx }) {
     const t = setInterval(load, 60000)
     return () => clearInterval(t)
   }, [load])
+
+  useEffect(() => {
+    let cancelled = false
+    const tabsToWarm = ['ams', 'robot', 'ml', 'audit'].filter(tab => tab !== activeTab)
+    tabsToWarm.forEach((tab, index) => {
+      window.setTimeout(async () => {
+        if (cancelled) return
+        const res = await api.goldMlAmsStatus(tenantID, tab)
+        if (!cancelled && res.ok) {
+          setData(prev => mergeStatusData(prev, res.data || DEFAULT_STATUS_DATA, tab))
+        }
+      }, 500 + index * 350)
+    })
+    return () => { cancelled = true }
+  }, [tenantID])
 
   const totals = data.totals || {}
   const runs = data.ml_runs || []

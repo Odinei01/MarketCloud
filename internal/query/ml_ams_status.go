@@ -211,6 +211,353 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if view == "overview" {
+		var ls struct {
+			Measured, Improved, Worsened, Neutral, NoData int
+			NetDeltaSales, NetDeltaSpend                  float64
+		}
+		_ = h.db.QueryRow(ctx, `
+			SELECT
+				count(*) FILTER (WHERE outcome_window='24h'),
+				count(*) FILTER (WHERE outcome_window='24h' AND outcome_label='IMPROVED'),
+				count(*) FILTER (WHERE outcome_window='24h' AND outcome_label='WORSENED'),
+				count(*) FILTER (WHERE outcome_window='24h' AND outcome_label='NEUTRAL'),
+				count(*) FILTER (WHERE outcome_window='24h' AND outcome_label='NO_DATA'),
+				COALESCE(sum(delta_sales) FILTER (WHERE outcome_window='24h'),0),
+				COALESCE(sum(delta_spend) FILTER (WHERE outcome_window='24h'),0)
+			FROM marketcloud_recommendations.recommendation_hourly_outcomes`).
+			Scan(&ls.Measured, &ls.Improved, &ls.Worsened, &ls.Neutral, &ls.NoData, &ls.NetDeltaSales, &ls.NetDeltaSpend)
+
+		conclusive := ls.Improved + ls.Worsened
+		sample := "OK"
+		verdict := "NEUTRO"
+		if conclusive < 20 {
+			sample = "PEQUENA"
+			verdict = "INCONCLUSIVO"
+		} else if ls.Improved > ls.Worsened && ls.NetDeltaSales >= 0 {
+			verdict = "POSITIVO"
+		} else if ls.Worsened > ls.Improved && ls.NetDeltaSales < 0 {
+			verdict = "NEGATIVO"
+		}
+
+		trainingVolumeLight := []map[string]any{
+			{
+				"source":    "campaign_hour_gold",
+				"rows":      totals["campaign_rows"],
+				"campaigns": nil,
+				"targets":   nil,
+				"clicks":    nil,
+				"orders":    totals["ams_orders_7d"],
+				"sales":     totals["ams_sales_7d"],
+				"spend":     nil,
+			},
+			{
+				"source":    "target_hour_reconciled",
+				"rows":      totals["target_rows"],
+				"campaigns": nil,
+				"targets":   nil,
+				"clicks":    nil,
+				"orders":    totals["target_orders_7d"],
+				"sales":     totals["target_sales_7d"],
+				"spend":     nil,
+			},
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"totals":                         totals,
+			"models":                         models,
+			"ml_runs":                        runs,
+			"ams_hours":                      ams,
+			"learning_outcomes":              []map[string]any{},
+			"learning_summary":               map[string]any{"measured": ls.Measured, "improved": ls.Improved, "worsened": ls.Worsened, "neutral": ls.Neutral, "no_data": ls.NoData, "conclusive": conclusive, "net_delta_sales": ls.NetDeltaSales, "net_delta_spend": ls.NetDeltaSpend, "sample": sample, "verdict": verdict},
+			"holdout":                        map[string]any{},
+			"audit_360_summary":              map[string]any{},
+			"audit_360":                      []map[string]any{},
+			"full_control_360_summary":       map[string]any{},
+			"full_control_360":               []map[string]any{},
+			"ams_quality_summary":            []map[string]any{},
+			"ams_quality_divergences":        []map[string]any{},
+			"ads_reprocess_requests":         []map[string]any{},
+			"ads_reprocess_health":           []map[string]any{},
+			"ml_training_volume":             trainingVolumeLight,
+			"operational_alerts":             []map[string]any{},
+			"ams_target_quality_summary":     []map[string]any{},
+			"ams_target_quality_divergences": []map[string]any{},
+		})
+		return
+	}
+
+	if view == "audit" {
+		trainingVolumeLight := []map[string]any{
+			{
+				"source": "campaign_hour_gold",
+				"rows":   totals["campaign_rows"],
+				"orders": totals["ams_orders_7d"],
+				"sales":  totals["ams_sales_7d"],
+			},
+			{
+				"source": "target_hour_reconciled",
+				"rows":   totals["target_rows"],
+				"orders": totals["target_orders_7d"],
+				"sales":  totals["target_sales_7d"],
+			},
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"totals":                         totals,
+			"models":                         models,
+			"ml_runs":                        runs,
+			"ams_hours":                      ams,
+			"learning_outcomes":              []map[string]any{},
+			"learning_summary":               map[string]any{},
+			"holdout":                        map[string]any{},
+			"audit_360_summary":              map[string]any{},
+			"audit_360":                      []map[string]any{},
+			"full_control_360_summary":       map[string]any{},
+			"full_control_360":               []map[string]any{},
+			"ams_quality_summary":            []map[string]any{},
+			"ams_quality_divergences":        []map[string]any{},
+			"ads_reprocess_requests":         []map[string]any{},
+			"ads_reprocess_health":           []map[string]any{},
+			"ml_training_volume":             trainingVolumeLight,
+			"ams_target_quality_summary":     []map[string]any{},
+			"ams_target_quality_divergences": []map[string]any{},
+			"operational_alerts":             []map[string]any{},
+		})
+		return
+	}
+
+	if view == "ams" {
+		qualityRows, err := h.db.Query(ctx, `
+			SELECT data_quality_status, operator_action, rows,
+			       min_date, max_date,
+			       avg_quality_score::float8 AS avg_quality_score,
+			       ams_spend::float8 AS ams_spend,
+			       ads_spend::float8 AS ads_spend,
+			       delta_ads_spend::float8 AS delta_ads_spend,
+			       ams_orders_7d::float8 AS ams_orders_7d,
+			       ads_orders::float8 AS ads_orders,
+			       delta_ads_orders::float8 AS delta_ads_orders,
+			       last_ams_update, last_ads_sync
+			FROM marketcloud_gold.v_ams_quality_summary_v1
+			ORDER BY
+				CASE data_quality_status
+					WHEN 'DIVERGENT' THEN 0
+					WHEN 'ADS_MISSING' THEN 1
+					WHEN 'ATTRIBUTING' THEN 2
+					WHEN 'FRESH' THEN 3
+					WHEN 'DELTA_ONLY' THEN 4
+					WHEN 'MATURE_RECONCILED' THEN 5
+					ELSE 6
+				END,
+				rows DESC`)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ams_quality_summary_failed: "+err.Error())
+			return
+		}
+		qualitySummary, err := pgx.CollectRows(qualityRows, pgx.RowToMap)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ams_quality_summary_scan_failed: "+err.Error())
+			return
+		}
+
+		divRows, err := h.db.Query(ctx, `
+			SELECT data_date, maturity_bucket, campaign_id, campaign_name,
+			       data_quality_status, data_quality_score, operator_action,
+			       ams_spend_clamped::float8 AS ams_spend,
+			       ads_spend::float8 AS ads_spend,
+			       delta_ads_spend::float8 AS delta_ads_spend,
+			       ams_orders_7d::float8 AS ams_orders_7d,
+			       ads_orders::float8 AS ads_orders,
+			       delta_ads_orders::float8 AS delta_ads_orders,
+			       ams_sales_7d::float8 AS ams_sales_7d,
+			       ads_sales::float8 AS ads_sales,
+			       delta_ads_sales::float8 AS delta_ads_sales,
+			       ams_last_update, ads_last_sync
+			FROM marketcloud_gold.v_ams_data_quality_score_v1
+			WHERE data_quality_status IN ('DIVERGENT','ADS_MISSING','LOW_CONFIDENCE')
+			   OR operator_action IN ('REQUEST_ADS_REPORT_REPROCESS','INVESTIGATE_DELTA_AND_REPROCESS_ADS_REPORT')
+			ORDER BY data_quality_score ASC, data_date DESC, ABS(delta_ads_spend) DESC NULLS LAST
+			LIMIT 30`)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ams_quality_divergences_failed: "+err.Error())
+			return
+		}
+		qualityDivergences, err := pgx.CollectRows(divRows, pgx.RowToMap)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ams_quality_divergences_scan_failed: "+err.Error())
+			return
+		}
+
+		reprocessRows, err := h.db.Query(ctx, `
+			SELECT id, source, data_date, window_label, status, reason,
+			       requested_at, updated_at, completed_at, error_message
+			FROM marketcloud_ops.ads_reporting_reprocess_requests
+			ORDER BY data_date DESC, window_label
+			LIMIT 30`)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ads_reprocess_requests_failed: "+err.Error())
+			return
+		}
+		reprocessRequests, err := pgx.CollectRows(reprocessRows, pgx.RowToMap)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ads_reprocess_requests_scan_failed: "+err.Error())
+			return
+		}
+
+		reprocessHealthRows, err := h.db.Query(ctx, `
+			SELECT id, data_date, window_label, window_status, grain, report_id,
+			       rows_ingested, grain_status, updated_at, completed_at, error_message
+			FROM (
+				WITH recent AS (
+					SELECT id, data_date, window_label, status AS window_status,
+					       metadata_json, updated_at, completed_at, error_message
+					FROM marketcloud_ops.ads_reporting_reprocess_requests
+					ORDER BY data_date DESC, window_label
+					LIMIT 10
+				), campaign AS (
+					SELECT data_date, MAX(report_id) AS report_id, COUNT(*)::int AS rows_ingested
+					FROM marketcloud_ops.ads_reporting_sp_campaign_daily_v3
+					WHERE data_date IN (SELECT data_date FROM recent)
+					GROUP BY data_date
+				), adgroup AS (
+					SELECT data_date, MAX(report_id) AS report_id, COUNT(*)::int AS rows_ingested
+					FROM marketcloud_ops.ads_reporting_sp_adgroup_daily_v3
+					WHERE data_date IN (SELECT data_date FROM recent)
+					GROUP BY data_date
+				), keyword AS (
+					SELECT data_date, MAX(report_id) AS report_id, COUNT(*)::int AS rows_ingested
+					FROM marketcloud_ops.ads_reporting_sp_targeting_daily_v3
+					WHERE report_grain = 'KEYWORD'
+					  AND data_date IN (SELECT data_date FROM recent)
+					GROUP BY data_date
+				), target AS (
+					SELECT data_date, MAX(report_id) AS report_id, COUNT(*)::int AS rows_ingested
+					FROM marketcloud_ops.ads_reporting_sp_targeting_daily_v3
+					WHERE report_grain = 'TARGET'
+					  AND data_date IN (SELECT data_date FROM recent)
+					GROUP BY data_date
+				)
+				SELECT r.id, r.data_date, r.window_label, r.window_status,
+				       r.updated_at, r.completed_at, r.error_message,
+				       g.grain,
+				       CASE g.grain
+				       	WHEN 'CAMPAIGN' THEN COALESCE(r.metadata_json->>'sp_campaign_report_id', campaign.report_id)
+				       	WHEN 'AD_GROUP' THEN COALESCE(r.metadata_json->>'sp_adgroup_report_id', adgroup.report_id)
+				       	WHEN 'KEYWORD' THEN COALESCE(r.metadata_json->>'sp_keyword_report_id', keyword.report_id)
+				       	WHEN 'TARGET' THEN COALESCE(r.metadata_json->>'sp_target_report_id', target.report_id)
+				       END AS report_id,
+				       CASE g.grain
+				       	WHEN 'CAMPAIGN' THEN COALESCE(NULLIF(r.metadata_json->>'sp_campaign_rows_ingested','')::int, campaign.rows_ingested, 0)
+				       	WHEN 'AD_GROUP' THEN COALESCE(NULLIF(r.metadata_json->>'sp_adgroup_rows_ingested','')::int, adgroup.rows_ingested, 0)
+				       	WHEN 'KEYWORD' THEN COALESCE(NULLIF(r.metadata_json->>'sp_keyword_rows_ingested','')::int, keyword.rows_ingested, 0)
+				       	WHEN 'TARGET' THEN COALESCE(NULLIF(r.metadata_json->>'sp_target_rows_ingested','')::int, target.rows_ingested, 0)
+				       END AS rows_ingested,
+				       CASE g.grain
+				       	WHEN 'CAMPAIGN' THEN COALESCE(r.metadata_json->>'campaign_last_poll_status', CASE WHEN campaign.rows_ingested > 0 THEN 'COMPLETED' END, CASE WHEN r.metadata_json ? 'sp_campaign_rows_ingested' THEN 'COMPLETED' END)
+				       	WHEN 'AD_GROUP' THEN COALESCE(r.metadata_json->>'adgroup_last_poll_status', CASE WHEN adgroup.rows_ingested > 0 THEN 'COMPLETED' END, CASE WHEN r.metadata_json ? 'sp_adgroup_rows_ingested' THEN 'COMPLETED' END)
+				       	WHEN 'KEYWORD' THEN COALESCE(r.metadata_json->>'keyword_last_poll_status', CASE WHEN keyword.rows_ingested > 0 THEN 'COMPLETED' END, CASE WHEN r.metadata_json ? 'sp_keyword_rows_ingested' THEN 'COMPLETED' END)
+				       	WHEN 'TARGET' THEN COALESCE(r.metadata_json->>'target_last_poll_status', CASE WHEN target.rows_ingested > 0 THEN 'COMPLETED' END, CASE WHEN r.metadata_json ? 'sp_target_rows_ingested' THEN 'COMPLETED' END)
+				       END AS grain_status
+				FROM recent r
+				CROSS JOIN (VALUES ('CAMPAIGN'), ('AD_GROUP'), ('KEYWORD'), ('TARGET')) AS g(grain)
+				LEFT JOIN campaign ON campaign.data_date = r.data_date
+				LEFT JOIN adgroup ON adgroup.data_date = r.data_date
+				LEFT JOIN keyword ON keyword.data_date = r.data_date
+				LEFT JOIN target ON target.data_date = r.data_date
+			) h
+			ORDER BY data_date DESC,
+				CASE grain WHEN 'CAMPAIGN' THEN 0 WHEN 'AD_GROUP' THEN 1 WHEN 'KEYWORD' THEN 2 WHEN 'TARGET' THEN 3 ELSE 4 END
+			LIMIT 40`)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ads_reprocess_health_failed: "+err.Error())
+			return
+		}
+		reprocessHealth, err := pgx.CollectRows(reprocessHealthRows, pgx.RowToMap)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ads_reprocess_health_scan_failed: "+err.Error())
+			return
+		}
+
+		targetQualityRows, err := h.db.Query(ctx, `
+			WITH ams AS (
+				SELECT
+					CASE
+						WHEN NULLIF(keyword_id, '') IS NOT NULL
+						  OR COALESCE(match_type, '') IN ('BROAD','PHRASE','EXACT')
+						THEN 'KEYWORD'
+						ELSE 'TARGET'
+					END AS ads_report_grain,
+					COUNT(*)::float8 AS rows,
+					COALESCE(SUM(spend),0)::float8 AS ams_spend,
+					COALESCE(SUM(GREATEST(COALESCE(orders_14d,0), COALESCE(orders_7d,0), COALESCE(orders_1d,0))),0)::float8 AS ams_orders,
+					MAX(updated_at) AS last_ams_update
+				FROM marketcloud_bronze.bronze_ams_hourly_target
+				GROUP BY 1
+			), ads AS (
+				SELECT
+					report_grain AS ads_report_grain,
+					COUNT(*)::float8 AS ads_rows,
+					COALESCE(SUM(cost),0)::float8 AS ads_spend,
+					COALESCE(SUM(purchases),0)::float8 AS ads_orders,
+					MAX(synced_at) AS last_ads_sync
+				FROM marketcloud_ops.ads_reporting_sp_targeting_daily_v3
+				GROUP BY report_grain
+			)
+			SELECT
+				CASE
+					WHEN COALESCE(ams.rows,0) > 0 AND COALESCE(ads.ads_rows,0) > 0 THEN 'FAST_COVERAGE'
+					WHEN COALESCE(ams.rows,0) > 0 THEN 'ADS_TARGETING_MISSING'
+					ELSE 'ADS_ONLY'
+				END AS target_quality_status,
+				COALESCE(ams.ads_report_grain, ads.ads_report_grain) AS ads_report_grain,
+				COALESCE(ams.rows, ads.ads_rows, 0) AS rows,
+				100::float8 AS avg_quality_score,
+				COALESCE(ams.ams_spend,0)::float8 AS ams_spend,
+				COALESCE(ads.ads_spend,0)::float8 AS ads_spend,
+				(COALESCE(ads.ads_spend,0) - COALESCE(ams.ams_spend,0))::float8 AS delta_spend,
+				COALESCE(ams.ams_orders,0)::float8 AS ams_orders,
+				COALESCE(ads.ads_orders,0)::float8 AS ads_orders,
+				(COALESCE(ads.ads_orders,0) - COALESCE(ams.ams_orders,0))::float8 AS delta_orders,
+				ams.last_ams_update,
+				ads.last_ads_sync
+			FROM ams
+			FULL OUTER JOIN ads USING (ads_report_grain)
+			ORDER BY ads_report_grain`)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ams_target_quality_summary_failed: "+err.Error())
+			return
+		}
+		targetQualitySummary, err := pgx.CollectRows(targetQualityRows, pgx.RowToMap)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ams_target_quality_summary_scan_failed: "+err.Error())
+			return
+		}
+
+		targetQualityDivergences := []map[string]any{}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"totals":                         totals,
+			"models":                         models,
+			"ml_runs":                        runs,
+			"ams_hours":                      ams,
+			"learning_outcomes":              []map[string]any{},
+			"learning_summary":               map[string]any{},
+			"holdout":                        map[string]any{},
+			"audit_360_summary":              map[string]any{},
+			"audit_360":                      []map[string]any{},
+			"full_control_360_summary":       map[string]any{},
+			"full_control_360":               []map[string]any{},
+			"ams_quality_summary":            qualitySummary,
+			"ams_quality_divergences":        qualityDivergences,
+			"ads_reprocess_requests":         reprocessRequests,
+			"ads_reprocess_health":           reprocessHealth,
+			"ml_training_volume":             []map[string]any{},
+			"ams_target_quality_summary":     targetQualitySummary,
+			"ams_target_quality_divergences": targetQualityDivergences,
+			"operational_alerts":             []map[string]any{},
+		})
+		return
+	}
+
 	learningRows, err := h.db.Query(ctx, `
 		SELECT recommendation_id, campaign_id, campaign_name, ad_group_name, event_hour,
 		       recommended_action, recommended_bid_multiplier,
@@ -309,7 +656,7 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		"reading": "DIRECIONAL",
 	}
 
-	if view == "overview" {
+	if view == "ml" {
 		trainingVolumeLight := []map[string]any{
 			{
 				"source":    "campaign_hour_gold",
@@ -337,7 +684,7 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 			"models":                         models,
 			"ml_runs":                        runs,
 			"ams_hours":                      ams,
-			"learning_outcomes":              []map[string]any{},
+			"learning_outcomes":              learning,
 			"learning_summary":               learningSummary,
 			"holdout":                        holdoutSummary,
 			"audit_360_summary":              map[string]any{},
@@ -413,6 +760,71 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "audit_360_scan_failed: "+err.Error())
 		return
 	}
+	if len(audit360) == 0 {
+		err = h.db.QueryRow(ctx, `
+			SELECT jsonb_build_object(
+				'total', COUNT(*),
+				'pending', COUNT(*) FILTER (WHERE execution_status = 'NOT_EXECUTED'),
+				'winning', 0,
+				'losing', 0,
+				'neutral', COUNT(*) FILTER (WHERE execution_status IN ('EXECUTED','SHADOW','SKIPPED','ROLLED_BACK')),
+				'model_right', 0,
+				'model_wrong', 0,
+				'last_executed_at', MAX(executed_at),
+				'last_measured_at', (SELECT MAX(measured_at) FROM marketcloud_recommendations.recommendation_hourly_outcomes)
+			)::jsonb
+			FROM marketcloud_recommendations.recommendation_decisions
+			WHERE tenant_id = $1 OR tenant_id = 'zanom'`, tenantID).Scan(&auditSummary)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "audit_360_fallback_summary_failed: "+err.Error())
+			return
+		}
+		fallbackRows, err := h.db.Query(ctx, `
+			SELECT recommendation_id, campaign_id, campaign_name, ad_group_name, event_hour,
+			       recommended_action, recommended_bid_multiplier::float8 AS recommended_bid_multiplier,
+			       decided_action, decided_bid_multiplier::float8 AS decided_bid_multiplier,
+			       decided_by, decision_notes, executed_at,
+			       priority_score::float8 AS priority_score,
+			       priority_bucket, final_risk_level,
+			       execution_status AS audit_result,
+			       NULL::text AS model_result,
+			       0::int AS measured_windows,
+			       NULL::timestamptz AS action_start_at_1h,
+			       NULL::timestamptz AS eval_window_end_1h,
+			       NULL::float8 AS baseline_roas_1h,
+			       NULL::float8 AS eval_roas_1h,
+			       NULL::float8 AS delta_roas_1h,
+			       NULL::text AS outcome_label_1h,
+			       NULL::text AS model_verdict_1h,
+			       NULL::timestamptz AS action_start_at_3h,
+			       NULL::timestamptz AS eval_window_end_3h,
+			       NULL::float8 AS baseline_roas_3h,
+			       NULL::float8 AS eval_roas_3h,
+			       NULL::float8 AS delta_roas_3h,
+			       NULL::text AS outcome_label_3h,
+			       NULL::text AS model_verdict_3h,
+			       NULL::timestamptz AS action_start_at_24h,
+			       NULL::timestamptz AS eval_window_end_24h,
+			       NULL::float8 AS baseline_roas_24h,
+			       NULL::float8 AS eval_roas_24h,
+			       NULL::float8 AS delta_roas_24h,
+			       NULL::text AS outcome_label_24h,
+			       NULL::text AS model_verdict_24h,
+			       updated_at AS last_measured_at
+			FROM marketcloud_recommendations.recommendation_decisions
+			WHERE tenant_id = $1 OR tenant_id = 'zanom'
+			ORDER BY COALESCE(executed_at, updated_at, created_at) DESC
+			LIMIT 40`, tenantID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "audit_360_fallback_failed: "+err.Error())
+			return
+		}
+		audit360, err = pgx.CollectRows(fallbackRows, pgx.RowToMap)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "audit_360_fallback_scan_failed: "+err.Error())
+			return
+		}
+	}
 
 	var fc360Summary map[string]any
 	err = h.db.QueryRow(ctx, `
@@ -465,6 +877,45 @@ func (h *Handler) GoldMLAmsStatus(w http.ResponseWriter, r *http.Request) {
 	fc360, err := pgx.CollectRows(fc360Rows, pgx.RowToMap)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "full_control_360_actions_scan_failed: "+err.Error())
+		return
+	}
+
+	if view == "robot" {
+		trainingVolumeLight := []map[string]any{
+			{
+				"source": "campaign_hour_gold",
+				"rows":   totals["campaign_rows"],
+				"orders": totals["ams_orders_7d"],
+				"sales":  totals["ams_sales_7d"],
+			},
+			{
+				"source": "target_hour_reconciled",
+				"rows":   totals["target_rows"],
+				"orders": totals["target_orders_7d"],
+				"sales":  totals["target_sales_7d"],
+			},
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"totals":                         totals,
+			"models":                         models,
+			"ml_runs":                        runs,
+			"ams_hours":                      ams,
+			"learning_outcomes":              learning,
+			"learning_summary":               learningSummary,
+			"holdout":                        holdoutSummary,
+			"audit_360_summary":              auditSummary,
+			"audit_360":                      audit360,
+			"full_control_360_summary":       fc360Summary,
+			"full_control_360":               fc360,
+			"ams_quality_summary":            []map[string]any{},
+			"ams_quality_divergences":        []map[string]any{},
+			"ads_reprocess_requests":         []map[string]any{},
+			"ads_reprocess_health":           []map[string]any{},
+			"ml_training_volume":             trainingVolumeLight,
+			"ams_target_quality_summary":     []map[string]any{},
+			"ams_target_quality_divergences": []map[string]any{},
+			"operational_alerts":             []map[string]any{},
+		})
 		return
 	}
 
