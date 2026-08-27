@@ -12,6 +12,7 @@ import logging
 import psycopg2
 import psycopg2.extras
 
+from build_marker import code_fingerprint
 from classifier import CampaignMetrics, classify
 from insights import generate_campaign_insights
 from recommendations import generate
@@ -400,6 +401,8 @@ def process_run(run: dict, conn):
 
 
 def main():
+    fp, n_arq = code_fingerprint()
+    log.info("CODE_FINGERPRINT %s arquivos=%d", fp, n_arq)
     log.info("MarketCloud Modeling Worker starting...")
     threading.Thread(target=hourly_real_ml_loop, name="hourly-real-ml", daemon=True).start()
     while True:
