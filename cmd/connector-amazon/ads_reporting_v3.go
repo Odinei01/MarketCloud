@@ -462,7 +462,7 @@ func (s *connectorServer) downloadAndIngestSPReport(ctx context.Context, c *adsR
 	case "CAMPAIGN":
 		return s.ingestCampaignRows(ctx, c, reportID, rows)
 	case "CAMPAIGN_IS":
-		return s.ingestCampaignISRows(ctx, c, rows)
+		return s.ingestCampaignISRows(ctx, c, reportID, rows)
 	case "AD_GROUP":
 		return s.ingestAdGroupRows(ctx, c, reportID, rows)
 	case "KEYWORD", "TARGET":
@@ -508,7 +508,7 @@ func downloadAdsJSONRows(ctx context.Context, downloadURL string) ([]map[string]
 // coluna top_of_search_is da linha diaria correspondente (profile+data+campanha).
 // data = c.DataDate (janela do request). Faz UPDATE; se a linha diaria ainda nao
 // existir, INSERT minimo (o relatorio diario preenche o resto depois via upsert).
-func (s *connectorServer) ingestCampaignISRows(ctx context.Context, c *adsReprocessContext, rows []map[string]any) (int, error) {
+func (s *connectorServer) ingestCampaignISRows(ctx context.Context, c *adsReprocessContext, reportID string, rows []map[string]any) (int, error) {
 	inserted := 0
 	dataDate := c.DataDate.Format("2006-01-02")
 	for _, row := range rows {
@@ -522,13 +522,13 @@ func (s *connectorServer) ingestCampaignISRows(ctx context.Context, c *adsReproc
 		}
 		_, err := s.db.Exec(ctx, `
 			INSERT INTO marketcloud_ops.ads_reporting_sp_campaign_daily_v3
-				(profile_id, data_date, campaign_id, campaign_name, top_of_search_is, synced_at)
-			VALUES ($1,$2,$3,$4,$5,NOW())
+				(profile_id, data_date, campaign_id, campaign_name, top_of_search_is, report_id, synced_at)
+			VALUES ($1,$2,$3,$4,$5,$6,NOW())
 			ON CONFLICT (profile_id, data_date, campaign_id) DO UPDATE SET
 				top_of_search_is = EXCLUDED.top_of_search_is,
 				synced_at = NOW()
 		`, c.ProfileID, dataDate, campaignID,
-			firstString(row, "campaignName", "campaign_name"), *is)
+			firstString(row, "campaignName", "campaign_name"), *is, reportID)
 		if err != nil {
 			return inserted, err
 		}
