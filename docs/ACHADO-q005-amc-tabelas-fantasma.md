@@ -205,3 +205,72 @@ Tinham `tenant_id = 00000000-...-0001` enquanto E004..E013 usam o tenant real e 
 templates sao globais. O agendamento funcionava (o orchestrator le direto do banco), mas
 execucao MANUAL era recusada com STORE_ACCESS_DENIED — os tres extractors mais importantes
 nao podiam ser testados sob demanda. Corrigido na migration 239.
+
+---
+
+## Confronto de TODAS as fontes do AMC (28/08)
+
+Cada tabela do AMC da um numero diferente para a MESMA operacao (13-26/08, contra
+`amazon_ads_campaigns_daily`):
+
+| fonte | gasto | % | venda | % |
+|---|---|---|---|---|
+| placement_creative_daily (E007) | R$ 2.092,40 | **114,2%** | — | — |
+| product_asin_daily | R$ 1.533,05 | 83,7% | R$ 3.109,32 | 40,0% |
+| hourly_performance | R$ 1.344,49 | 73,4% | R$ 237,11 | **3,1%** |
+| campaign_daily (E001) | R$ 1.202,49 | 65,6% | R$ 4.920,93 | 63,3% |
+| search_term_daily | R$ 1.158,43 | 63,2% | R$ 3.789,39 | 48,8% |
+| target_daily | R$ 1.148,60 | 62,7% | R$ 3.814,29 | 49,1% |
+| conversions_daily_total (E008) | — | — | R$ 7.538,18 | **97,0%** |
+| conversions_unified_daily (E009) | — | — | R$ 4.410,43 | 56,8% |
+| new_to_brand_halo_daily (E002) | — | — | R$ 3.109,32 | 40,0% |
+
+**Nao existe "o numero do AMC".** O gasto da mesma operacao varia de 62,7% a 114,2%.
+
+### O E001 nao tem defeito de valor
+
+Comparado dia a dia, campanha a campanha, ele bate **ao centavo**:
+
+| dia | Ads | E001 | placement |
+|---|---|---|---|
+| 18/08 | 16,69 | **16,69** | 39,12 |
+| 19/08 | 24,84 | **24,84** | 62,52 |
+| 20/08 | 24,54 | **24,54** | 44,92 |
+
+Os 65,6% sao falta de COBERTURA (dias/campanhas que nao entraram), nao valor errado. O que
+esta la esta certo. Isso e divida de ingestao, nao de query.
+
+### O E007 infla, e nao e duplicata nem query
+
+Quase apaguei 27 mil linhas: com chave incompleta apareciam ~14 mil "duplicatas" em
+product_asin_daily e ~11 mil em search_term_daily. Inspecionar duas linhas de um grupo
+mostrou impressoes 11 e 2 — dado legitimo, separado por `customer_search_term`, que eu
+tinha deixado de fora da chave. Com a chave completa: **zero duplicatas** em todas.
+
+A query tambem esta limpa (GROUP BY simples, sem JOIN).
+
+E o proprio AMC: no grao placement x creative ele devolve a mesma impressao em mais de uma
+combinacao. **O gasto nao e somavel nesse grao.**
+
+### O que foi cortado do ML (migration 240)
+
+A inflacao e uniforme — gasto 1,142, cliques 1,139, impressoes 1,147. A linha e replicada
+inteira, entao toda razao se preserva:
+
+| feature | estado |
+|---|---|
+| `top_search_spend_share_45d`, `product_page_*`, `rest_search_*` (shares) | **ficam** — razao imune |
+| `top_search_cpc_45d`, `product_page_cpc_45d`, `rest_search_cpc_45d` | **ficam** — razao imune |
+| `placement_spend_45d`, `placement_clicks_45d`, `placement_impressions_45d` | **cortados** |
+| `top_search_spend_45d`, `product_page_spend_45d`, `rest_search_spend_45d` | **cortados** |
+
+Verificado: 1.087 linhas, 0 nao-nulas nos absolutos, shares e CPC vivos em 408.
+
+### Hierarquia de confianca do AMC
+
+1. **Dinheiro (gasto e venda absolutos): use o relatorio de Ads, nunca o AMC.**
+2. **E008** (venda, 97%) e o melhor agregado de venda do AMC.
+3. **E001** e exato no que cobre, mas cobre 66%.
+4. **hourly_performance**: 3,1% de venda — inutilizavel para venda por hora, o que confirma
+   a decisao ja tomada em [[cockpit-fonte-cega-amc]] e [[dayparting-data-sources]].
+5. **Razoes e shares** do AMC sobrevivem mesmo onde os absolutos nao.
