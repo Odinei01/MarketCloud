@@ -156,3 +156,52 @@ nao e alcance. Confirma pelo lado do AMC o que o diagnostico de campanha ja dizi
 trava e conversao, nao exposicao.
 
 Custo por pessoa alcancada varia 58x: M19-CLONE AUTO a R$0,003 contra Seladora a R$0,18.
+
+---
+
+## Auditoria dos extractors que JA rodavam (28/08)
+
+Rodar nao prova que o numero esta certo — o Q005 rodava havia meses e dava R$536 mil.
+Auditei E001, E002, E005-E008, Q016, Q019, Q022 procurando o mesmo tipo de defeito.
+
+### E001: nao infla, FALTA 35%
+
+Confrontado com `amazon_ads_campaigns_daily` (13-26/08):
+
+| | E001 | Ads | |
+|---|---|---|---|
+| gasto | R$ 1.202,49 | R$ 1.832,20 | **65,6%** |
+| venda | R$ 4.920,93 | R$ 7.767,85 | **63,3%** |
+
+Para comparar: o Q005 reconstruido, sobre a MESMA tabela de trafego, captura 92%.
+
+E o oposto do fan-out — sub-cobertura. E gasto e venda caem quase na mesma proporcao
+(65,6% e 63,3%), entao o ROAS derivado fica plausivel e o buraco nao aparece. So aparece
+conferindo o TOTAL contra quem cobra.
+
+**Causa NAO confirmada.** Minha hipotese era que `traffic_clean` descartava linhas com
+`ad_product_type`/`campaign_name` nulos (o lado das conversoes preserva com COALESCE, o
+do trafego descarta — assimetria real). Removi o descarte, rodei, e o total ficou
+IDENTICO: R$1.202,49. Nao havia linhas nesse estado. Hipotese errada, alteracao revertida
+— nao fica mudanca em producao sem ganho medido.
+
+Os 35% seguem sem explicacao. Fica como divida, nao como conserto.
+
+### bronze_amc_campaign_daily acumulava duplicatas
+
+O ingest do E001 nao e idempotente: reingerir o mesmo periodo insere de novo em vez de
+substituir. Encontrado ao reingerir manualmente por engano — o pipeline ja ingere sozinho
+quando o run chega a MODELING_COMPLETED, e eu chamei por cima.
+
+Limpei 265 linhas duplicadas. **241 eram minhas; 24 ja estavam la** — ou seja, o defeito
+e real e vinha acumulando silenciosamente. Hoje a tabela esta com 0 duplicatas.
+
+Corrigir de vez pede indice unico + ON CONFLICT no ingest. Nao apliquei: um indice unico
+sobre um INSERT puro quebra o pipeline diario se a chave real for outra. Fica proposto.
+
+### E001/E002/E003 estavam no tenant de seed
+
+Tinham `tenant_id = 00000000-...-0001` enquanto E004..E013 usam o tenant real e outros 49
+templates sao globais. O agendamento funcionava (o orchestrator le direto do banco), mas
+execucao MANUAL era recusada com STORE_ACCESS_DENIED — os tres extractors mais importantes
+nao podiam ser testados sob demanda. Corrigido na migration 239.
