@@ -54,6 +54,10 @@ func loadDailyIngestConfig() dailyIngestConfig {
 			"MC_ZANOM_Q041", // mid-funnel (DPV/cart) por campanha -> feature ML
 			"MC_ZANOM_Q042", // avaliacao retargeting SD -> alertas
 			"MC_ZANOM_Q043", // mid-funnel (DPV/ATC) por ASIN x dia -> funil por produto
+			// As tres do AMC que sobreviveram a auditoria de 28/08: as unicas que dependem
+			// de user_id, ou seja, as unicas que o relatorio de Ads nao sabe responder.
+			"MC_ZANOM_Q034", // canibalizacao: mesmo usuario alcancado por 2 campanhas
+			"MC_ZANOM_Q037", // saturacao de alcance: impressoes por PESSOA distinta
 		},
 		LookbackDays:  14,
 		RunHourUTC:    9, // 09:00 UTC = 06:00 BRT
@@ -240,7 +244,7 @@ func (o *orchestrator) ingestSucceededRuns(ctx context.Context, cfg dailyIngestC
 		WHERE qr.bronze_ingested_at IS NULL
 		  AND COALESCE(qr.result_object_path,'') <> ''
 		  AND qr.external_query_execution_id IS NOT NULL
-		  AND (qt.code LIKE 'MC_ZANOM_E0%' OR qt.code IN ('MC_ZANOM_Q005','MC_ZANOM_Q019','MC_ZANOM_Q041','MC_ZANOM_Q042','MC_ZANOM_Q043'))
+		  AND (qt.code LIKE 'MC_ZANOM_E0%' OR qt.code IN ('MC_ZANOM_Q005','MC_ZANOM_Q019','MC_ZANOM_Q041','MC_ZANOM_Q042','MC_ZANOM_Q043','MC_ZANOM_Q034','MC_ZANOM_Q037'))
 		  AND qr.created_at > NOW() - INTERVAL '3 days'
 		ORDER BY qr.created_at ASC
 		LIMIT 20
