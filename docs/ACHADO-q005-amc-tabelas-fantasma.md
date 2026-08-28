@@ -63,3 +63,54 @@ colateral deste conserto.
 
 Template restaurado ao texto do seed (migration 010). Nada foi degradado: o
 agendamento das 09:00 continua exatamente como estava antes de eu mexer.
+
+---
+
+## RESOLVIDO (28/08) — migration 233
+
+A substituta nao precisou ser inventada: o **Q007** ja reconstruia a jornada, com 161
+execucoes concluidas, sobre duas tabelas vivas — `sponsored_ads_traffic` (user_id,
+campaign_id, event_dt, spend) e `conversions_with_relevance` (conversao com valor).
+Reaproveitei esse miolo e troquei a saida: em vez do caminho como texto, a posicao do
+toque (FIRST/MIDDLE/LAST) agregada por campanha.
+
+Gasto e jornada sao agregados SEPARADAMENTE, cada um ja com uma linha por campanha, e
+so entao juntados — o fan-out deixa de ser possivel pela forma da query.
+
+### O que o AMC recusou pelo caminho (dialeto real)
+
+| tentativa | recusa |
+|---|---|
+| `SAFE_DIVIDE(NUMERIC, NUMERIC)` | assinatura inexistente; `CAST AS DOUBLE` nao resolve. Trocado por divisao direta — `NULLIF` ja protege do zero |
+| `COUNT(*) OVER (...)` | "COUNT window expression had 0 value expressions"; precisa de `COUNT(coluna) OVER` |
+
+### Duas armadilhas de dado que quase passaram
+
+1. **`conversions_with_relevance` tem uma linha por produto.** O `ROW_NUMBER` percorria
+   produto x campanha e a mesma campanha recebia varias ordens — todas as taxas de toque
+   saturavam em 1,000. Corrigido deduplicando por `conversion_id`.
+2. **`total_product_sales` ja e o total do pedido**, repetido em cada linha. `SUM` sobre
+   ele devolveu R$541.589 — praticamente o numero errado antigo, por outra causa.
+   Correto e `MAX`.
+
+A primeira so apareceu porque `assist_rate = 1,000` em 19 de 19 campanhas nao passou no
+cheiro. A segunda, porque o total foi conferido contra o relatorio de Ads.
+
+### Resultado, conferido contra a fonte autoritativa (13-26/08)
+
+| | Q005 | Ads | leitura |
+|---|---|---|---|
+| gasto | R$ 1.689,29 | R$ 1.838,42 | 92% — AMC so conta impressao com user resolvido |
+| venda direta | R$ 9.251,10 | R$ 7.578,15 | +22% — janela de 28d pega o que o Ads nao atribui |
+| maior ROAS | 29,5 | — | era 604 |
+
+`assist_rate` voltou a discriminar (0,045 / 0,000 / 0,136) em vez de saturar.
+
+### Pendente
+
+Religar `amc_assisted_roas` e `amc_protect` no ML (cortadas na migration 232, quando o
+dado era lixo). A causa do corte foi removida, mas ha uma execucao validada apenas —
+fica como decisao do dono, nao como efeito colateral.
+
+Os outros 19 templates que usam `sponsored_ads_traffic_report` (Q010, Q011, Q017, Q018,
+Q021, Q023-Q040) continuam mortos pela mesma tabela fantasma.
