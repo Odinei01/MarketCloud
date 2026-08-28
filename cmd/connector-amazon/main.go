@@ -64,6 +64,7 @@ func main() {
 	r.Get("/internal/amc/result/{execution_id}", s.fetchResultCSV)
 	r.Post("/internal/amc/ingest/q005/{execution_id}", s.ingestQ005)
 	r.Post("/internal/amc/ingest/q034/{execution_id}", s.ingestQ034)
+	r.Post("/internal/amc/ingest/q037/{execution_id}", s.ingestQ037)
 	r.Post("/internal/amc/ingest/q019/{execution_id}", s.ingestQ019)
 	r.Post("/internal/amc/ingest/q041/{execution_id}", s.ingestQ041)
 	r.Post("/internal/amc/ingest/q042/{execution_id}", s.ingestQ042)

@@ -114,3 +114,45 @@ fica como decisao do dono, nao como efeito colateral.
 
 Os outros 19 templates que usam `sponsored_ads_traffic_report` (Q010, Q011, Q017, Q018,
 Q021, Q023-Q040) continuam mortos pela mesma tabela fantasma.
+
+---
+
+## Os outros 19 templates (28/08)
+
+Todos os 19 que usam `sponsored_ads_traffic_report` tem **zero execucoes concluidas**.
+Nao quebraram: nunca funcionaram. Foram escritos contra um schema imaginado —
+`amc_attributed_purchases` (18 deles), `amc_campaign_overlap`, `amc_campaign_users`,
+`amc_frequency`, `business_report`, `product_metrics`, `promotion_report`,
+`search_term_report`. Nenhuma existe no AMC. Todos ja estavam marcados `BROKEN`.
+
+### Criterio: o que e genuinamente do AMC
+
+O AMC so tem uma coisa que nenhuma outra fonte tem: **`user_id`**, que permite cruzar a
+mesma PESSOA entre campanhas, produtos e no tempo. Tudo o mais que esses templates
+pediam — venda organica, sessao de pagina, cupom, estoque, margem, ticket, search term —
+esta no Postgres, com custo real por SKU e estoque real, sem a supressao do AMC, e ja
+alimenta o ML. Traze-lo do AMC seria trocar fonte boa por pior.
+
+| feito no AMC | por que so o AMC |
+|---|---|
+| **Q005** — assist por campanha | posicao do toque na jornada da mesma pessoa |
+| **Q034** — canibalizacao | mesmo usuario alcancado por 2 campanhas |
+| **Q037** — saturacao de alcance | impressoes por PESSOA distinta |
+
+Os 17 restantes ficam `BROKEN` de proposito: a resposta deles nao mora aqui.
+Q010 (placement) e Q011 (horarios) tambem saem — o Postgres tem fonte horaria mais rica
+(ver [[dayparting-data-sources]]).
+
+### O que o Q037 revelou (13-26/08)
+
+| | campanhas | gasto | frequencia | alcance fresco |
+|---|---|---|---|---|
+| CABE_VERBA | 20 | R$ 1.417,28 | 1,36 | 77,7% |
+| MONITOR | 2 | R$ 281,09 | 2,12 | 48,8% |
+
+**Nenhuma campanha esta saturada.** A frequencia media e 1,36 — quase todo mundo viu o
+anuncio UMA vez. Nao ha martelo em cima das mesmas pessoas, entao o limite da operacao
+nao e alcance. Confirma pelo lado do AMC o que o diagnostico de campanha ja dizia: a
+trava e conversao, nao exposicao.
+
+Custo por pessoa alcancada varia 58x: M19-CLONE AUTO a R$0,003 contra Seladora a R$0,18.
