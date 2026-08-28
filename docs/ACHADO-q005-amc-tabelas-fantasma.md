@@ -274,3 +274,57 @@ Verificado: 1.087 linhas, 0 nao-nulas nos absolutos, shares e CPC vivos em 408.
 4. **hourly_performance**: 3,1% de venda — inutilizavel para venda por hora, o que confirma
    a decisao ja tomada em [[cockpit-fonte-cega-amc]] e [[dayparting-data-sources]].
 5. **Razoes e shares** do AMC sobrevivem mesmo onde os absolutos nao.
+
+---
+
+## Por que faltam 35% no E001 (28/08) — RESPONDIDO
+
+Nao e bug do E001. **E supressao do AMC, e ela cresce conforme o grao fica mais fino.**
+
+O mesmo gasto, lido da MESMA tabela `sponsored_ads_traffic`, no mesmo periodo:
+
+| query | grao | cobertura do gasto |
+|---|---|---|
+| Q005 | campanha | **92%** |
+| E001 | dia x campanha | **66%** |
+| hourly_performance | hora x campanha | 73% de gasto, **3,1% de venda** |
+
+Quanto mais fina a quebra, mais o AMC suprime. E o mesmo fenomeno ja registrado em
+[[cockpit-fonte-cega-amc]] (25 de 361 horas com venda) — agora medido como gradiente.
+
+### O que foi descartado no caminho
+
+- **Nao e filtro da query.** Removi `campaign IS NOT NULL` e `ad_product_type IS NOT NULL`
+  do `traffic_raw` (o filtro efetivo) e do `traffic_clean`: resultado IDENTICO ao centavo,
+  R$1.202,49. Testei tambem trocar `event_date` por `CAST(event_dt AS DATE)`: identico.
+- **Nao e campanha excluida.** So 1 campanha nunca aparece, e ela gastou R$0,00.
+- **Nao sao campanhas SD.** As mesmas campanhas aparecem em uns dias e somem em outros
+  (Porta Capsula: presente em 7 dias, ausente em 6). Se fosse tipo, faltaria sempre.
+- **Nao e volume baixo do jeito obvio.** Os pares ausentes gastam MAIS que os presentes
+  (R$8,99 contra R$5,22 de media). O limiar do AMC e de USUARIOS unicos, nao de gasto —
+  campanha com CPC alto atinge poucas pessoas e cai na supressao mesmo gastando bem.
+- **Nao e lag nem janela.** A janela e de 14 dias e rola diariamente: o dia 13 foi
+  reprocessado uma duzia de vezes e as campanhas continuaram ausentes.
+- **Nao sao as linhas sem data.** O CSV traz linhas com `data_date` vazio (o ingest as
+  reporta como `skipped`), mas elas somam **R$0,00** de gasto — sao conversoes sem trafego
+  (brand halo / view-through), justamente o que a migration 036 quis capturar.
+
+### O numero que fecha o diagnostico
+
+Uma execucao do E001 com janela de 14 dias devolve **90 linhas e R$222,07** de gasto,
+num periodo em que a Amazon cobrou R$1.832,20. Uma execucao isolada cobre ~12%. O bronze
+so chega a 66% porque **acumula** ~14 execucoes diarias via upsert — e nunca completa,
+porque os pares suprimidos sao suprimidos em toda execucao.
+
+### Consequencia pratica
+
+Os 35% nao tem conserto: e como o AMC funciona. O que muda e a regra de uso, ja aplicada:
+
+- **gasto e venda absolutos: relatorio de Ads, sempre.** O E001 e exato no que traz
+  (bate ao centavo), mas nunca traz tudo.
+- **do AMC: jornada, sobreposicao, alcance e razoes** — o que depende de `user_id` e
+  nenhuma outra fonte tem.
+- **quanto mais fino o grao pedido ao AMC, menos confiavel o total.**
+
+Template restaurado ao original (migration 036). Nenhuma das quatro variacoes testadas
+ficou no banco.
